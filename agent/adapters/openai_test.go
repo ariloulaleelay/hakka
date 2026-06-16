@@ -111,6 +111,33 @@ func TestOpenAICompleteToolCall(t *testing.T) {
 	}
 }
 
+func TestOpenAIMessagesSkipsEmptyAssistant(t *testing.T) {
+	msgs := []agent.Message{
+		{Role: agent.RoleUser, Content: "hello"},
+		{Role: agent.RoleAssistant, Content: ""}, // empty content, no tool_calls — OpenAI 400 error
+		{Role: agent.RoleUser, Content: "world"},
+	}
+	out := toOpenAIMessages(msgs)
+	// The empty assistant message should be filtered out, consistent with
+	// how Anthropic's appendAssistantBlocks and Gemini's appendGeminiModelParts
+	// skip messages with no text and no tool calls.
+	if len(out) != 2 {
+		t.Fatalf("expected 2 messages (empty assistant skipped), got %d", len(out))
+	}
+	if out[0].Role != string(agent.RoleUser) || out[0].Content != "hello" {
+		t.Fatalf("first message: %+v", out[0])
+	}
+	if out[1].Role != string(agent.RoleUser) || out[1].Content != "world" {
+		t.Fatalf("second message: %+v", out[1])
+	}
+	// No assistant message should have empty content AND no tool calls
+	for _, m := range out {
+		if m.Role == string(agent.RoleAssistant) && m.Content == "" && len(m.ToolCalls) == 0 {
+			t.Fatal("assistant message with empty content and no tool_calls would cause OpenAI 400 error")
+		}
+	}
+}
+
 func TestOpenAIStream(t *testing.T) {
 	adapter, _ := newOpenAITestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

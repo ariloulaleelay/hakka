@@ -42,6 +42,14 @@ func NewOpenAIAdapter(client *openai.Client, model string) *OpenAIAdapter {
 func toOpenAIMessages(messages []agent.Message) []openai.ChatCompletionMessage {
 	out := make([]openai.ChatCompletionMessage, 0, len(messages))
 	for _, msg := range messages {
+		// Skip assistant messages with empty content AND no tool calls.
+		// OpenAI requires that every assistant message has either content
+		// or tool_calls set — sending an empty message causes a 400 error.
+		// This mirrors the filtering Anthropic's appendAssistantBlocks and
+		// Gemini's appendGeminiModelParts already do.
+		if msg.Role == agent.RoleAssistant && msg.Content == "" && len(msg.ToolCalls) == 0 {
+			continue
+		}
 		openAIMsg := openai.ChatCompletionMessage{
 			Role:       string(msg.Role),
 			Content:    msg.Content,
