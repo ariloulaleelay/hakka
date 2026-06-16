@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/you/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // fakeAdapter returns scripted responses, one per call. If toolCalls are

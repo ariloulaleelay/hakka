@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/you/hakka/agent"
-	"github.com/you/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // testSessionStore is a minimal in-memory store for testing.

@@ -10,9 +10,9 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"github.com/you/hakka/agent"
-	"github.com/you/hakka/agent/commands"
-	"github.com/you/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent/commands"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // TelegramGateway maps a Telegram chat to one or more Hakka sessions

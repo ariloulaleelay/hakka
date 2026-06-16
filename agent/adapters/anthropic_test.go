@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/you/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent"
 )
 
 func newAnthropicTestAdapter(t *testing.T, handler http.HandlerFunc) *AnthropicAdapter {

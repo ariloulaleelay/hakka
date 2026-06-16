@@ -1,6 +1,6 @@
 package tools
 
-import "github.com/you/hakka/agent"
+import "github.com/ariloulaleelay/hakka/agent"
 
 // RegisterAll registers the full builtin toolset on the given registry.
 func RegisterAll(r *agent.ToolRegistry) {

@@ -43,8 +43,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/you/hakka/agent"
-	"github.com/you/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // parallelToolAdapter returns a single assistant turn that asks for N

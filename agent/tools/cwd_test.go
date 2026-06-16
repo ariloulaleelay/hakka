@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/you/hakka/agent"
-		"github.com/you/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent"
+		"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // runWithCWD invokes a tool handler with a context that has a CWD set.

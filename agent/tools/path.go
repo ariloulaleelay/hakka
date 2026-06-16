@@ -4,7 +4,7 @@ import (
 	"context"
 	"path/filepath"
 
-	"github.com/you/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // resolvePath resolves a file path against the client CWD from the context.

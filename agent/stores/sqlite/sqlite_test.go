@@ -7,7 +7,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/you/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent"
 )
 
 func newStore(t *testing.T) *Store {

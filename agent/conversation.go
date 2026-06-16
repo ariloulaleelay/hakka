@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/you/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // eventSender is an optional sink for EngineEvents. When set on a

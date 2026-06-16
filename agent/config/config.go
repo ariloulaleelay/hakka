@@ -10,8 +10,8 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 
-	"github.com/you/hakka/agent"
-	"github.com/you/hakka/agent/adapters"
+	"github.com/ariloulaleelay/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent/adapters"
 )
 
 var envVarRe = regexp.MustCompile(`\$\{env:\s*(\w+)\s*\}`)

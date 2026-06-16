@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/you/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent"
 )
 
 // GeminiAdapter speaks the Google Generative Language v1beta API.

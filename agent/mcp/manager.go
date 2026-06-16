@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/you/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent"
 )
 
 // Manager manages the lifecycle of multiple MCP servers and their tool

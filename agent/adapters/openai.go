@@ -15,7 +15,7 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 
-	"github.com/you/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent"
 )
 
 var reqCounter atomic.Int64

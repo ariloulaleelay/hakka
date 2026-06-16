@@ -3,7 +3,7 @@ package tools
 import (
 	"testing"
 
-	"github.com/you/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent"
 )
 
 // TestRegisterTelegramTools_OnlySafeTools verifies that RegisterTelegramTools

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/you/hakka/agent"
-	"github.com/you/hakka/agent/commands"
+	"github.com/ariloulaleelay/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent/commands"
 )
 
 // blockingAdapter blocks on Complete/Stream until the context is cancelled.

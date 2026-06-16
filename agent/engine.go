@@ -3,7 +3,7 @@ package agent
 import (
 	"log/slog"
 
-	"github.com/you/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // ErrMaxIterations is returned when the tool loop fails to converge.

@@ -12,14 +12,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/you/hakka/agent"
-	"github.com/you/hakka/agent/commands"
-	"github.com/you/hakka/agent/config"
-	"github.com/you/hakka/agent/event"
-	"github.com/you/hakka/agent/gateways"
-	"github.com/you/hakka/agent/mcp"
-	sqlitestore "github.com/you/hakka/agent/stores/sqlite"
-	hakkatools "github.com/you/hakka/agent/tools"
+	"github.com/ariloulaleelay/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent/commands"
+	"github.com/ariloulaleelay/hakka/agent/config"
+	"github.com/ariloulaleelay/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent/gateways"
+	"github.com/ariloulaleelay/hakka/agent/mcp"
+	sqlitestore "github.com/ariloulaleelay/hakka/agent/stores/sqlite"
+	hakkatools "github.com/ariloulaleelay/hakka/agent/tools"
 )
 
 type appConfig struct {

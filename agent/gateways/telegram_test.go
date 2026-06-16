@@ -11,8 +11,8 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"github.com/you/hakka/agent"
-	"github.com/you/hakka/agent/commands"
+	"github.com/ariloulaleelay/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent/commands"
 )
 
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/you/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // ---------------------------------------------------------------------------

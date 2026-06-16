@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/you/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent"
 )
 
 // TestOpenAIStreamToolCallAccumulatedDeltas reproduces the bug where

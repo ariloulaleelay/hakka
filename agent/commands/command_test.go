@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/you/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent"
 )
 
 // fakeAdapter is a minimal adapter for command tests.

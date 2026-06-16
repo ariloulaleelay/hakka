@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/you/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // ToolSchema is a JSON-schema-style description forwarded to the LLM.

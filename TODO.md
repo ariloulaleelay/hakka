@@ -2,11 +2,12 @@ This file is for humans only, agent should not modify it!
 
 # Epics
 
-- [ ] Opensource ready
+- [x] Opensource ready
   - [x] Read tokens to config from environment
   - [x] Remove tokens and keys from commits
   - [x] Remove "hidden" keywords
   - [ ] Add more logs (I want to see what happens during session and at what state we are)
+  - [x] Better readme
 - [ ] Stability
   - [ ] If user reports some problem, fix states, to maybe detect error.
 - [ ] Telegram gateway

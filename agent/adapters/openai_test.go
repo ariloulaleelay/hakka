@@ -12,7 +12,7 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 
-	"github.com/you/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent"
 )
 
 func newOpenAITestAdapter(t *testing.T, handler http.HandlerFunc) (*OpenAIAdapter, *httptest.Server) {

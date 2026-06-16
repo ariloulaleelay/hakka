@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-		"github.com/you/hakka/agent/event"
+		"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // ---------------------------------------------------------------------------

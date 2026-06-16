@@ -1,4 +1,4 @@
-module github.com/you/hakka
+module github.com/ariloulaleelay/hakka
 
 go 1.25.0
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/you/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // StreamSession streams assistant deltas for a turn, handling tool calls

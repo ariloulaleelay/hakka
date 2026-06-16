@@ -11,9 +11,9 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/you/hakka/agent"
-	"github.com/you/hakka/agent/commands"
-	"github.com/you/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent/commands"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // WebSocketGateway exposes the engine over /ws.

@@ -1,6 +1,6 @@
 package tools
 
-import "github.com/you/hakka/agent"
+import "github.com/ariloulaleelay/hakka/agent"
 
 // RegisterTelegramTools registers a restricted subset of tools safe for
 // external (Telegram) users. Only tools with no filesystem or shell access
