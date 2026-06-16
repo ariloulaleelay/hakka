@@ -1,0 +1,96 @@
+This file is for humans only, agent should not modify it!
+
+# Epics
+
+- [ ] Opensource ready
+  - [x] Read tokens to config from environment
+  - [x] Remove tokens and keys from commits
+  - [x] Remove "hidden" keywords
+  - [ ] Add more logs (I want to see what happens during session and at what state we are)
+- [ ] Stability
+  - [ ] If user reports some problem, fix states, to maybe detect error.
+- [ ] Telegram gateway
+  - [x] Separate different users sessions from each other, sessin commands need to be chat aware, or event different session classes.
+  - [x] Limit telegram usage by whitelist of chat ids
+  - [x] Limit tools, that llm can use in telegram mode
+  - [ ] Chat with multiple users, how to show it properly
+  - [ ] Change system prompt for telegram (no cwd info)
+  - [ ] Make http_get safer
+  - [ ] Better display on client (session info, tokens count, markdown)
+  - [ ] Response in group chats
+    - [x] In a group chat form message with author info in heading (@login + Name)
+    - [x] Silently listen group chat (respond only on mentions)
+- [ ] Vim integraion improvement
+  - [ ] Ability to cancel request from vim.
+  - [x] Disable vim_run_command (it's too buggy)
+  - [x] Make vim_list_buffers, vim_read_buffer
+  - [x] vim_list_buffers breaks with some json error on neovim side (hakka however still processing request)
+  - [ ] Show more data on start (cwd, model info)
+- [ ] Tool improvements
+  - [x] Get access to mcp servers
+  - [x] Add tool controls, disable tools by default
+  - [x] Add tool groups/tags, easier control
+  - [x] Change tool tags.
+  - [x] Add tool enable/disable mechanism
+  - [ ] Add dangerous tools confirmations
+  - [ ] Add tools confirmation
+  - [x] remove mcp prefix from tools
+  - [ ] Add tool to discover and enable tools
+- [ ] Add command to control system prompt (add, remove, show, change)
+- [ ] Improve sessions
+  - [x] Session autorename
+  - [x] Session manual rename
+  - [x] Tools to access to sessions
+  - [ ] Tools for session manipulation (search, summarize, tags) — requires further research and decomposition
+    - [x] Session search
+    - [x] Session summarize
+    - [ ] Session tags
+- [ ] Add standalone agentic mode (batch run without human, for real autonomous tasks)
+- [ ] Advanced session manipulation — on the fly context compression, guided context compression, stashes, forks
+- [x] Implement discovery tool.
+- [x] Revisit discovery tool and check if it works great
+- [ ] Show user balance for current provider (how much money left)
+- [ ] Make end to end feature implementation:
+  - [ ] Establish code and architecture quality control (self-improvement loop)
+  - [ ] Implement end to end tests. When I fully automate engine improvement, i need real tests, to be sure nothing breaks.
+  - [ ] Implement full cycle automatic feature implementation.
+  - [ ] Describe full loop of implementing new feature
+    - [ ] Decomposition
+    - [ ] Feature implementation
+    - [ ] Testing
+    - [ ] End to end testing
+    - [ ] Live testing
+    - [ ] Architecutral refine
+    - [ ] Code practice refine
+    - [ ] Fix new contracts
+
+# Minor features
+
+- [x] Fix annoying glitch with first message (no newline) — initial `### you` prompt now has a trailing blank line so cursor starts on its own line, not on the header
+- [x] Add more info at initial prompt message (current session, model info, etc.) — session ID and model shown in winbar and available via `vim.g.hakka_status`
+- [x] On switching sessions, clear screen in Neovim — `/session switch <id>` and `/session create` now clear the buffer
+- [x] Command processor should intercept all commands starting with `/` so typos would not leat to LLM
+- [x] Client could send current working directory to session, and session should keep it. It shoud appear in tools context. Now cwd is server's cwd.
+- [x] Send full command parameters, and shrink them on client (cleaner). In other words, do not strip snippet on server side.
+- [x] Change vim prompts from `### you` `### hakka` to `# Me` `# Hakka`
+- [x] After implementing cwd, parameters length increased. Need to solve this issue. And add message to system prompt that all tools follow user's cwd.
+- [x] Move from examples to server
+- [x] OpenAi adapter, want reasonable retry on _error: error, status code: 429, status: 429 Too Many Requests, message: _
+- [x] Shell tool should follow cwd convention.
+- [ ] Discover should follow .arcignore, .gitignore rules
+
+
+# Bugs
+- [x] After creating session, `### you` appears twice: `### you\n\n### you\n`
+- [x] Discover tool fails, need to debug
+- [ ] User can switch to unexistent session (it creates new session)
+- [x] Autorename does not work
+- [ ] When try to enter something `in flight` `# Me` appears after error message (nvim bug)
+
+# Minor bugs
+- [ ] Snippet stripping for `\n` makes one character longer for each backslash. And tabs make string appear longer too.
+- [ ] When run multiple tools, nvim statuses not updated properly
+
+# Architecture
+- [ ] Clean Architecture fix: route vim_request through the engine event system (more architectural, but larger change)
+- [ ] Refactor environment substitution to all text fields in config (now it is some hacks)

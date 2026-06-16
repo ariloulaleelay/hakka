@@ -1,0 +1,411 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/you/hakka/agent"
+)
+
+// run invokes a tool handler and unmarshals the JSON result.
+func run(t *testing.T, h func(context.Context, json.RawMessage) (string, error), args any) map[string]any {
+	t.Helper()
+	raw, _ := json.Marshal(args)
+	res, err := h(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("tool: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(res), &out); err != nil {
+		t.Fatalf("parse: %v (%s)", err, res)
+	}
+	return out
+}
+
+// runPlain invokes a tool handler and returns the plain-text result string.
+func runPlain(t *testing.T, h func(context.Context, json.RawMessage) (string, error), args any) string {
+	t.Helper()
+	raw, _ := json.Marshal(args)
+	res, err := h(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("tool: %v", err)
+	}
+	return res
+}
+
+// runErr invokes a tool handler expecting an error result.
+// Returns the error string (either from Go error or from an "Error:" prefix).
+func runErr(t *testing.T, h func(context.Context, json.RawMessage) (string, error), args any) string {
+	t.Helper()
+	raw, _ := json.Marshal(args)
+	res, err := h(context.Background(), raw)
+	if err != nil {
+		return err.Error()
+	}
+	// Fallback: error encoded as "Error: ..." prefix in the result string.
+	if strings.HasPrefix(res, "Error: ") {
+		return strings.TrimPrefix(res, "Error: ")
+	}
+	t.Fatalf("expected error result, got: %q", res)
+	return ""
+}
+
+func TestReadFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "hello.txt")
+	_ = os.WriteFile(p, []byte("hello world"), 0o644)
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p})
+	want := p + "\n---\nhello world\n"
+	if res != want {
+		t.Fatalf("expected %q, got: %q", want, res)
+	}
+}
+
+func TestReadFileTruncated(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "big.txt")
+	_ = os.WriteFile(p, []byte(strings.Repeat("x", 100)), 0o644)
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "max_bytes": 10})
+	// Should show truncated header with omitted bytes, then content, then TRUNCATED marker
+	if !strings.Contains(res, "omitted 90 bytes") {
+		t.Fatalf("expected 'omitted 90 bytes' in result, got: %q", res)
+	}
+	if !strings.Contains(res, "[TRUNCATED:") {
+		t.Fatalf("expected truncation marker in result, got: %q", res)
+	}
+	if !strings.Contains(res, strings.Repeat("x", 10)) {
+		t.Fatalf("expected first 10 bytes in result, got: %q", res)
+	}
+}
+
+func TestReadFileError(t *testing.T) {
+	errMsg := runErr(t, ReadFile().Handler, map[string]any{"path": "/no/such/file/here"})
+	if !strings.Contains(errMsg, "no such file") {
+		t.Fatalf("expected error about missing file, got: %q", errMsg)
+	}
+}
+
+func TestListDir(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644)
+	_ = os.Mkdir(filepath.Join(dir, "sub"), 0o755)
+	res := runPlain(t, ListDir().Handler, map[string]any{"path": dir})
+	if !strings.Contains(res, "a.txt") {
+		t.Fatalf("expected a.txt in listing, got: %q", res)
+	}
+	if !strings.Contains(res, "sub/") {
+		t.Fatalf("expected sub/ in listing, got: %q", res)
+	}
+	if !strings.Contains(res, "(dir)") {
+		t.Fatalf("expected (dir) marker for sub, got: %q", res)
+	}
+	if !strings.Contains(res, "bytes") {
+		t.Fatalf("expected size info in listing, got: %q", res)
+	}
+	// a.txt should appear before sub/ (sorted)
+	aIdx := strings.Index(res, "a.txt")
+	subIdx := strings.Index(res, "sub/")
+	if aIdx < 0 || subIdx < 0 || aIdx > subIdx {
+		t.Fatalf("expected a.txt before sub/, got: %q", res)
+	}
+}
+
+func TestWriteFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "nested", "file.txt")
+	res := runPlain(t, WriteFile().Handler, map[string]any{"path": p, "content": "data"})
+	if !strings.Contains(res, "Written 4 bytes") {
+		t.Fatalf("expected 'Written 4 bytes', got: %q", res)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(b) != "data" {
+		t.Fatalf("expected written content %q, got: %q", "data", string(b))
+	}
+}
+
+func TestEditFileFirstOccurrence(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "x.txt")
+	_ = os.WriteFile(p, []byte("foo foo"), 0o644)
+	res := runPlain(t, EditFile().Handler, map[string]any{"path": p, "old": "foo", "new": "bar"})
+	if !strings.Contains(res, "Replaced 1 occurrence(s)") {
+		t.Fatalf("expected 'Replaced 1 occurrence(s)', got: %q", res)
+	}
+	b, _ := os.ReadFile(p)
+	if string(b) != "bar foo" {
+		t.Fatalf("expected file content %q after editing, got: %q", "bar foo", string(b))
+	}
+}
+
+func TestEditFileReplaceAll(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "x.txt")
+	_ = os.WriteFile(p, []byte("foo foo foo"), 0o644)
+	res := runPlain(t, EditFile().Handler, map[string]any{"path": p, "old": "foo", "new": "bar", "replace_all": true})
+	if !strings.Contains(res, "Replaced 3 occurrence(s)") {
+		t.Fatalf("expected 'Replaced 3 occurrence(s)', got: %q", res)
+	}
+	b, _ := os.ReadFile(p)
+	if string(b) != "bar bar bar" {
+		t.Fatalf("expected file content %q after replace-all, got: %q", "bar bar bar", string(b))
+	}
+}
+
+func TestEditFileNotFound(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "x.txt")
+	_ = os.WriteFile(p, []byte("abc"), 0o644)
+	errMsg := runErr(t, EditFile().Handler, map[string]any{"path": p, "old": "xyz", "new": "q"})
+	if !strings.Contains(errMsg, "pattern not found") {
+		t.Fatalf("expected pattern not found error, got: %q", errMsg)
+	}
+}
+
+func TestShellInlinesShortOutput(t *testing.T) {
+	out := run(t, Shell().Handler, map[string]any{"cmd": "echo hello"})
+	if int(out["exit_code"].(float64)) != 0 {
+		t.Fatalf("exit_code: %v", out["exit_code"])
+	}
+	stdout := out["stdout"].(string)
+	if !strings.Contains(stdout, "hello") {
+		t.Fatalf("stdout not inlined: %q", stdout)
+	}
+	stderr := out["stderr"]
+	if stderr != "" {
+		t.Fatalf("stderr should be empty, got: %q", stderr)
+	}
+}
+
+func TestShellNonZero(t *testing.T) {
+	out := run(t, Shell().Handler, map[string]any{"cmd": "exit 3"})
+	if int(out["exit_code"].(float64)) != 3 {
+		t.Fatalf("exit_code: %v", out["exit_code"])
+	}
+}
+
+func TestShellLargeOutputGoesToFile(t *testing.T) {
+	// Produce ~3000 bytes of stdout — well above the inline threshold.
+	out := run(t, Shell().Handler, map[string]any{
+		"cmd": "yes hakka | head -c 3000",
+	})
+	if int(out["exit_code"].(float64)) != 0 {
+		t.Fatalf("exit_code: %v", out["exit_code"])
+	}
+	// Expect a tempfile reference instead of inlined content.
+	stdout, ok := out["stdout"].(map[string]any)
+	if !ok {
+		t.Fatalf("stdout should be an object for large output, got: %T %+v", out["stdout"], out["stdout"])
+	}
+	if stdout["truncated"] != true {
+		t.Fatalf("expected truncated=true, got: %v", stdout["truncated"])
+	}
+	path, _ := stdout["path"].(string)
+	if path == "" {
+		t.Fatalf("expected path in stdout object, got: %+v", stdout)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("tempfile missing: %v", err)
+	}
+	if info.Size() < 3000 {
+		t.Fatalf("tempfile too small: %d", info.Size())
+	}
+	_ = os.Remove(path)
+}
+
+func TestShellEmptyCmd(t *testing.T) {
+	errMsg := runErr(t, Shell().Handler, map[string]any{"cmd": "   "})
+	if !strings.Contains(errMsg, "cmd is required") {
+		t.Fatalf("expected cmd is required error, got: %q", errMsg)
+	}
+}
+
+func TestHTTPGet(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Probe", "yes")
+		_, _ = w.Write([]byte("pong"))
+	}))
+	defer srv.Close()
+	out := run(t, HTTPGet().Handler, map[string]any{"url": srv.URL})
+	if int(out["status"].(float64)) != 200 {
+		t.Fatalf("expected HTTP status 200, got: %+v", out)
+	}
+	if out["body"] != "pong" {
+		t.Fatalf("expected HTTP body %q, got: %+v", "pong", out)
+	}
+}
+
+func TestSearchSkippedWhenNoRG(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("rg not installed")
+	}
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("alpha\nbeta\n"), 0o644)
+	out := run(t, Search().Handler, map[string]any{"pattern": "alpha", "path": dir})
+	matches := out["matches"].([]any)
+	if len(matches) == 0 {
+		t.Fatalf("no matches: %+v", out)
+	}
+}
+
+// --- ExecSnippet tests ---
+
+func snippetFor(t *testing.T, tool agent.Tool, args any) string {
+	t.Helper()
+	raw, _ := json.Marshal(args)
+	if tool.ExecSnippet == nil {
+		return ""
+	}
+	return tool.ExecSnippet(raw)
+}
+
+func TestExecSnippet_ReadFile(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      map[string]any
+		wantCont  string // substring expected in snippet
+		wantEmpty bool
+	}{
+		{name: "with path", args: map[string]any{"path": "src/main.go"}, wantCont: `"src/main.go"`},
+		{name: "empty args", args: map[string]any{}, wantEmpty: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := snippetFor(t, ReadFile(), tt.args)
+			if tt.wantEmpty {
+				if s != "" {
+					t.Fatalf("expected empty snippet, got %q", s)
+				}
+				return
+			}
+			if !strings.Contains(s, tt.wantCont) {
+				t.Fatalf("expected %q in snippet, got %q", tt.wantCont, s)
+			}
+		})
+	}
+}
+
+func TestExecSnippet_ListDir(t *testing.T) {
+	s := snippetFor(t, ListDir(), map[string]any{"path": "."})
+	if !strings.Contains(s, `"."`) {
+		t.Fatalf("expected path in snippet, got %q", s)
+	}
+}
+
+func TestExecSnippet_WriteFileShowsPathOnly(t *testing.T) {
+	s := snippetFor(t, WriteFile(), map[string]any{"path": "/tmp/foo.txt", "content": "secret data"})
+	if !strings.Contains(s, `"/tmp/foo.txt"`) {
+		t.Fatalf("expected path in snippet, got %q", s)
+	}
+	if strings.Contains(s, "secret") {
+		t.Fatalf("snippet should not contain content, got %q", s)
+	}
+}
+
+func TestExecSnippet_EditFile(t *testing.T) {
+	s := snippetFor(t, EditFile(), map[string]any{"path": "main.go", "old": "foo", "new": "bar"})
+	if !strings.Contains(s, `"main.go"`) {
+		t.Fatalf("expected path in snippet, got %q", s)
+	}
+	if !strings.Contains(s, `old="foo"`) {
+		t.Fatalf("expected old in snippet, got %q", s)
+	}
+}
+
+func TestEditFileExecSnippet_TruncatesLongOld(t *testing.T) {
+	longOld := strings.Repeat("x", 100)
+	s := snippetFor(t, EditFile(), map[string]any{"path": "main.go", "old": longOld})
+	// Server no longer truncates — full old value is sent to the client
+	if !strings.Contains(s, longOld) {
+		t.Fatalf("expected full old value in snippet (client truncates), got %q", s)
+	}
+}
+
+func TestShellExecSnippet(t *testing.T) {
+	s := snippetFor(t, Shell(), map[string]any{"cmd": "echo hello"})
+	if !strings.Contains(s, `echo hello`) {
+		t.Fatalf("expected cmd in snippet, got %q", s)
+	}
+}
+
+func TestShellExecSnippet_TruncatesLongCmd(t *testing.T) {
+	longCmd := "echo " + strings.Repeat("x", 100)
+	s := snippetFor(t, Shell(), map[string]any{"cmd": longCmd})
+	// Server no longer truncates — full cmd is sent to the client
+	if !strings.Contains(s, longCmd) {
+		t.Fatalf("expected full cmd in snippet (client truncates), got %q", s)
+	}
+}
+
+func TestShellExecSnippet_EmptyCmd(t *testing.T) {
+	s := snippetFor(t, Shell(), map[string]any{})
+	if s != "" {
+		t.Fatalf("expected empty snippet for empty cmd, got %q", s)
+	}
+}
+
+func TestSearchExecSnippet(t *testing.T) {
+	s := snippetFor(t, Search(), map[string]any{"pattern": "func main", "path": "."})
+	if !strings.Contains(s, `pattern="func main"`) {
+		t.Fatalf("expected pattern in snippet, got %q", s)
+	}
+}
+
+func TestSearchExecSnippet_WithPath(t *testing.T) {
+	s := snippetFor(t, Search(), map[string]any{"pattern": "TODO", "path": "src/"})
+	if !strings.Contains(s, `"src/"`) {
+		t.Fatalf("expected path in snippet, got %q", s)
+	}
+}
+
+func TestSearchExecSnippet_TruncatesLongPattern(t *testing.T) {
+	longPattern := strings.Repeat("x", 100)
+	s := snippetFor(t, Search(), map[string]any{"pattern": longPattern})
+	// Server no longer truncates — full pattern is sent to the client
+	if !strings.Contains(s, longPattern) {
+		t.Fatalf("expected full pattern in snippet (client truncates), got %q", s)
+	}
+}
+
+func TestHTTPGetExecSnippet(t *testing.T) {
+	s := snippetFor(t, HTTPGet(), map[string]any{"url": "https://example.com"})
+	if !strings.Contains(s, `url="https://example.com"`) {
+		t.Fatalf("expected url in snippet, got %q", s)
+	}
+}
+
+func TestHTTPGetExecSnippet_Empty(t *testing.T) {
+	s := snippetFor(t, HTTPGet(), map[string]any{})
+	if s != "" {
+		t.Fatalf("expected empty snippet for empty args, got %q", s)
+	}
+}
+
+func TestExecSnippet_AllToolsDontTruncate(t *testing.T) {
+	tools := []agent.Tool{
+		ReadFile(),
+		ListDir(),
+		WriteFile(),
+		EditFile(),
+		Shell(),
+		Search(),
+		HTTPGet(),
+	}
+	for _, tool := range tools {
+		if tool.ExecSnippet == nil {
+			continue
+		}
+		// Use a long path to verify server no longer truncates
+		longPath := strings.Repeat("a/b/c/", 20)
+		raw, _ := json.Marshal(map[string]any{"path": longPath, "pattern": longPath, "cmd": longPath, "url": "https://" + longPath, "old": longPath})
+		s := tool.ExecSnippet(raw)
+		// Server should not truncate — the full value should be present
+		if !strings.Contains(s, longPath) && !strings.Contains(s, "https://") && !strings.Contains(s, longPath) {
+			t.Errorf("%s snippet was truncated server-side — should be full: %q", tool.Schema.Name, s)
+		}
+	}
+}

@@ -1,0 +1,59 @@
+package agent
+
+import (
+	"context"
+	"testing"
+)
+
+func TestSessionManagerCreatesWithGivenID(t *testing.T) {
+	sm := NewSessionManager(nil, "sys")
+	s, err := sm.GetOrCreate(context.Background(), "testns", "fixed-id")
+	if err != nil {
+		t.Fatalf("get/create: %v", err)
+	}
+	if s.ID != "fixed-id" {
+		t.Fatalf("expected id 'fixed-id', got %q", s.ID)
+	}
+	if s.Namespace != "testns" {
+		t.Fatalf("expected namespace 'testns', got %q", s.Namespace)
+	}
+	if s.SystemPrompt != "sys" {
+		t.Fatalf("system prompt not propagated")
+	}
+}
+
+func TestSessionManagerReusesExisting(t *testing.T) {
+	sm := NewSessionManager(nil, "")
+	ctx := context.Background()
+
+	a, _ := sm.GetOrCreate(ctx, "testns", "")
+	a.Append(Message{Role: RoleUser, Content: "marker"})
+	if err := sm.Save(ctx, "testns", a); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	b, err := sm.GetOrCreate(ctx, "testns", a.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if b != a {
+		t.Fatal("expected same session pointer from memory store")
+	}
+	if len(b.Messages) != 1 || b.Messages[0].Content != "marker" {
+		t.Fatalf("messages not retained: %+v", b.Messages)
+	}
+}
+
+func TestSessionManagerDrop(t *testing.T) {
+	sm := NewSessionManager(nil, "")
+	ctx := context.Background()
+	s, _ := sm.GetOrCreate(ctx, "testns", "to-drop")
+	if err := sm.Drop(ctx, "testns", s.ID); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	// next GetOrCreate with the same id should create a brand new session
+	again, _ := sm.GetOrCreate(ctx, "testns", "to-drop")
+	if len(again.Messages) != 0 {
+		t.Fatal("dropped session leaked messages")
+	}
+}

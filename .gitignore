@@ -1,0 +1,5 @@
+bin/
+logs/
+**/logs/
+hakka.db
+hakka.json

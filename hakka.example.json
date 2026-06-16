@@ -1,0 +1,71 @@
+{
+  "default": "myds",
+  "models": {
+    "myds": {
+      "dialect": "openai",
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-v4-flash",
+      "headers": {
+        "Authorization": "Bearer ${env: DEEPSEEK_TOKEN}"
+      }
+    },
+    "deepseek": {
+      "dialect": "openai",
+      "base_url": "${env: INTERNAL_PROXY_ENDPOINT}/deepseek-v3-1-terminus/v1",
+      "model": "deepseek-latest",
+      "headers": {
+        "Authorization": "OAuth ${env: INTERNAL_PROXY_TOKEN}",
+        "Need-Raw-Answer": "true"
+      }
+    },
+    "deepseek-v4-flash": {
+      "dialect": "openai",
+      "base_url": "${env: INTERNAL_PROXY_ENDPOINT}/deepseek-v4-flash/v1",
+      "model": "deepseek-v4-flash",
+      "headers": {
+        "Authorization": "OAuth ${env: INTERNAL_PROXY_TOKEN}",
+        "Need-Raw-Answer": "true"
+      }
+    },
+    "claude": {
+      "dialect": "anthropic",
+      "base_url": "${env: INTERNAL_PROXY_ENDPOINT}/anthropic/v1",
+      "model": "claude-opus-4-7",
+      "headers": {
+        "Authorization": "OAuth ${env: INTERNAL_PROXY_TOKEN}",
+        "Need-Raw-Answer": "true"
+      },
+      "extra": {
+        "anthropic_version": "2023-06-01",
+        "max_tokens": 2048
+      }
+    },
+    "gemini": {
+      "dialect": "gemini",
+      "base_url": "${env: INTERNAL_PROXY_ENDPOINT}/google/v1beta",
+      "model": "gemini-3.1-pro-preview",
+      "headers": {
+        "Authorization": "OAuth ${env: INTERNAL_PROXY_TOKEN}",
+        "Need-Raw-Answer": "true"
+      }
+    },
+    "gpt": {
+      "dialect": "openai",
+      "base_url": "${env: INTERNAL_PROXY_ENDPOINT}/openai/v1",
+      "model": "gpt-5.5",
+      "headers": {
+        "Authorization": "OAuth ${env: INTERNAL_PROXY_TOKEN}",
+        "Need-Raw-Answer": "true"
+      }
+    }
+  },
+  "mcp_servers": {
+    "calendar": {
+      "args": [
+        "--mode",
+        "stdio"
+      ],
+      "command": "${env: HOME}/<your_mcp_server>.py"
+    }
+  }
+}
