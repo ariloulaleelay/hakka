@@ -247,7 +247,7 @@ If the model requests tools mid-stream, the gateway transparently falls back to 
    │  Gemini          │   │  SQLite      │   │  edit_file           │
    └──────────────────┘   └──────────────┘   │  list_dir            │
                                              │  shell               │
-                                             │  http_get            │
+                                             │  http_get            │  (HTML→Markdown)                       │
                                              │  search (ripgrep)    │
                                              │  vim_run_command     │
                                              └──────────────────────┘

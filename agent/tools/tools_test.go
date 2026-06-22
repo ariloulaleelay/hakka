@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -230,12 +231,12 @@ func TestHTTPGet(t *testing.T) {
 		_, _ = w.Write([]byte("pong"))
 	}))
 	defer srv.Close()
-	out := run(t, HTTPGet().Handler, map[string]any{"url": srv.URL})
-	if int(out["status"].(float64)) != 200 {
-		t.Fatalf("expected HTTP status 200, got: %+v", out)
+	res := runPlain(t, HTTPGet().Handler, map[string]any{"url": srv.URL})
+	if !strings.Contains(res, "Status: 200") {
+		t.Fatalf("expected Status: 200 in output, got: %q", res)
 	}
-	if out["body"] != "pong" {
-		t.Fatalf("expected HTTP body %q, got: %+v", "pong", out)
+	if !strings.Contains(res, "pong") {
+		t.Fatalf("expected body %q in output, got: %q", "pong", res)
 	}
 }
 
@@ -371,6 +372,46 @@ func TestSearchExecSnippet_TruncatesLongPattern(t *testing.T) {
 	}
 }
 
+func TestRandomTool(t *testing.T) {
+	// Test with positive range
+	res := runPlain(t, Random().Handler, map[string]any{"min_value": 10, "max_value": 20})
+	var val int
+	if _, err := fmt.Sscanf(res, "%d", &val); err != nil {
+		t.Fatalf("expected integer result, got: %q", res)
+	}
+	if val < 10 || val > 20 {
+		t.Fatalf("expected value between 10 and 20, got: %d", val)
+	}
+
+	// Test with negative range
+	res2 := runPlain(t, Random().Handler, map[string]any{"min_value": -5, "max_value": 5})
+	if _, err := fmt.Sscanf(res2, "%d", &val); err != nil {
+		t.Fatalf("expected integer result, got: %q", res2)
+	}
+	if val < -5 || val > 5 {
+		t.Fatalf("expected value between -5 and 5, got: %d", val)
+	}
+
+	// Test with single value
+	res3 := runPlain(t, Random().Handler, map[string]any{"min_value": 42, "max_value": 42})
+	if res3 != "42" {
+		t.Fatalf("expected 42 for range [42,42], got: %q", res3)
+	}
+
+	// Test error: min > max
+	errMsg := runErr(t, Random().Handler, map[string]any{"min_value": 10, "max_value": 5})
+	if !strings.Contains(errMsg, "min_value must be <= max_value") {
+		t.Fatalf("expected error about invalid range, got: %q", errMsg)
+	}
+}
+
+func TestRandomToolExecSnippet(t *testing.T) {
+	s := snippetFor(t, Random(), map[string]any{"min_value": 1, "max_value": 100})
+	if !strings.Contains(s, "1") || !strings.Contains(s, "100") {
+		t.Fatalf("expected snippet to contain range values, got: %q", s)
+	}
+}
+
 func TestHTTPGetExecSnippet(t *testing.T) {
 	s := snippetFor(t, HTTPGet(), map[string]any{"url": "https://example.com"})
 	if !strings.Contains(s, `url="https://example.com"`) {
@@ -382,6 +423,61 @@ func TestHTTPGetExecSnippet_Empty(t *testing.T) {
 	s := snippetFor(t, HTTPGet(), map[string]any{})
 	if s != "" {
 		t.Fatalf("expected empty snippet for empty args, got %q", s)
+	}
+}
+
+func TestHTTPGetConvertHTMLToMarkdown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<h1>Hello</h1><p>World</p>"))
+	}))
+	defer srv.Close()
+	res := runPlain(t, HTTPGet().Handler, map[string]any{"url": srv.URL})
+	if !strings.Contains(res, "Status: 200") {
+		t.Fatalf("expected Status: 200 in output, got: %q", res)
+	}
+	// The HTML should be converted to markdown: <h1> → #, <p> → plain text
+	if !strings.Contains(res, "Hello") {
+		t.Fatalf("expected markdown-converted body containing 'Hello', got: %q", res)
+	}
+	if !strings.Contains(res, "World") {
+		t.Fatalf("expected markdown-converted body containing 'World', got: %q", res)
+	}
+	// Should NOT contain raw HTML tags
+	if strings.Contains(res, "<h1>") || strings.Contains(res, "<p>") {
+		t.Fatalf("body should not contain raw HTML tags, got: %q", res)
+	}
+}
+
+func TestHTTPGetNonHTMLNotConverted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"msg": "hello"}`))
+	}))
+	defer srv.Close()
+	res := runPlain(t, HTTPGet().Handler, map[string]any{"url": srv.URL})
+	if !strings.Contains(res, "Status: 200") {
+		t.Fatalf("expected Status: 200 in output, got: %q", res)
+	}
+	// Non-HTML content should pass through unchanged
+	if !strings.Contains(res, `{"msg": "hello"}`) {
+		t.Fatalf("expected unchanged JSON body, got: %q", res)
+	}
+}
+
+func TestHTTPGetNoContentTypeStillProcessed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// No Content-Type header — should still detect HTML from content
+		_, _ = w.Write([]byte("<h1>Title</h1>"))
+	}))
+	defer srv.Close()
+	res := runPlain(t, HTTPGet().Handler, map[string]any{"url": srv.URL})
+	if !strings.Contains(res, "Status: 200") {
+		t.Fatalf("expected Status: 200 in output, got: %q", res)
+	}
+	// Body should be markdown-converted (no raw <h1>)
+	if strings.Contains(res, "<h1>") {
+		t.Fatalf("expected markdown body when no Content-Type set, got: %q", res)
 	}
 }
 

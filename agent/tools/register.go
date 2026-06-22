@@ -11,6 +11,7 @@ func RegisterAll(r *agent.ToolRegistry) {
 	r.Register(Search())
 	r.Register(Shell())
 	r.Register(HTTPGet())
+	r.Register(Random())
 	r.Register(VimListBuffers())
 	r.Register(VimReadBuffer())
 }

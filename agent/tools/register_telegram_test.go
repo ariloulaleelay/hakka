@@ -37,29 +37,40 @@ func TestRegisterTelegramTools_OnlySafeTools(t *testing.T) {
 		}
 	}
 
-	// Safe tool that SHOULD be available
+	// Safe tools that SHOULD be available
 	if !names["http_get"] {
 		t.Error("safe tool http_get should be registered by RegisterTelegramTools")
+	}
+	if !names["random"] {
+		t.Error("safe tool random should be registered by RegisterTelegramTools")
 	}
 
 	t.Logf("Telegram tools registered: %v", names)
 }
 
-// TestRegisterTelegramTools_DoesNotAffectFullRegistry verifies that
-// RegisterTelegramTools creates a separate toolset and does not leak
-// dangerous tools into it.
-func TestRegisterTelegramTools_OnlyHTTPGet(t *testing.T) {
+// TestRegisterTelegramTools_OnlySafeTools verifies that
+// RegisterTelegramTools only registers safe tools (http_get, random)
+// and none of the dangerous ones.
+func TestRegisterTelegramTools_SafeToolList(t *testing.T) {
 	reg := agent.NewToolRegistry()
 	RegisterTelegramTools(reg)
 
 	schemas := reg.Schemas()
 
-	// Should have exactly 1 tool: http_get
-	if len(schemas) != 1 {
-		t.Fatalf("expected exactly 1 tool (http_get), got %d: %+v", len(schemas), schemas)
+	// Should have exactly 2 tools: http_get, random
+	if len(schemas) != 2 {
+		t.Fatalf("expected exactly 2 tools (http_get, random), got %d: %+v", len(schemas), schemas)
 	}
 
-	if schemas[0].Name != "http_get" {
-		t.Fatalf("expected the only tool to be http_get, got %q", schemas[0].Name)
+	names := make(map[string]bool, len(schemas))
+	for _, s := range schemas {
+		names[s.Name] = true
+	}
+
+	if !names["http_get"] {
+		t.Fatalf("expected http_get to be registered, got: %+v", names)
+	}
+	if !names["random"] {
+		t.Fatalf("expected random to be registered, got: %+v", names)
 	}
 }

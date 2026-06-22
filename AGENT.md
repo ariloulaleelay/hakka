@@ -37,7 +37,7 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
    │  Gemini          │   │  SQLite      │   │  edit_file           │
    └──────────────────┘   └──────────────┘   │  list_dir            │
                                              │  shell               │
-                                             │  http_get            │
+                                             │  http_get            │  (HTML→Markdown)                       │
                                              │  search (ripgrep)    │
                                              │  vim_run_command     │
                                              └──────────────────────┘
@@ -69,7 +69,8 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | `edit_file` | Literal string search-and-replace (first or all occurrences) |
 | `list_dir` | List directory entries (dirs as `name/`, files as `name\t<size>`) |
 | `shell` | Execute `sh -c` commands; short output inlined, large output saved to tempfiles |
-| `http_get` | HTTP GET with headers, returns status/headers/body |
+| `http_get` | HTTP GET with headers, returns status, headers, and body. HTML content is automatically converted to Markdown for easier LLM reading. |
+| `random` | Generate a random integer between min_value and max_value (inclusive). |
 | `search` | ripgrep recursive search with file:line:col output |
 | `vim_run_command` | Execute Lua in the user's Neovim instance (requires Neovim client) |
 | `session_list` | List all sessions with metadata (name, messages, model, created) |

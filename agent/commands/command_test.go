@@ -86,6 +86,48 @@ func TestHandleCommandJustSlash(t *testing.T) {
 	}
 }
 
+func TestHandleCommandWithBotUsernameSuffix(t *testing.T) {
+	_, cmd, _ := newCommandComponents(t)
+	// Commands with @bot_username suffix should be handled like their bare equivalents.
+	res := cmd.Execute(context.Background(), "sid", "/help@my_bot")
+	if !res.Handled {
+		t.Fatal("expected /help@my_bot to be handled as /help")
+	}
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+	if !strings.Contains(res.Reply, "available commands:") {
+		t.Fatalf("expected help menu for /help@my_bot, got: %q", res.Reply)
+	}
+}
+
+func TestHandleCommandModelWithBotUsernameSuffix(t *testing.T) {
+	conv, cmd, _ := newCommandComponents(t)
+	// /model@bot_username beta should work like /model beta
+	res := cmd.Execute(context.Background(), "sid", "/model@some_bot beta")
+	if !res.Handled || res.Error != nil {
+		t.Fatalf("handle: %v %v", res.Handled, res.Error)
+	}
+	if !strings.Contains(res.Reply, "beta") {
+		t.Fatalf("reply: %q", res.Reply)
+	}
+	if conv.SessionModel(res.Session) != "beta" {
+		t.Fatalf("session model not set: %q", conv.SessionModel(res.Session))
+	}
+}
+
+func TestHandleCommandUnknownWithBotUsernameSuffix(t *testing.T) {
+	_, cmd, _ := newCommandComponents(t)
+	// Unknown command with @bot_username should still be handled (not passed to LLM)
+	res := cmd.Execute(context.Background(), "sid", "/typo@my_bot")
+	if !res.Handled {
+		t.Fatal("expected unknown command with @suffix to be handled (not passed to LLM)")
+	}
+	if !strings.Contains(res.Reply, "unknown command") {
+		t.Fatalf("expected error about unknown command, got: %q", res.Reply)
+	}
+}
+
 func TestHandleCommandModelSet(t *testing.T) {
 	conv, cmd, _ := newCommandComponents(t)
 	res := cmd.Execute(context.Background(), "sid", "/model beta")

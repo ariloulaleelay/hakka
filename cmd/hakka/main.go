@@ -31,6 +31,7 @@ type appConfig struct {
 	llmDebug          string // directory for LLM request/response debug logs; empty = disabled
 	telegramToken     string // Telegram bot token; falls back to TELEGRAM_BOT_TOKEN env var
 	telegramWhitelist string // comma-separated list of allowed chat IDs
+	telegramSOCKS5    string // SOCKS5 proxy address; falls back to TELEGRAM_SOCKS5 env var
 }
 
 func main() {
@@ -43,6 +44,7 @@ func main() {
 	flag.StringVar(&cfg.llmDebug, "llm-debug", "", "Directory for LLM request/response debug logs (empty = disabled)")
 	flag.StringVar(&cfg.telegramToken, "telegram-token", "", "Telegram bot token (env: TELEGRAM_BOT_TOKEN)")
 	flag.StringVar(&cfg.telegramWhitelist, "telegram-whitelist", "", "Comma-separated list of allowed Telegram chat IDs (env: TELEGRAM_WHITELIST)")
+	flag.StringVar(&cfg.telegramSOCKS5, "telegram-socks5", "", "SOCKS5 proxy for Telegram (e.g. 127.0.0.1:1080) (env: TELEGRAM_SOCKS5)")
 	flag.Parse()
 
 	logger := newLogger(cfg.logLevel)
@@ -100,7 +102,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	gws, err := buildGateways(sessions, router, tools, systemPrompt, engineCfg, cfg.tcpAddr, cfg.wsAddr, cfg.telegramToken, cfg.telegramWhitelist)
+	gws, err := buildGateways(sessions, router, tools, systemPrompt, engineCfg, cfg.tcpAddr, cfg.wsAddr, cfg.telegramToken, cfg.telegramWhitelist, cfg.telegramSOCKS5)
 	if err != nil {
 		return fmt.Errorf("build gateways: %w", err)
 	}
@@ -147,7 +149,7 @@ func setupComponents(store agent.SessionStore, registry *agent.Registry, logger 
 	return sessions, router, tools, systemPrompt, cfg
 }
 
-func buildGateways(sessions *agent.SessionManager, router *agent.Router, tools *agent.ToolRegistry, systemPrompt string, cfg agent.EngineConfig, tcpAddr, wsAddr, telegramToken, telegramWhitelist string) ([]gateways.Gateway, error) {
+func buildGateways(sessions *agent.SessionManager, router *agent.Router, tools *agent.ToolRegistry, systemPrompt string, cfg agent.EngineConfig, tcpAddr, wsAddr, telegramToken, telegramWhitelist, telegramSOCKS5 string) ([]gateways.Gateway, error) {
 	if tools == nil {
 		tools = agent.NewToolRegistry()
 		hakkatools.RegisterAll(tools)
@@ -187,8 +189,12 @@ func buildGateways(sessions *agent.SessionManager, router *agent.Router, tools *
 	if telegramWhitelist == "" {
 		telegramWhitelist = os.Getenv("TELEGRAM_WHITELIST")
 	}
+	if telegramSOCKS5 == "" {
+		telegramSOCKS5 = os.Getenv("TELEGRAM_SOCKS5")
+	}
 	if telegramToken != "" {
 		tgGw := gateways.NewTelegramGateway(tgConv, tgCmd, telegramToken)
+		tgGw.SOCKS5 = telegramSOCKS5
 		whitelist, err := parseWhitelist(telegramWhitelist)
 		if err != nil {
 			return nil, fmt.Errorf("telegram whitelist: %w", err)

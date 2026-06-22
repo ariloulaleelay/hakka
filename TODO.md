@@ -17,7 +17,7 @@ This file is for humans only, agent should not modify it!
   - [ ] Chat with multiple users, how to show it properly
   - [ ] Change system prompt for telegram (no cwd info)
   - [ ] Make http_get safer
-  - [ ] Better display on client (session info, tokens count, markdown)
+  - [x] Better display on client (session info, tokens count, markdown)
   - [ ] Response in group chats
     - [x] In a group chat form message with author info in heading (@login + Name)
     - [x] Silently listen group chat (respond only on mentions)

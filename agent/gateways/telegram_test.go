@@ -77,6 +77,11 @@ func newTelegramTestHelper(t *testing.T) *telegramTestHelper {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"ok": true, "result": []}`))
 
+		case strings.HasSuffix(path, "/sendChatAction"):
+			// sendChatAction returns a boolean result
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok": true, "result": true}`))
+
 		default:
 			t.Logf("unexpected API call: %s", path)
 			w.WriteHeader(http.StatusNotFound)
@@ -194,6 +199,41 @@ func (th *telegramTestHelper) dispatchGroup(chatID int64, senderUsername, sender
 			From:      user,
 			Chat:      &tgbotapi.Chat{ID: chatID, Type: "group"},
 			Text:      msgText,
+			Entities:  entities,
+		},
+	}
+	th.gateway.dispatch(context.Background(), update)
+}
+
+// dispatchGroupCommand sends a Telegram command (e.g. /session) in a group chat
+// with a @bot_username suffix (e.g. /session@test_bot list). The bot_command
+// entity ensures the message is recognized as a command by the Telegram library.
+func (th *telegramTestHelper) dispatchGroupCommand(chatID int64, senderUsername, senderFirstName, senderLastName, command, args string) {
+	text := "/" + command + "@test_bot"
+	if args != "" {
+		text += " " + args
+	}
+	entities := []tgbotapi.MessageEntity{
+		{
+			Type:   "bot_command",
+			Offset: 0,
+			Length: len("/" + command + "@test_bot"),
+		},
+	}
+	user := &tgbotapi.User{
+		ID:        1,
+		IsBot:     false,
+		FirstName: senderFirstName,
+		LastName:  senderLastName,
+		UserName:  senderUsername,
+	}
+	update := tgbotapi.Update{
+		UpdateID: 1,
+		Message: &tgbotapi.Message{
+			MessageID: 1,
+			From:      user,
+			Chat:      &tgbotapi.Chat{ID: chatID, Type: "group"},
+			Text:      text,
 			Entities:  entities,
 		},
 	}
@@ -547,6 +587,44 @@ func TestTelegramGateway_StartFailsOnInvalidToken(t *testing.T) {
 // Group chat tests
 // ---------------------------------------------------------------------------
 
+// TestTelegramGateway_LongReplySplitsIntoMultipleMessages verifies that
+// when the LLM returns a long reply (>4000 chars), the gateway splits it
+// into multiple messages instead of sending it as a document.
+func TestTelegramGateway_LongReplySplitsIntoMultipleMessages(t *testing.T) {
+	longReply := strings.Repeat("Line of text. ", 300) // ~4200+ chars
+	th := newTelegramTestHelper(t)
+	defer th.close()
+
+	// Override with a long-reply adapter
+	longAdapter := &fakeAdapter{reply: longReply}
+	sm := agent.NewSessionManager(nil, "")
+	reg := agent.NewRegistry()
+	reg.Register("default", longAdapter)
+	router := agent.NewRouter(reg)
+	tools := agent.NewToolRegistry()
+	cfg := agent.EngineConfig{MaxToolIterations: 2}
+	conv := agent.NewConversation(sm, router, tools, "tg", cfg)
+	cmd := commands.New(sm, conv, "", "tg")
+
+	th.gateway.Conv = conv
+	th.gateway.Cmd = cmd
+
+	th.dispatch(12345, "tell me something long")
+
+	// Should have sent at least 2 messages (since reply > 4000)
+	count := th.sentMessagesCount()
+	if count < 2 {
+		t.Fatalf("expected at least 2 sent messages for a long reply (>4000 chars), got %d", count)
+	}
+
+	// Each message should be within Telegram's limit
+	for i, msg := range th.sentMessages {
+		if len(msg.Text) > 4000 {
+			t.Fatalf("message %d exceeds 4000 chars (len=%d)", i, len(msg.Text))
+		}
+	}
+}
+
 // TestTelegramGateway_PrivateChatUnchanged verifies that private chat
 // messages work as before (no author heading added).
 func TestTelegramGateway_PrivateChatUnchanged(t *testing.T) {
@@ -697,6 +775,51 @@ func TestTelegramGateway_GroupChatMentionsWithDifferentAuthorFields(t *testing.T
 	}
 }
 
+// TestTelegramGateway_GroupChatCommandWithBotUsername verifies that
+// a command like /session@test_bot list in a group chat is handled
+// as a command (not passed to the LLM). The @bot_username suffix in
+// the command must be stripped by the command processor.
+func TestTelegramGateway_GroupChatCommandWithBotUsername(t *testing.T) {
+	th := newTelegramTestHelper(t)
+	defer th.close()
+
+	// Send /help@test_bot in a group chat — should be handled as /help
+	th.dispatchGroupCommand(1001, "johndoe", "John", "Doe", "help", "")
+
+	msg, ok := th.lastSentMessage()
+	if !ok {
+		t.Fatal("expected a sent message (command reply)")
+	}
+	if msg.ChatID != 1001 {
+		t.Fatalf("expected chat_id 1001, got %d", msg.ChatID)
+	}
+	if !strings.Contains(msg.Text, "available commands:") {
+		t.Fatalf("expected help menu in reply to /help@test_bot, got: %q", msg.Text)
+	}
+}
+
+// TestTelegramGateway_PrivateChatCommandWithBotUsername verifies that
+// a command like /session@test_bot list in a private chat is handled
+// as a command, not passed to the LLM.
+func TestTelegramGateway_PrivateChatCommandWithBotUsername(t *testing.T) {
+	th := newTelegramTestHelper(t)
+	defer th.close()
+
+	// Send /help@test_bot in a private chat — should be handled as /help
+	th.dispatchCommand(1001, "help@test_bot", "")
+
+	msg, ok := th.lastSentMessage()
+	if !ok {
+		t.Fatal("expected a sent message (command reply)")
+	}
+	if msg.ChatID != 1001 {
+		t.Fatalf("expected chat_id 1001, got %d", msg.ChatID)
+	}
+	if !strings.Contains(msg.Text, "available commands:") {
+		t.Fatalf("expected help menu in reply to /help@test_bot, got: %q", msg.Text)
+	}
+}
+
 // TestTelegramGateway_GroupChatAccumulatesHistory verifies that
 // unmentioned messages accumulate in the session history across
 // multiple dispatches.
@@ -744,6 +867,146 @@ func TestTelegramGateway_GroupChatAccumulatesHistory(t *testing.T) {
 	}
 	if !strings.Contains(captureAdapter.fullContext, "@bob (Bob):\nhow are you?") {
 		t.Fatalf("expected bob's message in LLM context, got: %q", captureAdapter.fullContext)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Session persistence across restart tests
+// ---------------------------------------------------------------------------
+
+// TestTelegramGateway_SessionSurvivesRestart verifies that when the server
+// restarts (simulated by creating a new gateway with the same store but
+// a fresh activeSessions map), the gateway reuses the existing session
+// from the store instead of creating a brand new one.
+func TestTelegramGateway_SessionSurvivesRestart(t *testing.T) {
+	// Build shared components that would survive a restart: the store
+	// (persistence layer) and the fake API server.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		_ = r.ParseForm()
+		switch {
+		case strings.HasSuffix(path, "/getMe"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"ok": true,
+				"result": {"id": 12345, "is_bot": true, "first_name": "TestBot", "username": "test_bot"}
+			}`))
+		case strings.HasSuffix(path, "/sendMessage"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok": true, "result": {"message_id": 1, "chat": {"id": 1}, "text": ""}}`))
+		case strings.HasSuffix(path, "/getUpdates"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok": true, "result": []}`))
+		case strings.HasSuffix(path, "/sendChatAction"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok": true, "result": true}`))
+		default:
+			t.Logf("unexpected API call: %s", path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	apiEndpoint := fmt.Sprintf("%s/bot%%s/%%s", server.URL)
+	bot, err := tgbotapi.NewBotAPIWithClient("test:token", apiEndpoint, server.Client())
+	if err != nil {
+		t.Fatalf("NewBotAPIWithClient: %v", err)
+	}
+
+	// Shared store that persists across "restarts".
+	sm := agent.NewSessionManager(nil, "")
+	reg := agent.NewRegistry()
+	reg.Register("default", &fakeAdapter{reply: "hello from telegram"})
+	router := agent.NewRouter(reg)
+	tools := agent.NewToolRegistry()
+	cfg := agent.EngineConfig{MaxToolIterations: 2}
+	conv := agent.NewConversation(sm, router, tools, "tg", cfg)
+	cmd := commands.New(sm, conv, "", "tg")
+
+	// --- "First boot": create gateway and send a message ---
+	gw1 := &TelegramGateway{
+		Conv:  conv,
+		Cmd:   cmd,
+		Token: "test:token",
+		bot:   bot,
+	}
+
+	chatID := int64(4242)
+	update1 := tgbotapi.Update{
+		UpdateID: 1,
+		Message: &tgbotapi.Message{
+			MessageID: 1,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			Text:      "hello",
+		},
+	}
+	gw1.dispatch(context.Background(), update1)
+
+	// Record the session ID from the first gateway.
+	firstSessionID := func() string {
+		gw1.mu.Lock()
+		defer gw1.mu.Unlock()
+		return gw1.activeSessions[chatID]
+	}()
+	if firstSessionID == "" {
+		t.Fatal("expected a session ID after first dispatch")
+	}
+
+	// --- "Restart": create a new gateway with the same store but a
+	// fresh activeSessions map (as would happen on server restart). ---
+	gw2 := &TelegramGateway{
+		Conv:  conv, // same conversation (same store)
+		Cmd:   cmd,  // same command processor
+		Token: "test:token",
+		bot:   bot,
+		// activeSessions is nil — simulating restart
+	}
+
+	update2 := tgbotapi.Update{
+		UpdateID: 2,
+		Message: &tgbotapi.Message{
+			MessageID: 2,
+			Chat:      &tgbotapi.Chat{ID: chatID},
+			Text:      "hello again",
+		},
+	}
+	gw2.dispatch(context.Background(), update2)
+
+	// The second gateway should have found the existing session in the
+	// store and reused it, rather than creating a new one.
+	secondSessionID := func() string {
+		gw2.mu.Lock()
+		defer gw2.mu.Unlock()
+		return gw2.activeSessions[chatID]
+	}()
+	if secondSessionID == "" {
+		t.Fatal("expected a session ID after restart dispatch")
+	}
+	if secondSessionID != firstSessionID {
+		t.Fatalf("expected same session ID after restart, got %q (was %q). "+
+			"Session ID changed — the gateway created a new session instead of "+
+			"reusing the existing one from the store.",
+			secondSessionID, firstSessionID)
+	}
+
+	// Also verify that the session has accumulated history from both messages.
+	sessions, err := sm.List(context.Background(), "tg:4242")
+	if err != nil {
+		t.Fatalf("failed to list sessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected exactly 1 session for chat 4242, got %d", len(sessions))
+	}
+	history := sessions[0].History()
+	userMsgCount := 0
+	for _, m := range history {
+		if m.Role == agent.RoleUser {
+			userMsgCount++
+		}
+	}
+	// Should contain both "hello" and "hello again"
+	if userMsgCount < 2 {
+		t.Fatalf("expected at least 2 user messages in history (accumulated across restart), got %d", userMsgCount)
 	}
 }
 

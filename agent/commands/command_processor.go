@@ -103,6 +103,10 @@ func (cp *CommandProcessor) Execute(ctx context.Context, sessionID, input string
 	}
 	parts := strings.Fields(trimmed)
 	cmd := parts[0]
+	// Strip @bot_username suffix so /help@my_bot is treated as /help.
+	if idx := strings.Index(cmd, "@"); idx >= 0 {
+		cmd = cmd[:idx]
+	}
 
 	// Try sub-handlers first
 	if res := cp.trySubHandlers(ctx, sessionID, parts, cmd); res.Handled {

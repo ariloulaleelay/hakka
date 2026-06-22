@@ -14,7 +14,7 @@ import (
 )
 
 // runWithCWD invokes a tool handler with a context that has a CWD set.
-// Expects JSON result (used by shell, search, http_get).
+// Expects JSON result (used by shell, search).
 func runWithCWD(t *testing.T, h func(context.Context, json.RawMessage) (string, error), args any, cwd string) map[string]any {
 	t.Helper()
 	raw, _ := json.Marshal(args)

@@ -4,15 +4,19 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"golang.org/x/net/proxy"
 
 	"github.com/ariloulaleelay/hakka/agent"
 	"github.com/ariloulaleelay/hakka/agent/commands"
 	"github.com/ariloulaleelay/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent/format"
 )
 
 // TelegramGateway maps a Telegram chat to one or more Hakka sessions
@@ -34,13 +38,18 @@ type TelegramGateway struct {
 	// chats with an entry in this map may send messages.
 	Whitelist map[int64]struct{}
 
+	// SOCKS5 optionally specifies a SOCKS5 proxy address (e.g. "127.0.0.1:1080")
+	// to connect through when reaching the Telegram Bot API. When non-empty,
+	// the gateway creates an HTTP client tunnelled through the proxy.
+	SOCKS5 string
+
 	bot    *tgbotapi.BotAPI
 	cancel context.CancelFunc
 	done   chan struct{}
 
 	// activeSessions maps chatID → active session ID within the chat's
-	// namespace. Persisted only in memory; on server restart the first
-	// message from each chat creates a fresh session.
+	// namespace. On cache miss (e.g. after restart), the store is queried
+	// for existing sessions — see getOrCreateSession.
 	mu              sync.Mutex
 	activeSessions  map[int64]string
 }
@@ -56,7 +65,27 @@ func NewTelegramGateway(conv *agent.Conversation, cmd *commands.CommandProcessor
 }
 
 func (gw *TelegramGateway) Start(ctx context.Context) error {
-	bot, err := tgbotapi.NewBotAPI(gw.Token)
+	var bot *tgbotapi.BotAPI
+	var err error
+
+	if gw.SOCKS5 != "" {
+		slog.Info("telegram: using SOCKS5 proxy",
+			"socks5_addr", gw.SOCKS5,
+		)
+		dialer, err := proxy.SOCKS5("tcp", gw.SOCKS5, nil, proxy.Direct)
+		if err != nil {
+			return fmt.Errorf("telegram: SOCKS5 dialer: %w", err)
+		}
+		httpClient := &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				Dial: dialer.Dial,
+			},
+		}
+		bot, err = tgbotapi.NewBotAPIWithClient(gw.Token, tgbotapi.APIEndpoint, httpClient)
+	} else {
+		bot, err = tgbotapi.NewBotAPI(gw.Token)
+	}
 	if err != nil {
 		return err
 	}
@@ -149,6 +178,21 @@ func (gw *TelegramGateway) isBotMentioned(msg *tgbotapi.Message) bool {
 				"expected", "@"+username,
 			)
 			if strings.EqualFold(mention, "@"+username) {
+				return true
+			}
+		}
+	}
+
+	// Check message entities for "bot_command" type — Telegram group
+	// commands like /session@bot_username use bot_command entities.
+	for _, ent := range msg.Entities {
+		if ent.Type == "bot_command" && ent.Offset+ent.Length <= len(msg.Text) {
+			cmdText := msg.Text[ent.Offset : ent.Offset+ent.Length]
+			slog.Debug("telegram: checking bot_command entity",
+				"cmd_text", cmdText,
+				"expected_suffix", "@"+username,
+			)
+			if strings.HasSuffix(cmdText, "@"+username) {
 				return true
 			}
 		}
@@ -266,8 +310,11 @@ func (gw *TelegramGateway) dispatch(ctx context.Context, upd tgbotapi.Update) {
 	isGroup := chatType == "group" || chatType == "supergroup"
 
 	// Build the input text with author info for group chats.
+	// Don't prepend author heading to bot commands — they are handled
+	// by the command processor which expects the raw command text
+	// (e.g. "/session@bot_username list" must not become "@user:\n/...").
 	inputText := upd.Message.Text
-	if isGroup && from != nil {
+	if isGroup && from != nil && !upd.Message.IsCommand() {
 		heading := gw.formatAuthorInfo(from)
 		inputText = heading + inputText
 		slog.Debug("telegram: prepended author heading",
@@ -280,6 +327,7 @@ func (gw *TelegramGateway) dispatch(ctx context.Context, upd tgbotapi.Update) {
 			"chat_id", chatID,
 			"isGroup", isGroup,
 			"has_from", from != nil,
+			"isCommand", upd.Message.IsCommand(),
 			"input_text", inputText,
 		)
 	}
@@ -303,6 +351,10 @@ func (gw *TelegramGateway) dispatch(ctx context.Context, upd tgbotapi.Update) {
 		if gw.bot != nil {
 			botUsername = gw.bot.Self.UserName
 		}
+		// A message is considered "mentioned" if it has a mention entity
+		// (@bot_username) OR a bot_command entity (/command@bot_username).
+		// Telegram uses bot_command entities for slash commands directed at
+		// the bot in group chats — the mention entity may not be present.
 		mentioned := gw.isBotMentioned(upd.Message)
 		slog.Debug("telegram: group chat mention check",
 			"chat_id", chatID,
@@ -343,6 +395,7 @@ func (gw *TelegramGateway) dispatch(ctx context.Context, upd tgbotapi.Update) {
 	if cmdRes.Handled {
 		slog.Debug("telegram: command handled",
 			"chat_id", chatID,
+			"session_id", sessionID,
 			"input_text", inputText,
 			"reply_len", len(cmdRes.Reply),
 		)
@@ -365,10 +418,17 @@ func (gw *TelegramGateway) dispatch(ctx context.Context, upd tgbotapi.Update) {
 		"input_len", len(inputText),
 	)
 
+	// Start typing indicator while processing the conversation.
+	// This signals to the user that the bot is working.
+	typingDone := make(chan struct{})
+	go gw.keepTyping(ctx, chatID, typingDone)
+
 	// Conversation.Execute reads namespace from context via
 	// resolveNamespace(ctx), so the per-chat namespace set above is
 	// picked up automatically — no field mutation needed.
 	reply, err := gw.convExecute(ctx, namespace, sessionID, inputText)
+	close(typingDone) // stop the typing indicator
+
 	if err != nil {
 		slog.Warn("telegram: conversation error",
 			"chat_id", chatID,
@@ -388,7 +448,10 @@ func (gw *TelegramGateway) dispatch(ctx context.Context, upd tgbotapi.Update) {
 }
 
 // getOrCreateSession returns the active session ID for the given chat.
-// On first call, it creates a new session and records it as active.
+// On first call (or after a restart), it looks up existing sessions in
+// the store for this namespace. If one is found, the most recent session
+// is reused — this preserves conversation history across server restarts.
+// Only when no sessions exist at all does it create a brand new one.
 func (gw *TelegramGateway) getOrCreateSession(ctx context.Context, namespace string, chatID int64) string {
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
@@ -401,7 +464,27 @@ func (gw *TelegramGateway) getOrCreateSession(ctx context.Context, namespace str
 		return sid
 	}
 
-	// Create a new session in the chat's namespace.
+	// Cache miss: look up existing sessions in the store before creating
+	// a new one. This preserves session continuity across server restarts.
+	sessions, err := gw.Conv.Sessions.List(ctx, namespace)
+	if err != nil {
+		slog.Warn("telegram: failed to list sessions for namespace, creating new",
+			"namespace", namespace,
+			"error", err,
+		)
+	} else if len(sessions) > 0 {
+		// Reuse the most recent session (List returns oldest-first).
+		latest := sessions[len(sessions)-1]
+		slog.Debug("telegram: reusing existing session after restart",
+			"chat_id", chatID,
+			"session_id", latest.ID,
+			"sessions_found", len(sessions),
+		)
+		gw.activeSessions[chatID] = latest.ID
+		return latest.ID
+	}
+
+	// No existing sessions found — create a new one in the chat's namespace.
 	session, err := gw.Conv.Sessions.GetOrCreate(ctx, namespace, "")
 	if err != nil {
 		// Fallback: use chat ID as session ID
@@ -436,14 +519,91 @@ func (gw *TelegramGateway) convExecute(ctx context.Context, namespace, sessionID
 
 func (gw *TelegramGateway) reply(chatID int64, text string) {
 	const maxLen = 4000
-	for len(text) > 0 {
-		chunk := text
+	html := format.MarkdownToTelegramHTML(text)
+
+	if len(html) <= maxLen {
+		// Short enough — send as a single formatted message.
+		msg := tgbotapi.NewMessage(chatID, html)
+		msg.ParseMode = tgbotapi.ModeHTML
+		_, _ = gw.bot.Send(msg)
+		return
+	}
+
+	// Long response — split into multiple messages.
+	slog.Debug("telegram: response too long, splitting into multiple messages",
+		"chat_id", chatID,
+		"len", len(html),
+	)
+
+	for len(html) > 0 {
+		chunk := html
 		if len(chunk) > maxLen {
 			chunk = chunk[:maxLen]
+			// Try to break at the last newline within the chunk for cleaner splits.
+			if idx := strings.LastIndex(chunk, "\n"); idx > 0 {
+				chunk = chunk[:idx]
+			}
+			html = html[len(chunk):]
+		} else {
+			html = ""
 		}
-		text = text[len(chunk):]
 		msg := tgbotapi.NewMessage(chatID, chunk)
-		_, _ = gw.bot.Send(msg)
+		msg.ParseMode = tgbotapi.ModeHTML
+		if _, err := gw.bot.Send(msg); err != nil {
+			slog.Warn("telegram: failed to send chunk",
+				"chat_id", chatID,
+				"error", err,
+				"chunk_len", len(chunk),
+			)
+		}
+	}
+}
+
+// sendChatAction sends a chat action (e.g. "typing") to a specific chat.
+// The Telegram Bot API returns {"ok": true, "result": true} for this endpoint,
+// so we use MakeRequest directly instead of bot.Send (which expects a Message
+// struct). Errors are logged at debug level only — transient issues should
+// not interrupt the conversation flow.
+func (gw *TelegramGateway) sendChatAction(chatID int64, action string) {
+	params := tgbotapi.Params{
+		"chat_id": strconv.FormatInt(chatID, 10),
+		"action":  action,
+	}
+	resp, err := gw.bot.MakeRequest("sendChatAction", params)
+	if err != nil {
+		slog.Debug("telegram: sendChatAction failed",
+			"chat_id", chatID,
+			"action", action,
+			"error", err,
+		)
+		return
+	}
+	if !resp.Ok {
+		slog.Debug("telegram: sendChatAction not ok",
+			"chat_id", chatID,
+			"action", action,
+			"description", resp.Description,
+		)
+	}
+}
+
+// keepTyping periodically sends the "typing" chat action to the given chat
+// until done is closed or the context is cancelled. The first action is sent
+// immediately, then every 5 seconds as recommended by Telegram's Bot API docs.
+// This gives the user visual feedback that the bot is processing their request.
+func (gw *TelegramGateway) keepTyping(ctx context.Context, chatID int64, done <-chan struct{}) {
+	gw.sendChatAction(chatID, tgbotapi.ChatTyping)
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			gw.sendChatAction(chatID, tgbotapi.ChatTyping)
+		case <-done:
+			return
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 

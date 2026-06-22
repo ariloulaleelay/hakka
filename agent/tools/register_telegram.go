@@ -7,8 +7,9 @@ import "github.com/ariloulaleelay/hakka/agent"
 // are included. This prevents Telegram users from reading/writing files,
 // executing shell commands, or accessing the user's Neovim instance.
 func RegisterTelegramTools(r *agent.ToolRegistry) {
-	// Only http_get is considered safe for external users — it makes
-	// outbound HTTP requests but does not touch the local filesystem
-	// or execute arbitrary commands.
+	// http_get makes outbound HTTP requests but does not touch the local
+	// filesystem or execute arbitrary commands.
 	r.Register(HTTPGet())
+	// random is a pure computation tool with no side effects.
+	r.Register(Random())
 }

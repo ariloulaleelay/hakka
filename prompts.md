@@ -10,19 +10,17 @@ Do not implement them yet, just describe starting from most impactful.
 
 ## Make one feature
 
-**Today we will make some changes.**
-**To solve it make next steps:**
+Today we will make some changes.
+To accomplish this, follow these steps:
 
-1. discover project, especially AGENT.md (if it exists)
-2. write for me your intentions, if I ok with this step we will continue
-3. write test (it can fail at this point, showing that feature not implemented yet) except deletion of obsolete code
-4. implement feature
-5. check if any obsolete pieces left after modification (docs, makefiles, agent.md etc)
-6. check tests 
+1. Explore the project, especially AGENT.md (if it exists).
+2. Describe your intentions to me; if I'm OK with the plan, we will proceed.
+3. Write a test (it may fail at this point, showing that the feature is not yet implemented) — except when deleting obsolete code.
+4. Implement the feature.
+5. Check whether any obsolete artifacts remain after the changes (docs, Makefiles, AGENT.md, etc.).
+6. Run the tests.
 
-**I want next:**
-
-I want add stdin mode (same as network, but stdin stream)
+I want to:
 
 
 ## Testing
