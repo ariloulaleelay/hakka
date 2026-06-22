@@ -48,16 +48,12 @@ func (sm *SessionManager) GetOrCreate(ctx context.Context, namespace, id string)
 func (sm *SessionManager) Save(ctx context.Context, namespace string, session SessionView) error {
 	sess, ok := session.(*Session)
 	if !ok {
-		return &ErrBadSession{Msg: "Save: expected *Session"}
+		return fmt.Errorf("Save: expected *Session, got %T", session)
 	}
 	return sm.Store.Put(ctx, namespace, sess)
 }
 
-// ErrBadSession is returned when a SessionManager operation receives
-// a SessionView that is not backed by a *Session.
-type ErrBadSession struct{ Msg string }
 
-func (e *ErrBadSession) Error() string { return e.Msg }
 
 // Drop deletes a session by (namespace, id).
 func (sm *SessionManager) Drop(ctx context.Context, namespace, id string) error {

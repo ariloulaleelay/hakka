@@ -46,6 +46,12 @@ type SessionTokenTracking interface {
 	AddTokenUsage(tokens int)
 }
 
+// SessionCompactionConfig provides per-session compaction settings.
+type SessionCompactionConfig interface {
+	GetCompactChains() int
+	SetCompactChains(n int)
+}
+
 // SessionView is the full composite interface that the orchestration
 // layer (Conversation, StreamSession, SessionManager) depends on.
 //
@@ -57,4 +63,5 @@ type SessionView interface {
 	SessionToolAuth
 	SessionModelBinding
 	SessionTokenTracking
+	SessionCompactionConfig
 }

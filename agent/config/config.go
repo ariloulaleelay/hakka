@@ -68,111 +68,87 @@ func Load(path string) (*File, error) {
 
 	// Expand environment variables in all model configs
 	for name, modelCfg := range cfgFile.Models {
-		expanded, err := expandModelConfig(modelCfg)
-		if err != nil {
-			return nil, fmt.Errorf("config: model %q: %w", name, err)
+		var e envExpander
+		e.String(&modelCfg.BaseURL, "base_url")
+		e.String(&modelCfg.Model, "model")
+		e.Map(modelCfg.Headers, "header")
+		if e.err != nil {
+			return nil, fmt.Errorf("config: model %q: %w", name, e.err)
 		}
-		cfgFile.Models[name] = expanded
+		cfgFile.Models[name] = modelCfg
 	}
 
 	// Expand environment variables in all MCP server configs
 	for name, mcpCfg := range cfgFile.MCPServers {
-		expanded, err := expandMCPServerConfig(mcpCfg)
-		if err != nil {
-			return nil, fmt.Errorf("config: mcp_server %q: %w", name, err)
+		var e envExpander
+		e.String(&mcpCfg.Command, "command")
+		e.String(&mcpCfg.URL, "url")
+		e.Slice(mcpCfg.Args, "args")
+		e.Map(mcpCfg.Env, "env")
+		e.Map(mcpCfg.Headers, "header")
+		if e.err != nil {
+			return nil, fmt.Errorf("config: mcp_server %q: %w", name, e.err)
 		}
-		cfgFile.MCPServers[name] = expanded
+		cfgFile.MCPServers[name] = mcpCfg
 	}
 
 	return &cfgFile, nil
 }
 
-// expandModelConfig expands ${env: VAR_NAME} placeholders in all string fields
-// of a ModelConfig.
-func expandModelConfig(cfg ModelConfig) (ModelConfig, error) {
-	var err error
-
-	cfg.BaseURL, err = expandEnv(cfg.BaseURL)
-	if err != nil {
-		return cfg, fmt.Errorf("base_url: %w", err)
-	}
-
-	cfg.Model, err = expandEnv(cfg.Model)
-	if err != nil {
-		return cfg, fmt.Errorf("model: %w", err)
-	}
-
-	expandedHeaders := make(map[string]string, len(cfg.Headers))
-	for key, value := range cfg.Headers {
-		// Expand both key and value (allows dynamic header names if needed)
-		expKey, err := expandEnv(key)
-		if err != nil {
-			return cfg, fmt.Errorf("header key %q: %w", key, err)
-		}
-		expValue, err := expandEnv(value)
-		if err != nil {
-			return cfg, fmt.Errorf("header %q: %w", key, err)
-		}
-		expandedHeaders[expKey] = expValue
-	}
-	cfg.Headers = expandedHeaders
-
-	return cfg, nil
+// envExpander batches multiple environment-variable expansions so that the
+// first error stops all subsequent expansions. Callers check e.err once
+// after all expansions are queued.
+type envExpander struct {
+	err error
 }
 
-// expandMCPServerConfig expands ${env: VAR_NAME} placeholders in all string fields
-// of an MCPServerConfig.
-func expandMCPServerConfig(cfg MCPServerConfig) (MCPServerConfig, error) {
-	var err error
-
-	cfg.Command, err = expandEnv(cfg.Command)
-	if err != nil {
-		return cfg, fmt.Errorf("command: %w", err)
+// String expands a pointer-to-string field. label is used in error messages
+// (e.g. "base_url").
+func (e *envExpander) String(dst *string, label string) {
+	if e.err != nil {
+		return
 	}
-
-	cfg.URL, err = expandEnv(cfg.URL)
-	if err != nil {
-		return cfg, fmt.Errorf("url: %w", err)
+	*dst, e.err = expandEnv(*dst)
+	if e.err != nil {
+		e.err = fmt.Errorf("%s: %w", label, e.err)
 	}
+}
 
-	expandedArgs := make([]string, len(cfg.Args))
-	for i, arg := range cfg.Args {
-		expandedArgs[i], err = expandEnv(arg)
-		if err != nil {
-			return cfg, fmt.Errorf("args[%d]: %w", i, err)
+// Slice expands every element of a string slice. label is used in error
+// messages (e.g. "args").
+func (e *envExpander) Slice(s []string, label string) {
+	if e.err != nil {
+		return
+	}
+	for i, v := range s {
+		s[i], e.err = expandEnv(v)
+		if e.err != nil {
+			e.err = fmt.Errorf("%s[%d]: %w", label, i, e.err)
+			return
 		}
 	}
-	cfg.Args = expandedArgs
+}
 
-	expandedEnv := make(map[string]string, len(cfg.Env))
-	for key, value := range cfg.Env {
-		expKey, err := expandEnv(key)
-		if err != nil {
-			return cfg, fmt.Errorf("env key %q: %w", key, err)
-		}
-		expValue, err := expandEnv(value)
-		if err != nil {
-			return cfg, fmt.Errorf("env %q: %w", key, err)
-		}
-		expandedEnv[expKey] = expValue
+// Map expands every key and value of a string map in-place. label is used
+// in error messages (e.g. "header", "env").
+func (e *envExpander) Map(m map[string]string, label string) {
+	if e.err != nil {
+		return
 	}
-	cfg.Env = expandedEnv
-
-	expandedHeaders := make(map[string]string, len(cfg.Headers))
-	for key, value := range cfg.Headers {
-		expKey, err := expandEnv(key)
+	for k, v := range m {
+		ek, err := expandEnv(k)
 		if err != nil {
-			return cfg, fmt.Errorf("header key %q: %w", key, err)
+			e.err = fmt.Errorf("%s key %q: %w", label, k, err)
+			return
 		}
-		expValue, err := expandEnv(value)
+		ev, err := expandEnv(v)
 		if err != nil {
-			return cfg, fmt.Errorf("header %q: %w", key, err)
+			e.err = fmt.Errorf("%s %q: %w", label, k, err)
+			return
 		}
-		expandedHeaders[expKey] = expValue
+		delete(m, k)
+		m[ek] = ev
 	}
-	cfg.Headers = expandedHeaders
-
-	return cfg, nil
 }
 
 // expandEnv replaces all occurrences of ${env: VAR_NAME} with the value of

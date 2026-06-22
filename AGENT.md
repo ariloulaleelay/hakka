@@ -55,6 +55,7 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | **Router** | `agent/router.go` | Decides which adapter serves a given session based on the session's model binding. Single owner of the `Model` field |
 | **Tool / ToolRegistry** | `agent/tool.go` | Tool schema + handler + optional timeout + exec snippet. Concurrent-safe registry |
 | **Conversation** | `agent/conversation.go` | Drives the LLM ↔ tool loop — append user input, call LLM, execute tools concurrently, loop until final text or `MaxToolIterations` (default 128) |
+| **Compact** | `agent/compact.go` | On-the-fly session compaction — compresses old tool-call chains into system summaries, keeping the last N chains intact; controlled per-session via `Session.CompactChains` |
 | **StreamSession** | `agent/stream_session.go` | Cooperative streaming — streams text tokens, but if the model requests tools, aborts the stream and falls back to the tool loop |
 | **CommandProcessor** | `agent/command_processor.go` | Slash-commands (`/help`, `/model`, `/session`, `/models`) without any LLM dependency |
 | **Gateway** | `agent/gateways/` | Transport layer — TCP (newline-JSON), WebSocket, Telegram. Each wraps `Conversation` + `StreamSession` + `CommandProcessor` |
@@ -91,6 +92,7 @@ Session tools are scoped to the per-gateway namespace via Go context (see `agent
 2. **Hook Serialisation** — Tool hooks are serialised under a mutex so transport writers don't need to be concurrency-safe.
 3. **Client/Response (Vim Tool)** — `vim_run_command` sends a request frame to the client, blocks on a `ResponseReader`, and the client replies asynchronously over the same connection.
 4. **Model Switching at Runtime** — Slash commands `/model <name>` change the active model per-session via the Router, persisted in the session store.
+5. **On-the-Fly Compaction** — Old tool-call chains (`assistant → tool → … → tool → assistant`) are compacted into `system [Called tools: …]` + final text before each LLM call, keeping the last N chains intact. Full session data is never modified — compaction only affects the context window. Controlled per-session via `Session.CompactChains` (default 5).
 
 ### Wire Protocol
 

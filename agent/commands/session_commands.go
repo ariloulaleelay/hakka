@@ -112,8 +112,8 @@ func (sc *SessionCommands) handleSessionInfo(ctx context.Context, sessionID stri
 	totalTokens := session.TotalTokenUsage()
 	contextTokens := estimateTokenCount(session.History())
 	displayName := session.DisplayName()
-	reply := fmt.Sprintf("Session ID: %s\nName: %s\nModel: %s\nMessages: %d\nEst. Context Tokens: ~%d\nTotal Lifetime Tokens: %d",
-		session.ID, displayName, sc.modelName(session), msgs, contextTokens, totalTokens)
+	reply := fmt.Sprintf("Session ID: %s\nName: %s\nModel: %s\nMessages: %d\nCompact chains: %d\nEst. Context Tokens: ~%d\nTotal Lifetime Tokens: %d",
+		session.ID, displayName, sc.modelName(session), msgs, session.GetCompactChains(), contextTokens, totalTokens)
 	return CommandResult{Handled: true, Action: ActionReply, Reply: reply, Session: session}
 }
 

@@ -81,6 +81,12 @@ type Session struct {
 	// Only tools listed here will appear in the LLM's tool schemas.
 	EnabledTools map[string]bool `json:"enabled_tools,omitempty"`
 
+	// CompactChains controls on-the-fly session compaction.
+	// When > 0, old tool-call chains are compacted into short system
+	// summaries before each LLM call, keeping the last N chains intact.
+	// 0 (default) disables compaction.
+	CompactChains int `json:"compact_chains,omitempty"`
+
 	mu sync.Mutex
 }
 
@@ -111,11 +117,12 @@ func (sess *Session) DisplayName() string {
 func NewSession(namespace, systemPrompt string) *Session {
 	cwd, _ := os.Getwd()
 	return &Session{
-		Namespace:    namespace,
-		ID:           uuid.NewString(),
-		SystemPrompt: systemPrompt,
-		CreatedAt:    time.Now(),
-		ClientCWD:    cwd,
+		Namespace:     namespace,
+		ID:            uuid.NewString(),
+		SystemPrompt:  systemPrompt,
+		CreatedAt:     time.Now(),
+		ClientCWD:     cwd,
+		CompactChains: 5,
 	}
 }
 
@@ -212,6 +219,20 @@ func (sess *Session) DisableTool(name string) {
 		sess.EnabledTools = make(map[string]bool)
 	}
 	sess.EnabledTools[name] = false
+}
+
+// GetCompactChains returns the session's compaction setting.
+func (sess *Session) GetCompactChains() int {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.CompactChains
+}
+
+// SetCompactChains sets the session's compaction setting.
+func (sess *Session) SetCompactChains(n int) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.CompactChains = n
 }
 
 // SessionID returns the unique identifier of this session.

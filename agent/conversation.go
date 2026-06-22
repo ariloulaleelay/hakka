@@ -307,7 +307,13 @@ func (conv *Conversation) runToolIterations(
 	hooks := conv.serialisedHooks(&turnMu)
 
 	for i := 0; i < conv.Config.MaxToolIterations; i++ {
-		resp, err := step(ctx, BuildContext(session), schemas, events)
+		var msgs []Message
+		if keep := session.GetCompactChains(); keep > 0 {
+			msgs = CompactContext(session, keep)
+		} else {
+			msgs = BuildContext(session)
+		}
+		resp, err := step(ctx, msgs, schemas, events)
 		if err != nil {
 			return "", conv.notifyError(session.SessionID(), err, hooks)
 		}

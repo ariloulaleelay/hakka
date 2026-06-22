@@ -119,6 +119,8 @@ func (cp *CommandProcessor) Execute(ctx context.Context, sessionID, input string
 		return cp.handleHelp(ctx, sessionID, parts)
 	case "/start":
 		return cp.handleStart(ctx, sessionID, parts)
+	case "/compact":
+		return cp.handleCompact(ctx, sessionID, parts)
 	default:
 		return CommandResult{
 			Handled: true,
@@ -159,8 +161,48 @@ func (cp *CommandProcessor) handleHelp(_ context.Context, _ string, _ []string) 
   /session autorename           - Auto-generate a session name using LLM
   /tool list                    - List available tools with status
   /tool enable <name-or-#tag>...   - Enable a tool or all tools with a #tag
-  /tool disable <name-or-#tag>...  - Disable a tool or all tools with a #tag`
+  /tool disable <name-or-#tag>...  - Disable a tool or all tools with a #tag
+  /compact <n>                  - Set how many tool-call chains to keep intact (0=off, default 5)`
 	return CommandResult{Handled: true, Action: ActionReply, Reply: helpText}
+}
+
+// handleCompact sets the compact_chains value on the current session.
+// /compact 0 — disable compaction; /compact 3 — keep last 3 chains (default).
+func (cp *CommandProcessor) handleCompact(ctx context.Context, sessionID string, parts []string) CommandResult {
+	ns := event.NamespaceFromContext(ctx)
+
+	if len(parts) < 2 {
+		// Show current value
+		session, err := cp.Sessions.GetOrCreate(ctx, ns, sessionID)
+		if err != nil {
+			return CommandResult{Handled: true, Error: err}
+		}
+		return CommandResult{
+			Handled: true,
+			Action:  ActionReply,
+			Reply:   fmt.Sprintf("compact chains: %d (0=off, keep last N chains intact)", session.GetCompactChains()),
+		}
+	}
+
+	n := 0
+	if _, err := fmt.Sscanf(parts[1], "%d", &n); err != nil || n < 0 {
+		return CommandResult{Handled: true, Action: ActionReply, Reply: "usage: /compact <n> — where n is a non-negative integer"}
+	}
+
+	session, err := cp.Sessions.GetOrCreate(ctx, ns, sessionID)
+	if err != nil {
+		return CommandResult{Handled: true, Error: err}
+	}
+	session.SetCompactChains(n)
+	if err := cp.Sessions.Save(ctx, ns, session); err != nil {
+		return CommandResult{Handled: true, Error: err}
+	}
+
+	desc := "off"
+	if n > 0 {
+		desc = fmt.Sprintf("keeping last %d chains intact", n)
+	}
+	return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("compact chains set to %d (%s)", n, desc)}
 }
 
 // handleStart creates a fresh session and enables all registered tools.

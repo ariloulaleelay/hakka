@@ -289,6 +289,7 @@ func SessionInfo(sm *agent.SessionManager) agent.Tool {
 			b.WriteString(fmt.Sprintf("Model:        %s\n", s.Model))
 			b.WriteString(fmt.Sprintf("Messages:     %d\n", len(s.Messages)))
 			b.WriteString(fmt.Sprintf("Total Tokens: %d\n", s.TotalTokenUsage()))
+			b.WriteString(fmt.Sprintf("Compact chains: %d\n", s.GetCompactChains()))
 			b.WriteString(fmt.Sprintf("Client CWD:   %s\n", s.ClientCWD))
 
 			if len(s.Messages) > 0 {

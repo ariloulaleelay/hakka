@@ -28,6 +28,8 @@ func Open(path string) (*Store, error) {
 	_, _ = db.ExecContext(context.Background(), `ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT ''`)
 	// Migration: add enabled_tools column for older databases
 	_, _ = db.ExecContext(context.Background(), `ALTER TABLE sessions ADD COLUMN enabled_tools TEXT NOT NULL DEFAULT ''`)
+	// Migration: add compact_chains column for older databases
+	_, _ = db.ExecContext(context.Background(), `ALTER TABLE sessions ADD COLUMN compact_chains INTEGER NOT NULL DEFAULT 5`)
 	return &Store{db: db}, nil
 }
 
@@ -47,13 +49,14 @@ CREATE TABLE IF NOT EXISTS sessions (
 	total_tokens  INTEGER NOT NULL DEFAULT 0,
 	name          TEXT NOT NULL DEFAULT '',
 	enabled_tools TEXT NOT NULL DEFAULT '',
+	compact_chains INTEGER NOT NULL DEFAULT 5,
 	PRIMARY KEY (namespace, id)
 );
 `
 
 func (st *Store) Get(ctx context.Context, namespace, id string) (*agent.Session, bool, error) {
 	row := st.db.QueryRowContext(ctx,
-		`SELECT namespace, id, system_prompt, messages, created_at, client_cwd, model, total_tokens, name, enabled_tools FROM sessions WHERE namespace = ? AND id = ?`, namespace, id)
+		`SELECT namespace, id, system_prompt, messages, created_at, client_cwd, model, total_tokens, name, enabled_tools, compact_chains FROM sessions WHERE namespace = ? AND id = ?`, namespace, id)
 
 	var (
 		session       agent.Session
@@ -62,8 +65,9 @@ func (st *Store) Get(ctx context.Context, namespace, id string) (*agent.Session,
 		modelStr      string
 		totalTokens   int
 		enabledStr    string
+		compactChains int
 	)
-	err := row.Scan(&session.Namespace, &session.ID, &session.SystemPrompt, &messagesJSON, &createdText, &session.ClientCWD, &modelStr, &totalTokens, &session.Name, &enabledStr)
+	err := row.Scan(&session.Namespace, &session.ID, &session.SystemPrompt, &messagesJSON, &createdText, &session.ClientCWD, &modelStr, &totalTokens, &session.Name, &enabledStr, &compactChains)
 	if err == sql.ErrNoRows {
 		return nil, false, nil
 	}
@@ -82,6 +86,7 @@ func (st *Store) Get(ctx context.Context, namespace, id string) (*agent.Session,
 	}
 	session.SetModel(modelStr)
 	session.SetTotalTokenUsage(totalTokens)
+	session.SetCompactChains(compactChains)
 	if err := session.CreatedAt.UnmarshalText([]byte(createdText)); err != nil {
 		return nil, false, fmt.Errorf("decode created_at: %w", err)
 	}
@@ -107,8 +112,8 @@ func (st *Store) Put(ctx context.Context, namespace string, session *agent.Sessi
 	}
 
 	_, err = st.db.ExecContext(ctx, `
-		INSERT INTO sessions (namespace, id, system_prompt, messages, created_at, client_cwd, model, total_tokens, name, enabled_tools)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (namespace, id, system_prompt, messages, created_at, client_cwd, model, total_tokens, name, enabled_tools, compact_chains)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(namespace, id) DO UPDATE SET
 			system_prompt = excluded.system_prompt,
 			messages      = excluded.messages,
@@ -116,8 +121,9 @@ func (st *Store) Put(ctx context.Context, namespace string, session *agent.Sessi
 			model         = excluded.model,
 			total_tokens  = excluded.total_tokens,
 			name          = excluded.name,
-			enabled_tools = excluded.enabled_tools
-	`, namespace, session.ID, session.SystemPrompt, string(messagesJSON), string(createdText), session.ClientCWD, session.GetModel(), session.TotalTokenUsage(), session.Name, enabledJSON)
+			enabled_tools = excluded.enabled_tools,
+			compact_chains = excluded.compact_chains
+	`, namespace, session.ID, session.SystemPrompt, string(messagesJSON), string(createdText), session.ClientCWD, session.GetModel(), session.TotalTokenUsage(), session.Name, enabledJSON, session.GetCompactChains())
 	return err
 }
 
@@ -127,7 +133,7 @@ func (st *Store) Delete(ctx context.Context, namespace, id string) error {
 }
 
 func (st *Store) List(ctx context.Context, namespace string) ([]*agent.Session, error) {
-	rows, err := st.db.QueryContext(ctx, `SELECT namespace, id, system_prompt, messages, created_at, client_cwd, model, total_tokens, name, enabled_tools FROM sessions WHERE namespace = ? ORDER BY created_at ASC`, namespace)
+	rows, err := st.db.QueryContext(ctx, `SELECT namespace, id, system_prompt, messages, created_at, client_cwd, model, total_tokens, name, enabled_tools, compact_chains FROM sessions WHERE namespace = ? ORDER BY created_at ASC`, namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -141,8 +147,9 @@ func (st *Store) List(ctx context.Context, namespace string) ([]*agent.Session, 
 			modelStr     string
 			totalTokens  int
 			enabledStr   string
+			compactChains int
 		)
-		err := rows.Scan(&session.Namespace, &session.ID, &session.SystemPrompt, &messagesJSON, &createdText, &session.ClientCWD, &modelStr, &totalTokens, &session.Name, &enabledStr)
+		err := rows.Scan(&session.Namespace, &session.ID, &session.SystemPrompt, &messagesJSON, &createdText, &session.ClientCWD, &modelStr, &totalTokens, &session.Name, &enabledStr, &compactChains)
 		if err != nil {
 			return nil, err
 		}
@@ -156,6 +163,7 @@ func (st *Store) List(ctx context.Context, namespace string) ([]*agent.Session, 
 		}
 		session.SetModel(modelStr)
 		session.SetTotalTokenUsage(totalTokens)
+		session.SetCompactChains(compactChains)
 		if err := session.CreatedAt.UnmarshalText([]byte(createdText)); err != nil {
 			return nil, fmt.Errorf("decode created_at: %w", err)
 		}

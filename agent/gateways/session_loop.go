@@ -143,22 +143,6 @@ func writeFrame(w frameWriter, r FrameResponse) bool {
 	return w.Write(r) == nil
 }
 
-func emitStreamMeta(w frameWriter, sessionID string, session *agent.Session) error {
-	promptTokens := 0
-	for _, msg := range session.History() {
-		promptTokens += len(msg.Content) / 4
-	}
-	return w.Write(FrameResponse{
-		SessionID: sessionID,
-		Event:     "meta",
-		Data: map[string]any{
-			"prompt_tokens":     promptTokens,
-			"completion_tokens": 0,
-			"total_tokens":      session.TotalTokenUsage(),
-		},
-	})
-}
-
 func clientCtx(ctx context.Context, w frameWriter, responseReader *InProcessResponseReader, sessionID string) context.Context {
 	cw := &gwClientWriter{writer: w, sessionID: sessionID}
 	ctx = event.ContextWithClient(ctx, cw, responseReader)

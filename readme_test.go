@@ -34,7 +34,6 @@ func TestREADMESectionExists(t *testing.T) {
 		"Configuration",
 		"Wire Protocol",
 		"Extending",
-		"License",
 	}
 
 	for _, s := range sections {

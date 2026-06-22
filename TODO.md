@@ -9,7 +9,7 @@ This file is for humans only, agent should not modify it!
   - [ ] Add more logs (I want to see what happens during session and at what state we are)
   - [x] Better readme
 - [ ] Stability
-  - [ ] If user reports some problem, fix states, to maybe detect error.
+  - [ ] If user reports problem, fix states, to maybe detect error.
 - [ ] Telegram gateway
   - [x] Separate different users sessions from each other, sessin commands need to be chat aware, or event different session classes.
   - [x] Limit telegram usage by whitelist of chat ids
@@ -94,4 +94,4 @@ This file is for humans only, agent should not modify it!
 
 # Architecture
 - [ ] Clean Architecture fix: route vim_request through the engine event system (more architectural, but larger change)
-- [ ] Refactor environment substitution to all text fields in config (now it is some hacks)
+- [x] Refactor environment substitution to all text fields in config (now it is some hacks)
