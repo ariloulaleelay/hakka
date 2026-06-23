@@ -113,21 +113,24 @@ func appendAssistantBlocks(messages []anthMessage, content string, toolCalls []a
 }
 
 // textAndToolBlocks converts assistant text and tool calls into anthropic blocks.
+// The Arguments in each tool call are expected to be valid JSON (an invariant
+// enforced by ingestion in Complete/Stream). Empty arguments are normalised to
+// "{}" — the Anthropic API requires a JSON object for the input field.
 func textAndToolBlocks(content string, toolCalls []agent.ToolCall) []anthBlock {
 	var blocks []anthBlock
 	if content != "" {
 		blocks = append(blocks, anthBlock{Type: "text", Text: content})
 	}
 	for _, toolCall := range toolCalls {
-		input := json.RawMessage(toolCall.Arguments)
-		if len(input) == 0 {
-			input = json.RawMessage("{}")
+		args := toolCall.Arguments
+		if args == "" {
+			args = "{}"
 		}
 		blocks = append(blocks, anthBlock{
 			Type:  "tool_use",
 			ID:    toolCall.ID,
 			Name:  toolCall.Name,
-			Input: input,
+			Input: json.RawMessage(args),
 		})
 	}
 	return blocks
@@ -245,7 +248,7 @@ func (ad *AnthropicAdapter) Complete(ctx context.Context, msgs []agent.Message, 
 			text.WriteString(block.Text)
 		case "tool_use":
 			args := string(block.Input)
-			if args == "" {
+			if args == "" || !json.Valid(block.Input) {
 				args = "{}"
 			}
 			out.Message.ToolCalls = append(out.Message.ToolCalls, agent.ToolCall{
@@ -345,7 +348,8 @@ func (ad *AnthropicAdapter) Stream(ctx context.Context, msgs []agent.Message, to
 					sort.Ints(indices)
 					for _, idx := range indices {
 						tc := *pendingTools[idx]
-						if tc.Arguments == "" {
+						args := []byte(tc.Arguments)
+						if len(args) == 0 || !json.Valid(args) {
 							tc.Arguments = "{}"
 						}
 						calls = append(calls, tc)

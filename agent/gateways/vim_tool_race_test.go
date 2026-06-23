@@ -89,6 +89,11 @@ func TestVimToolRace(t *testing.T) {
 	router := agent.NewRouter(reg)
 	cfg := agent.EngineConfig{MaxToolIterations: 4}
 	conv := agent.NewConversation(sm, router, tools, "tcp", cfg)
+	// The decorator is what routes client-bound requests through the
+	// engine event channel; without it the writer in context is
+	// preserved and tool goroutines would write directly to the wire
+	// (the exact race this test exists to guard against).
+	conv.ToolContext = agent.EngineChannelClientDecorator()
 
 	cw := &gwClientWriter{writer: writerFunc(writeFrame), sessionID: "sess-1"}
 	ctx = event.ContextWithClient(ctx, cw, rr)

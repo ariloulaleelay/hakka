@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	_ "modernc.org/sqlite"
 
@@ -25,16 +27,32 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("sqlite schema: %w", err)
 	}
 	// Migration: add name column for older databases
-	_, _ = db.ExecContext(context.Background(), `ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT ''`)
+	runMigration(db, `ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT ''`)
 	// Migration: add enabled_tools column for older databases
-	_, _ = db.ExecContext(context.Background(), `ALTER TABLE sessions ADD COLUMN enabled_tools TEXT NOT NULL DEFAULT ''`)
+	runMigration(db, `ALTER TABLE sessions ADD COLUMN enabled_tools TEXT NOT NULL DEFAULT ''`)
 	// Migration: add compact_chains column for older databases
-	_, _ = db.ExecContext(context.Background(), `ALTER TABLE sessions ADD COLUMN compact_chains INTEGER NOT NULL DEFAULT 5`)
+	runMigration(db, `ALTER TABLE sessions ADD COLUMN compact_chains INTEGER NOT NULL DEFAULT 5`)
 	return &Store{db: db}, nil
 }
 
 func (st *Store) Close() error {
 	return st.db.Close()
+}
+
+// runMigration executes a schema migration statement. If the column
+// already exists ("duplicate column name" error), it is silently
+// ignored — the migration already ran on a previous startup. All other
+// errors (disk I/O, permission, locked database) are logged at ERROR
+// level so they are visible in production logs.
+func runMigration(db *sql.DB, stmt string) {
+	_, err := db.ExecContext(context.Background(), stmt)
+	if err == nil {
+		return
+	}
+	if strings.Contains(err.Error(), "duplicate column") {
+		return
+	}
+	slog.Error("sqlite migration failed", "stmt", stmt, "error", err)
 }
 
 const schema = `
@@ -106,7 +124,11 @@ func (st *Store) Put(ctx context.Context, namespace string, session *agent.Sessi
 	// Serialize enabled_tools to JSON (or empty string if nil/empty)
 	enabledJSON := "{}"
 	if len(session.EnabledTools) > 0 {
-		if b, err := json.Marshal(session.EnabledTools); err == nil {
+		b, err := json.Marshal(session.EnabledTools)
+		if err != nil {
+			slog.Error("sqlite: failed to marshal enabled_tools, saving with empty config",
+				"session", session.ID, "error", err)
+		} else {
 			enabledJSON = string(b)
 		}
 	}

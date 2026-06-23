@@ -126,7 +126,9 @@ func (gw *TCPGateway) handle(ctx context.Context, conn net.Conn) {
 			ReqError  string          `json:"error"`
 		}
 		if err := json.Unmarshal(line, &env); err != nil {
-			_ = flush.Write(FrameResponse{Error: err.Error()})
+			if flush.Write(FrameResponse{Error: err.Error()}) != nil {
+				return // client disconnected
+			}
 			continue
 		}
 
@@ -145,15 +147,19 @@ func (gw *TCPGateway) handle(ctx context.Context, conn net.Conn) {
 				SessionID string `json:"session_id"`
 			}
 			if err := json.Unmarshal(line, &cancelReq); err != nil {
-				_ = flush.Write(FrameResponse{Error: "invalid cancel frame: " + err.Error()})
+				if flush.Write(FrameResponse{Error: "invalid cancel frame: " + err.Error()}) != nil {
+					return
+				}
 				continue
 			}
 			cancelled := gw.Handler.CancelSession(cancelReq.SessionID)
-			_ = flush.Write(FrameResponse{
+			if flush.Write(FrameResponse{
 				Event:     "cancel",
 				SessionID: cancelReq.SessionID,
 				Data:      map[string]any{"cancelled": cancelled},
-			})
+			}) != nil {
+				return
+			}
 			continue
 		}
 
@@ -171,7 +177,9 @@ func (gw *TCPGateway) handle(ctx context.Context, conn net.Conn) {
 				Start bool   `json:"start"`
 			}
 			if err := json.Unmarshal(line, &initReq); err != nil {
-				_ = flush.Write(FrameResponse{Error: "invalid init frame: " + err.Error()})
+				if flush.Write(FrameResponse{Error: "invalid init frame: " + err.Error()}) != nil {
+					return
+				}
 				continue
 			}
 
@@ -190,11 +198,13 @@ func (gw *TCPGateway) handle(ctx context.Context, conn net.Conn) {
 
 			// Persist the session with CWD and tool settings.
 			if saveErr := gw.Handler.Conv.Sessions.Save(readCtx, gw.Handler.Namespace, session); saveErr != nil {
-				_ = flush.Write(FrameResponse{Error: saveErr.Error()})
+				if flush.Write(FrameResponse{Error: saveErr.Error()}) != nil {
+					return
+				}
 				continue
 			}
 
-			_ = flush.Write(FrameResponse{
+			if flush.Write(FrameResponse{
 				Event:     "init",
 				SessionID: session.ID,
 				Done:      true,
@@ -202,7 +212,9 @@ func (gw *TCPGateway) handle(ctx context.Context, conn net.Conn) {
 					"model": gw.Handler.Conv.SessionModel(session),
 					"cwd":   session.ClientCWD,
 				},
-			})
+			}) != nil {
+				return
+			}
 			continue
 		}
 
@@ -212,7 +224,9 @@ func (gw *TCPGateway) handle(ctx context.Context, conn net.Conn) {
 	go func(data []byte) {
 		var req FrameRequest
 		if err := json.Unmarshal(data, &req); err != nil {
-			_ = flush.Write(FrameResponse{Error: err.Error()})
+			if flush.Write(FrameResponse{Error: err.Error()}) != nil {
+				readCancel() // client disconnected, abort everything
+			}
 			return
 		}
 		gw.Handler.HandleRequest(readCtx, req, flush, responseReader)

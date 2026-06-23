@@ -307,3 +307,78 @@ func TestToAnthropicRoundTripJSON(t *testing.T) {
 		t.Fatalf("expected 3 messages after round-trip, got %d", len(decoded))
 	}
 }
+
+// TestTextAndToolBlocks_EmptyArguments verifies that empty tool-call
+// arguments are normalised to "{}" — the legitimate protocol case where
+// a tool has no parameters.
+func TestTextAndToolBlocks_EmptyArguments(t *testing.T) {
+	calls := []agent.ToolCall{
+		{ID: "toolu_01", Name: "list_dir", Arguments: ""},
+		{ID: "toolu_02", Name: "read_file", Arguments: `{"path":"x.go"}`},
+	}
+
+	blocks := textAndToolBlocks("", calls)
+
+	raw, err := json.Marshal(blocks)
+	if err != nil {
+		t.Fatalf("textAndToolBlocks produced un-marshalable blocks: %v", err)
+	}
+
+	var decoded []anthBlock
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal round-trip: %v", err)
+	}
+	if len(decoded) != 2 {
+		t.Fatalf("expected 2 blocks, got %d", len(decoded))
+	}
+	// Empty args → "{}"
+	if string(decoded[0].Input) != "{}" {
+		t.Fatalf("block[0]: expected Input to be {}, got %s", string(decoded[0].Input))
+	}
+	// Valid args pass through unchanged
+	if string(decoded[1].Input) != `{"path":"x.go"}` {
+		t.Fatalf("block[1]: expected Input to be {\"path\":\"x.go\"}, got %s", string(decoded[1].Input))
+	}
+}
+
+// TestToAnthropic_ToolArgs_RoundTrip verifies the full conversion pipeline
+// (toAnthropic → json.Marshal) handles tool calls with valid JSON arguments
+// correctly. Arguments survive the round-trip intact.
+func TestToAnthropic_ToolArgs_RoundTrip(t *testing.T) {
+	history := []agent.Message{
+		{Role: agent.RoleUser, Content: "list the files"},
+		{Role: agent.RoleAssistant, ToolCalls: []agent.ToolCall{
+			{ID: "toolu_99", Name: "list_dir", Arguments: `{"path": "."}`},
+		}},
+		{Role: agent.RoleTool, ToolCallID: "toolu_99", Content: "file.go, readme.md"},
+	}
+
+	_, msgs := toAnthropic(history)
+	raw, err := json.Marshal(msgs)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	var decoded []struct {
+		Role    string `json:"role"`
+		Content []struct {
+			Type  string          `json:"type"`
+			Name  string          `json:"name"`
+			Input json.RawMessage `json:"input"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("round-trip unmarshal: %v", err)
+	}
+	if len(decoded) != 3 {
+		t.Fatalf("expected 3 messages (user, assistant, user-tool_result), got %d", len(decoded))
+	}
+	// The assistant's tool_use block should carry the original args.
+	blocks := decoded[1].Content
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block in assistant message, got %d", len(blocks))
+	}
+	if string(blocks[0].Input) != `{"path":"."}` {
+		t.Errorf("expected Input to be {\"path\":\".\"}, got %s", string(blocks[0].Input))
+	}
+}

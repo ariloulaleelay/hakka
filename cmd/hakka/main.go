@@ -157,12 +157,20 @@ func buildGateways(sessions *agent.SessionManager, router *agent.Router, tools *
 	// These tools let the LLM manage sessions within its own namespace.
 	hakkatools.RegisterSessionTools(tools, sessions, nil)
 
+	// TCP and WebSocket gateways serve clients (e.g. Neovim) that can
+	// receive client-bound requests from tools. Install a decorator so
+	// those requests flow through the engine event loop and stay
+	// serialised on a single writer goroutine.
+	clientDecorator := agent.EngineChannelClientDecorator()
+
 	tcpConv := agent.NewConversation(sessions, router, tools, "tcp", cfg)
+	tcpConv.ToolContext = clientDecorator
 	tcpStreamer := agent.NewStreamSession(tcpConv, "tcp")
 	tcpCmd := commands.New(sessions, tcpConv, systemPrompt, "tcp")
 	tcpCmd.SetTools(tools)
 
 	wsConv := agent.NewConversation(sessions, router, tools, "ws", cfg)
+	wsConv.ToolContext = clientDecorator
 	wsStreamer := agent.NewStreamSession(wsConv, "ws")
 	wsCmd := commands.New(sessions, wsConv, systemPrompt, "ws")
 	wsCmd.SetTools(tools)

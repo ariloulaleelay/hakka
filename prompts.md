@@ -31,3 +31,7 @@ If you think there is no major issues, you can say that it's all clean, and no c
 Do not implement them yet, just describe starting from most impactful.
 
 
+
+## TODO
+
+Is any silent error discarding places?

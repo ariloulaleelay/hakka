@@ -525,7 +525,9 @@ func (gw *TelegramGateway) reply(chatID int64, text string) {
 		// Short enough — send as a single formatted message.
 		msg := tgbotapi.NewMessage(chatID, html)
 		msg.ParseMode = tgbotapi.ModeHTML
-		_, _ = gw.bot.Send(msg)
+		if _, err := gw.bot.Send(msg); err != nil {
+			slog.Warn("telegram: failed to send message", "chat_id", chatID, "error", err)
+		}
 		return
 	}
 
@@ -555,6 +557,7 @@ func (gw *TelegramGateway) reply(chatID int64, text string) {
 				"error", err,
 				"chunk_len", len(chunk),
 			)
+			return
 		}
 	}
 }

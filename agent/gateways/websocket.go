@@ -105,7 +105,9 @@ func (gw *WebSocketGateway) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := json.Unmarshal(frameData, &env); err != nil {
 			writer := wsWriter(readCtx, wsConn)
-			_ = writer.Write(FrameResponse{Error: err.Error()})
+			if writer.Write(FrameResponse{Error: err.Error()}) != nil {
+				return // client disconnected
+			}
 			continue
 		}
 
@@ -126,16 +128,20 @@ func (gw *WebSocketGateway) handle(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := json.Unmarshal(frameData, &cancelReq); err != nil {
 				writer := wsWriter(readCtx, wsConn)
-				_ = writer.Write(FrameResponse{Error: "invalid cancel frame: " + err.Error()})
+				if writer.Write(FrameResponse{Error: "invalid cancel frame: " + err.Error()}) != nil {
+					return
+				}
 				continue
 			}
 			cancelled := gw.Handler.CancelSession(cancelReq.SessionID)
 			writer := wsWriter(readCtx, wsConn)
-			_ = writer.Write(FrameResponse{
+			if writer.Write(FrameResponse{
 				Event:     "cancel",
 				SessionID: cancelReq.SessionID,
 				Data:      map[string]any{"cancelled": cancelled},
-			})
+			}) != nil {
+				return
+			}
 			continue
 		}
 
@@ -145,7 +151,9 @@ func (gw *WebSocketGateway) handle(w http.ResponseWriter, r *http.Request) {
 			writer := wsWriter(readCtx, wsConn)
 			var req FrameRequest
 			if err := json.Unmarshal(data, &req); err != nil {
-				_ = writer.Write(FrameResponse{Error: err.Error()})
+				if writer.Write(FrameResponse{Error: err.Error()}) != nil {
+					readCancel() // client disconnected, abort everything
+				}
 				return
 			}
 			gw.Handler.HandleRequest(readCtx, req, writer, responseReader)

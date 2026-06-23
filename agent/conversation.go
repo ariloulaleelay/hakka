@@ -58,6 +58,12 @@ type Conversation struct {
 	Tools     *ToolRegistry
 	Config    EngineConfig
 	Namespace string
+
+	// ToolContext optionally enriches the context passed to every tool
+	// invocation. Gateways set this when their tools need a transport-
+	// aware ClientWriter (e.g. to talk back to Neovim). When nil, the
+	// context is forwarded to handlers unchanged.
+	ToolContext ToolContextDecorator
 }
 
 // NewConversation builds a Conversation. Config.Logger defaults to
@@ -149,7 +155,7 @@ func (conv *Conversation) sessionOrError(ctx context.Context, sessionID string) 
 // non-streaming); everything else (session persistence, auto-rename, event
 // emission) is handled here once.
 func (conv *Conversation) runTurnWithStep(ctx context.Context, session SessionView, step stepFunc) <-chan event.EngineEvent {
-	eventCh := make(chan event.EngineEvent, 32)
+	eventCh := make(chan event.EngineEvent, 256)
 	go func() {
 		defer close(eventCh)
 		reply, err := conv.runToolIterations(ctx, session, eventCh, step)
@@ -352,43 +358,6 @@ func (conv *Conversation) finishTurn(ctx context.Context, session SessionView) e
 	return conv.Sessions.Save(ctx, conv.resolveNamespace(ctx), session)
 }
 
-// ---------------------------------------------------------------------------
-// Event-based client writer — routes vim_request frames through the
-// engine event channel so the event loop writes them to the wire.
-// This prevents races between tool goroutines and the event loop on
-// the shared frameWriter.
-// ---------------------------------------------------------------------------
-
-// eventClientWriter implements event.ClientWriter by sending
-// ClientRequestSent events through the engine event channel.
-//
-// This is the key structural fix for the vim-request race:
-// instead of the tool goroutine writing directly to the wire
-// (via gwClientWriter), it sends a ClientRequestSent event through
-// the event channel. The event loop reads the event and calls
-// processEvent, which writes the frame to the wire. Since the
-// event loop is a single goroutine, all writes are serialised
-// by design — no mutex needed.
-//
-// runSingleTool overrides the context's ClientWriter with this
-// before invoking any tool handler, so all vim tools use this
-// path automatically.
-type eventClientWriter struct {
-	sessionID string
-	events    eventSender
-}
-
-func (w *eventClientWriter) WriteFrame(f event.Frame) error {
-	if f.ClientReq != nil {
-		w.events <- event.ClientRequestSent{
-			SessionID: w.sessionID,
-			RequestID: f.ClientReq.RequestID,
-			Command:   f.ClientReq.Command,
-		}
-	}
-	return nil
-}
-
 // executeToolCalls runs every tool requested by the model, then appends
 // all results to the session as tool-role messages.
 func (conv *Conversation) executeToolCalls(ctx context.Context, session SessionView, calls []ToolCall, hooks Hooks, events eventSender) {
@@ -417,11 +386,10 @@ func (conv *Conversation) runToolsConcurrently(ctx context.Context, session Sess
 // invokes the handler, fires the OnToolResult hook, emits events, and
 // returns the result string.
 //
-// Before invoking the handler, it overrides the ClientWriter in the
-// context with one that routes vim_request frames through the engine
-// event channel. This ensures all outbound communication to the client
-// goes through a single goroutine (the event loop), preventing races
-// on the shared frameWriter.
+// If a ToolContextDecorator is configured on the Conversation, it is
+// invoked once here to enrich the context (e.g. install a client
+// writer) before the handler runs. The orchestration loop itself
+// stays transport-agnostic.
 func (conv *Conversation) runSingleTool(ctx context.Context, session SessionView, call ToolCall, hooks Hooks, events eventSender) string {
 	// Defense-in-depth: check if the tool is enabled for this session.
 	// Even if the LLM somehow calls a disabled tool (e.g. from context window),
@@ -439,10 +407,11 @@ func (conv *Conversation) runSingleTool(ctx context.Context, session SessionView
 	hooks.FireToolCall(session.SessionID(), call)
 	conv.sendEvent(events, event.ToolCallStarted{SessionID: session.SessionID(), ID: call.ID, Name: call.Name, Arguments: call.Arguments, ExecSnippet: call.ExecSnippet})
 
-	// Override ClientWriter with an event-based one so vim_request
-	// frames are serialised through the event channel.
-	rr := event.ResponseReaderFromContext(ctx)
-	ctx = event.ContextWithClient(ctx, &eventClientWriter{sessionID: session.SessionID(), events: events}, rr)
+	if conv.ToolContext != nil {
+		if decorated := conv.ToolContext.Decorate(ctx, session.SessionID(), events); decorated != nil {
+			ctx = decorated
+		}
+	}
 
 	result := conv.Tools.Execute(ctx, call.Name, call.Arguments)
 	hooks.FireToolResult(session.SessionID(), call, result)

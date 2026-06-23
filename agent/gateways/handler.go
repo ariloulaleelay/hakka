@@ -78,7 +78,10 @@ func (h *TurnHandler) executor(stream bool) agent.TurnExecutor {
 func (h *TurnHandler) HandleRequest(ctx context.Context, req FrameRequest, w frameWriter, responseReader *InProcessResponseReader) {
 	if h.Cmd != nil {
 		cmdRes := h.Cmd.Execute(ctx, req.SessionID, req.Input)
-		if handled, _ := writeCommandResult(w, cmdRes, req.Stream); handled {
+		if handled, ok := writeCommandResult(w, cmdRes, req.Stream); handled {
+			if !ok {
+				// Write failed — client disconnected, nothing more to do.
+			}
 			return
 		}
 	}
@@ -99,20 +102,25 @@ func (h *TurnHandler) HandleRequest(ctx context.Context, req FrameRequest, w fra
 	reqCtx = clientCtx(reqCtx, w, responseReader, sessionID)
 	reqCtx = enrichCtxWithCWD(reqCtx, h.Conv, req)
 
-	h.handleWithEngine(reqCtx, w, sessionID, req.Input, h.executor(req.Stream))
+	h.handleWithEngine(reqCtx, w, sessionID, req.Input, h.executor(req.Stream), reqCancel)
 }
 
 // handleWithEngine runs a turn using the given executor and processes
 // events until completion. Both streaming and non-streaming executors
 // produce the same uniform channel of typed EngineEvents.
-func (h *TurnHandler) handleWithEngine(ctx context.Context, w frameWriter, sessionID, input string, exec agent.TurnExecutor) {
+func (h *TurnHandler) handleWithEngine(ctx context.Context, w frameWriter, sessionID, input string, exec agent.TurnExecutor, cancel context.CancelFunc) {
 	eventCh, err := exec.Execute(ctx, sessionID, input)
 	if err != nil {
 		_ = w.Write(FrameResponse{Error: err.Error()})
 		return
 	}
 	for evt := range eventCh {
-		processEvent(w, evt)
+		if !processEvent(w, evt) {
+			// Write failed — client disconnected. Cancel the request context
+			// so in-flight LLM calls and tool executions are aborted.
+			cancel()
+			return
+		}
 	}
 }
 
