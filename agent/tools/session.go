@@ -130,7 +130,7 @@ func SessionList(sm *agent.SessionManager) agent.Tool {
 				},
 			},
 		},
-		Tags: []string{"session", "developer"},
+		Tags: []string{"session", "all"},
 		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionListArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_list", &args)
@@ -213,7 +213,7 @@ func SessionRename(sm *agent.SessionManager) agent.Tool {
 				"required": []string{"session_id", "name"},
 			},
 		},
-		Tags: []string{"session", "developer"},
+		Tags: []string{"session", "all"},
 		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionRenameArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_rename", &args)
@@ -263,7 +263,7 @@ func SessionInfo(sm *agent.SessionManager) agent.Tool {
 				"required": []string{"session_id"},
 			},
 		},
-		Tags: []string{"session", "developer"},
+		Tags: []string{"session", "all"},
 		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionIdentifyArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_info", &args)
@@ -345,7 +345,7 @@ func SessionRead(sm *agent.SessionManager) agent.Tool {
 				"required": []string{"session_id"},
 			},
 		},
-		Tags: []string{"session", "developer"},
+		Tags: []string{"session", "all"},
 		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionReadArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_read", &args)
@@ -442,7 +442,7 @@ func SessionSearch(sm *agent.SessionManager) agent.Tool {
 				"required": []string{"pattern"},
 			},
 		},
-		Tags: []string{"session", "developer"},
+		Tags: []string{"session", "all"},
 		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionSearchArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_search", &args)
@@ -538,7 +538,7 @@ func SessionSummarize(sm *agent.SessionManager, conv *agent.Conversation) agent.
 				"required": []string{"session_id"},
 			},
 		},
-		Tags: []string{"session", "developer"},
+		Tags: []string{"session", "all"},
 		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionSummarizeArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_summarize", &args)
@@ -694,7 +694,7 @@ func SessionDelete(sm *agent.SessionManager) agent.Tool {
 				"required": []string{"session_id"},
 			},
 		},
-		Tags: []string{"session", "developer"},
+		Tags: []string{"session", "all"},
 		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionIdentifyArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_delete", &args)
@@ -742,7 +742,7 @@ func SessionCreate(sm *agent.SessionManager) agent.Tool {
 				"properties": map[string]any{},
 			},
 		},
-		Tags: []string{"session", "developer"},
+		Tags: []string{"session", "all"},
 		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
 			ns, err := sessionToolPreamble(ctx, "session_create")
 			if err != nil {
@@ -786,7 +786,7 @@ func SessionAskQuestion(sm *agent.SessionManager, conv *agent.Conversation) agen
 				"required": []string{"session_id", "question"},
 			},
 		},
-		Tags: []string{"session", "developer"},
+		Tags: []string{"session", "all"},
 		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionAskQuestionArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_ask_question", &args)

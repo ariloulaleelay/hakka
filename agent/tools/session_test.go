@@ -672,6 +672,50 @@ func TestSessionAskQuestion_MissingSessionID(t *testing.T) {
 	}
 }
 
+// TestSessionTools_HaveAllTag verifies that all session tools have the
+// "all" tag and do NOT have the "developer" tag.
+func TestSessionTools_HaveAllTag(t *testing.T) {
+	// Collect all session tool constructors
+	sm := agent.NewSessionManager(newTestStore(), "test")
+	reg := agent.NewRegistry()
+	reg.Register("default", &askAdapter{t: t, response: ""})
+	router := agent.NewRouter(reg)
+	toolReg := agent.NewToolRegistry()
+	conv := agent.NewConversation(sm, router, toolReg, "ns", agent.EngineConfig{})
+
+	tools := []agent.Tool{
+		SessionList(sm),
+		SessionRename(sm),
+		SessionInfo(sm),
+		SessionRead(sm),
+		SessionSearch(sm),
+		SessionSummarize(sm, conv),
+		SessionDelete(sm),
+		SessionCreate(sm),
+		SessionAskQuestion(sm, conv),
+	}
+
+	for _, tool := range tools {
+		name := tool.Schema.Name
+		hasAll := false
+		hasDev := false
+		for _, tag := range tool.Tags {
+			if tag == "all" {
+				hasAll = true
+			}
+			if tag == "developer" {
+				hasDev = true
+			}
+		}
+		if !hasAll {
+			t.Errorf("session tool %q is missing the %q tag; tags: %v", name, "all", tool.Tags)
+		}
+		if hasDev {
+			t.Errorf("session tool %q should not have the %q tag; tags: %v", name, "developer", tool.Tags)
+		}
+	}
+}
+
 func TestSessionAskQuestion_WithPrefix(t *testing.T) {
 	ns := "testns"
 	sm := agent.NewSessionManager(newTestStore(), "")
