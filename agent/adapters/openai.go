@@ -160,7 +160,9 @@ func (ad *OpenAIAdapter) dumpStreamResponse(resp openai.ChatCompletionStreamResp
 
 func (ad *OpenAIAdapter) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (*agent.LLMResponse, error) {
 	req := ad.buildRequest(msgs, tools, opts)
-	resp, err := ad.createChatCompletionWithRetry(ctx, req)
+	resp, err := retryOpenAI(ctx, req, ad.dumpRequest, func() (openai.ChatCompletionResponse, error) {
+		return ad.Client.CreateChatCompletion(ctx, req)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -197,42 +199,38 @@ func (ad *OpenAIAdapter) Complete(ctx context.Context, msgs []agent.Message, too
 	return out, nil
 }
 
-func (ad *OpenAIAdapter) createChatCompletionWithRetry(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+// retryOpenAI is the single retry loop shared by both Complete and Stream
+// paths. It abstracts the common logic: dump the request for debugging,
+// call the provided function, detect rate-limit errors (HTTP 429),
+// apply exponential backoff, and respect context cancellation.
+//
+// The fn closure captures only the API call itself — ctx and req are
+// passed explicitly so all retry logic lives in one place.
+func retryOpenAI[T any](
+	ctx context.Context,
+	req openai.ChatCompletionRequest,
+	dump func(openai.ChatCompletionRequest),
+	fn func() (T, error),
+) (T, error) {
 	var lastErr error
 	for attempt := 0; attempt < openAIRetryAttempts; attempt++ {
-		ad.dumpRequest(req)
-		resp, err := ad.Client.CreateChatCompletion(ctx, req)
+		dump(req)
+		result, err := fn()
 		if err == nil {
-			return resp, nil
+			return result, nil
 		}
 		lastErr = err
 		if !isOpenAIRateLimitError(err) || attempt == openAIRetryAttempts-1 {
-			return openai.ChatCompletionResponse{}, err
+			var zero T
+			return zero, err
 		}
 		if err := sleepOpenAIRetry(ctx, attempt); err != nil {
-			return openai.ChatCompletionResponse{}, err
+			var zero T
+			return zero, err
 		}
 	}
-	return openai.ChatCompletionResponse{}, lastErr
-}
-
-func (ad *OpenAIAdapter) createChatCompletionStreamWithRetry(ctx context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionStream, error) {
-	var lastErr error
-	for attempt := 0; attempt < openAIRetryAttempts; attempt++ {
-		ad.dumpRequest(req)
-		stream, err := ad.Client.CreateChatCompletionStream(ctx, req)
-		if err == nil {
-			return stream, nil
-		}
-		lastErr = err
-		if !isOpenAIRateLimitError(err) || attempt == openAIRetryAttempts-1 {
-			return nil, err
-		}
-		if err := sleepOpenAIRetry(ctx, attempt); err != nil {
-			return nil, err
-		}
-	}
-	return nil, lastErr
+	var zero T
+	return zero, lastErr
 }
 
 func isOpenAIRateLimitError(err error) bool {
@@ -301,7 +299,9 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 	req.Stream = true
 	req.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
 
-	stream, err := ad.createChatCompletionStreamWithRetry(ctx, req)
+	stream, err := retryOpenAI(ctx, req, ad.dumpRequest, func() (*openai.ChatCompletionStream, error) {
+		return ad.Client.CreateChatCompletionStream(ctx, req)
+	})
 	if err != nil {
 		return nil, err
 	}
