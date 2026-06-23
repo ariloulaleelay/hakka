@@ -76,7 +76,6 @@ func (h *TurnHandler) executor(stream bool) agent.TurnExecutor {
 // session ID. Another connection can call CancelSession(sessionID) to
 // abort this request.
 func (h *TurnHandler) HandleRequest(ctx context.Context, req FrameRequest, w frameWriter, responseReader *InProcessResponseReader) {
-	// Try command first
 	if h.Cmd != nil {
 		cmdRes := h.Cmd.Execute(ctx, req.SessionID, req.Input)
 		if handled, _ := writeCommandResult(w, cmdRes, req.Stream); handled {
@@ -100,8 +99,6 @@ func (h *TurnHandler) HandleRequest(ctx context.Context, req FrameRequest, w fra
 	reqCtx = clientCtx(reqCtx, w, responseReader, sessionID)
 	reqCtx = enrichCtxWithCWD(reqCtx, h.Conv, req)
 
-	// Dispatch to the appropriate executor (streaming or non-streaming).
-	// Both produce uniform event channels via the TurnExecutor interface.
 	h.handleWithEngine(reqCtx, w, sessionID, req.Input, h.executor(req.Stream))
 }
 

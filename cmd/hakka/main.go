@@ -76,7 +76,6 @@ func run(cfg appConfig, logger *slog.Logger) error {
 
 	sessions, router, tools, systemPrompt, engineCfg := setupComponents(store, registry, logger)
 
-	// Connect to MCP servers (if configured)
 	mcpMgr := mcp.NewManager()
 	mcpMgr.Logger = logger
 	if servers := modelCfg.MCPServerConfigs(); len(servers) > 0 {
@@ -115,7 +114,6 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	<-ctx.Done()
 	logger.Info("shutting down")
 
-	// Disconnect MCP servers
 	mcpMgr.CloseAll()
 
 	return shutdownGateways(gws)

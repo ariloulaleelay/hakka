@@ -66,7 +66,6 @@ func Load(path string) (*File, error) {
 		return nil, fmt.Errorf("config: default %q not present in models", cfgFile.Default)
 	}
 
-	// Expand environment variables in all model configs
 	for name, modelCfg := range cfgFile.Models {
 		var e envExpander
 		e.String(&modelCfg.BaseURL, "base_url")
@@ -78,7 +77,6 @@ func Load(path string) (*File, error) {
 		cfgFile.Models[name] = modelCfg
 	}
 
-	// Expand environment variables in all MCP server configs
 	for name, mcpCfg := range cfgFile.MCPServers {
 		var e envExpander
 		e.String(&mcpCfg.Command, "command")

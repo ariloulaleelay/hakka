@@ -91,10 +91,6 @@ func (conv *Conversation) resolveNamespace(ctx context.Context) string {
 	return event.NamespaceFromContext(ctx)
 }
 
-// ---------------------------------------------------------------------------
-// Public turn methods
-// ---------------------------------------------------------------------------
-
 // Execute runs one full user turn and returns an event channel. The
 // channel emits typed EngineEvents and closes when the turn is complete.
 // The final TurnFinished event carries the reply or error.
@@ -124,10 +120,6 @@ func (conv *Conversation) Resume(ctx context.Context, sessionID string) (<-chan 
 	}
 	return conv.runTurnWithStep(ctx, session, conv.defaultStep(session)), nil
 }
-
-// ---------------------------------------------------------------------------
-// Internal helpers shared by the public turn methods
-// ---------------------------------------------------------------------------
 
 // prepareWithInput gets or creates a session, appends a user message,
 // persists it, and returns the session as a SessionView.
@@ -162,7 +154,6 @@ func (conv *Conversation) runTurnWithStep(ctx context.Context, session SessionVi
 		defer close(eventCh)
 		reply, err := conv.runToolIterations(ctx, session, eventCh, step)
 
-		// Persist and auto-rename on success.
 		if err == nil {
 			if saveErr := conv.finishTurn(ctx, session); saveErr != nil {
 				conv.Config.Logger.Error("failed to save session after turn",
@@ -245,10 +236,6 @@ func (conv *Conversation) adapterFor(s SessionView) LLMAdapter {
 	return conv.Router.Adapter(s)
 }
 
-// ---------------------------------------------------------------------------
-// Context building
-// ---------------------------------------------------------------------------
-
 // BuildContext returns the full message history enriched with the CWD
 // system message (if set). This is the method that produces the context
 // sent to the LLM adapter. It is used by both Conversation and
@@ -272,10 +259,6 @@ func BuildContext(session SessionHistory) []Message {
 	}
 	return history
 }
-
-// ---------------------------------------------------------------------------
-// Shared turn lifecycle helpers
-// ---------------------------------------------------------------------------
 
 // llmStepResult is the result of a single LLM call within the tool loop.
 type llmStepResult struct {
@@ -318,8 +301,6 @@ func (conv *Conversation) runToolIterations(
 			return "", conv.notifyError(session.SessionID(), err, hooks)
 		}
 
-		// Record the assistant response: append to session, fire hooks,
-		// track token usage.
 		msg := Message{Role: RoleAssistant, Content: resp.content, ToolCalls: resp.toolCalls}
 		session.Append(msg)
 
@@ -408,10 +389,6 @@ func (w *eventClientWriter) WriteFrame(f event.Frame) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// Tool execution
-// ---------------------------------------------------------------------------
-
 // executeToolCalls runs every tool requested by the model, then appends
 // all results to the session as tool-role messages.
 func (conv *Conversation) executeToolCalls(ctx context.Context, session SessionView, calls []ToolCall, hooks Hooks, events eventSender) {
@@ -485,10 +462,6 @@ func (conv *Conversation) appendToolResults(session SessionView, calls []ToolCal
 		})
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Hook serialisation
-// ---------------------------------------------------------------------------
 
 // serialisedHooks wraps EngineConfig.Hooks so that every callback is
 // invoked under the provided mutex. This serialises hook invocations

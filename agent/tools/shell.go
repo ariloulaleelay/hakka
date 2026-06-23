@@ -53,7 +53,6 @@ func Shell() agent.Tool {
 			if err := json.Unmarshal(args, &params); err != nil || params.Cmd == "" {
 				return ""
 			}
-			// Send the full command — client will shorten if needed
 			return `"` + params.Cmd + `"`
 		},
 		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
@@ -87,7 +86,6 @@ func Shell() agent.Tool {
 			defer cancel()
 
 			cmd := exec.CommandContext(runCtx, "sh", "-c", args.Cmd)
-			// Use explicit cwd arg if provided, otherwise fall back to context CWD
 			workDir := args.Cwd
 			if workDir == "" {
 				workDir = event.CWDFromContext(ctx)

@@ -77,14 +77,12 @@ func (sm *SessionManager) ResolveSessionID(ctx context.Context, namespace, prefi
 		return "", err
 	}
 
-	// Exact match first — always preferred over prefix match.
 	for _, s := range sessions {
 		if s.ID == prefix {
 			return s.ID, nil
 		}
 	}
 
-	// Prefix match
 	var matches []string
 	for _, s := range sessions {
 		if strings.HasPrefix(s.ID, prefix) {

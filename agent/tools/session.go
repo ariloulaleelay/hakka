@@ -171,7 +171,7 @@ func SessionList(sm *agent.SessionManager) agent.Tool {
 					b.WriteString(fmt.Sprintf("  %d. %s <%s> — %d msgs, model: %s\n",
 						i+1, s.ID[:8], created, msgCount, model))
 				}
-				// Show first user message as summary
+				// Show first user message
 				for _, m := range s.Messages {
 					if m.Role == agent.RoleUser {
 						summary := agent.Truncate(m.Content, 100)
@@ -366,7 +366,6 @@ func SessionRead(sm *agent.SessionManager) agent.Tool {
 
 			messages := s.Messages
 
-			// Filter by role
 			if args.Role != "" {
 				filtered := make([]agent.Message, 0, len(messages))
 				for _, m := range messages {
@@ -381,7 +380,6 @@ func SessionRead(sm *agent.SessionManager) agent.Tool {
 				return "No messages found.", nil
 			}
 
-			// Take the most recent messages
 			start := 0
 			if len(messages) > args.MaxMessages {
 				start = len(messages) - args.MaxMessages
@@ -572,11 +570,9 @@ func SessionSummarize(sm *agent.SessionManager, conv *agent.Conversation) agent.
 					if err == nil {
 						return summary, nil
 					}
-					// Fall through to heuristic on error
 				}
 			}
 
-			// Heuristic summary
 			return buildHeuristicSummary(s), nil
 		},
 	}
@@ -584,7 +580,6 @@ func SessionSummarize(sm *agent.SessionManager, conv *agent.Conversation) agent.
 
 // generateLLMSummary uses the LLM to generate a session summary.
 func generateLLMSummary(ctx context.Context, adapter agent.LLMAdapter, s *agent.Session, maxTokens int) (string, error) {
-	// Build a compact representation of the conversation
 	var b strings.Builder
 	for _, m := range s.Messages {
 		switch m.Role {
@@ -633,7 +628,6 @@ func buildHeuristicSummary(s *agent.Session) string {
 	b.WriteString(fmt.Sprintf("Total messages: %d\n", len(s.Messages)))
 	b.WriteString(fmt.Sprintf("Total tokens: %d\n", s.TotalTokenUsage()))
 
-	// Count by role
 	userCount := 0
 	assistantCount := 0
 	toolCount := 0
@@ -649,7 +643,6 @@ func buildHeuristicSummary(s *agent.Session) string {
 				toolNames[tc.Name]++
 			}
 		case agent.RoleTool:
-			// count tool-role messages
 			toolCount++
 		}
 	}
@@ -663,7 +656,6 @@ func buildHeuristicSummary(s *agent.Session) string {
 		}
 	}
 
-	// First user message as context
 	for _, m := range s.Messages {
 		if m.Role == agent.RoleUser {
 			b.WriteString(fmt.Sprintf("\nFirst message: %s\n", agent.Truncate(m.Content, 200)))
@@ -671,7 +663,6 @@ func buildHeuristicSummary(s *agent.Session) string {
 		}
 	}
 
-	// Last user message
 	for i := len(s.Messages) - 1; i >= 0; i-- {
 		if s.Messages[i].Role == agent.RoleUser {
 			b.WriteString(fmt.Sprintf("Last message: %s\n", agent.Truncate(s.Messages[i].Content, 200)))
@@ -719,7 +710,6 @@ func SessionDelete(sm *agent.SessionManager) agent.Tool {
 				return "", fmt.Errorf("session_delete: %w", err)
 			}
 
-			// Verify it exists
 			_, ok, err := sm.Store.Get(ctx, ns, sessionID)
 			if err != nil {
 				return "", fmt.Errorf("session_delete: %w", err)
@@ -759,7 +749,6 @@ func SessionCreate(sm *agent.SessionManager) agent.Tool {
 				return "", err
 			}
 
-			// Create a new session with empty ID (auto-generate UUID)
 			session, err := sm.GetOrCreate(ctx, ns, "")
 			if err != nil {
 				return "", fmt.Errorf("session_create: %w", err)
@@ -816,8 +805,6 @@ func SessionAskQuestion(sm *agent.SessionManager, conv *agent.Conversation) agen
 				return "", err
 			}
 
-			// Build a message list with tool calls stripped (same pattern
-			// as buildNamingMessages in conversation.go).
 			if conv == nil || conv.Router == nil {
 				return "", fmt.Errorf("session_ask_question: no LLM router available")
 			}
@@ -843,17 +830,13 @@ func SessionAskQuestion(sm *agent.SessionManager, conv *agent.Conversation) agen
 // This is similar to buildNamingMessages but uses a caller-supplied question
 // and always appends it as a user message.
 func buildAskQuestionMessages(session agent.SessionHistory, question string) []agent.Message {
-	// Start with the session's history (includes system prompt)
 	history := session.History()
 
-	// Build a cleaned list, stripping tool calls
 	msgs := make([]agent.Message, 0, len(history)+1)
 	for _, m := range history {
-		// Skip tool-role messages entirely
 		if m.Role == agent.RoleTool {
 			continue
 		}
-		// Replace assistant tool-call messages with a placeholder
 		if m.Role == agent.RoleAssistant && len(m.ToolCalls) > 0 {
 			msgs = append(msgs, agent.Message{
 				Role:    agent.RoleSystem,
@@ -864,7 +847,6 @@ func buildAskQuestionMessages(session agent.SessionHistory, question string) []a
 		msgs = append(msgs, m)
 	}
 
-	// Append the question as a user message (virtual, not persisted)
 	msgs = append(msgs, agent.Message{
 		Role:    agent.RoleUser,
 		Content: question,
@@ -873,6 +855,4 @@ func buildAskQuestionMessages(session agent.SessionHistory, question string) []a
 	return msgs
 }
 
-// ---------------------------------------------------------------------------
-// (Utility helpers moved to agent package: agent.Truncate)
-// ---------------------------------------------------------------------------
+
