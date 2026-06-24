@@ -11,7 +11,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Tool argument types (Issue #4: named structs instead of anonymous ones).
+// Tool argument types
 // ---------------------------------------------------------------------------
 
 type sessionListArgs struct {
@@ -116,22 +116,10 @@ func unmarshalSessionArgs(ctx context.Context, raw json.RawMessage, toolName str
 
 // SessionList returns a tool that lists all sessions with metadata.
 func SessionList(sm *agent.SessionManager) agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "session_list",
-			Description: "List all sessions with ID, name, message count, creation time, and model.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"max_results": map[string]any{
-						"type":        "integer",
-						"description": "Maximum number of sessions to return (optional, default 50)",
-					},
-				},
-			},
-		},
-		Tags: []string{"session", "all"},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+	return NewTool("session_list", "List all sessions with ID, name, message count, creation time, and model.").
+		IntParam("max_results", "Maximum number of sessions to return (optional, default 50)", false).
+		Tags("session", "all").
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionListArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_list", &args)
 			if err != nil {
@@ -184,8 +172,8 @@ func SessionList(sm *agent.SessionManager) agent.Tool {
 				b.WriteString(fmt.Sprintf("  ... and %d more (use max_results to see more)\n", len(sessions)-limit))
 			}
 			return b.String(), nil
-		},
-	}
+		}).
+		Build()
 }
 
 // ---------------------------------------------------------------------------
@@ -194,27 +182,11 @@ func SessionList(sm *agent.SessionManager) agent.Tool {
 
 // SessionRename returns a tool that renames a session by ID or prefix.
 func SessionRename(sm *agent.SessionManager) agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "session_rename",
-			Description: "Rename a session. Specify session_id (full or unique prefix) and new name.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"session_id": map[string]any{
-						"type":        "string",
-						"description": "Session ID or unique prefix",
-					},
-					"name": map[string]any{
-						"type":        "string",
-						"description": "New name for the session",
-					},
-				},
-				"required": []string{"session_id", "name"},
-			},
-		},
-		Tags: []string{"session", "all"},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+	return NewTool("session_rename", "Rename a session. Specify session_id (full or unique prefix) and new name.").
+		StringParam("session_id", "Session ID or unique prefix", true).
+		StringParam("name", "New name for the session", true).
+		Tags("session", "all").
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionRenameArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_rename", &args)
 			if err != nil {
@@ -238,8 +210,8 @@ func SessionRename(sm *agent.SessionManager) agent.Tool {
 			}
 
 			return fmt.Sprintf("Session %s renamed to %q.", s.ID[:8], args.Name), nil
-		},
-	}
+		}).
+		Build()
 }
 
 // ---------------------------------------------------------------------------
@@ -248,23 +220,10 @@ func SessionRename(sm *agent.SessionManager) agent.Tool {
 
 // SessionInfo returns a tool that shows detailed info about a session.
 func SessionInfo(sm *agent.SessionManager) agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "session_info",
-			Description: "Show detailed information about a session (messages, tokens, model, created time).",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"session_id": map[string]any{
-						"type":        "string",
-						"description": "Session ID or unique prefix",
-					},
-				},
-				"required": []string{"session_id"},
-			},
-		},
-		Tags: []string{"session", "all"},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+	return NewTool("session_info", "Show detailed information about a session (messages, tokens, model, created time).").
+		StringParam("session_id", "Session ID or unique prefix", true).
+		Tags("session", "all").
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionIdentifyArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_info", &args)
 			if err != nil {
@@ -312,8 +271,8 @@ func SessionInfo(sm *agent.SessionManager) agent.Tool {
 				}
 			}
 			return b.String(), nil
-		},
-	}
+		}).
+		Build()
 }
 
 // ---------------------------------------------------------------------------
@@ -322,31 +281,12 @@ func SessionInfo(sm *agent.SessionManager) agent.Tool {
 
 // SessionRead returns a tool that reads messages from a session.
 func SessionRead(sm *agent.SessionManager) agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "session_read",
-			Description: "Read session. Use only when need exact session content, otherwise use session_ask_question.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"session_id": map[string]any{
-						"type":        "string",
-						"description": "Session ID or unique prefix",
-					},
-					"max_messages": map[string]any{
-						"type":        "integer",
-						"description": "Maximum number of recent messages to return (optional, default 100)",
-					},
-					"role": map[string]any{
-						"type":        "string",
-						"description": "Filter by role: 'user', 'assistant', 'tool', 'system' (optional)",
-					},
-				},
-				"required": []string{"session_id"},
-			},
-		},
-		Tags: []string{"session", "all"},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+	return NewTool("session_read", "Read session. Use only when need exact session content, otherwise use session_ask_question.").
+		StringParam("session_id", "Session ID or unique prefix", true).
+		IntParam("max_messages", "Maximum number of recent messages to return (optional, default 100)", false).
+		StringParam("role", "Filter by role: 'user', 'assistant', 'tool', 'system' (optional)", false).
+		Tags("session", "all").
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionReadArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_read", &args)
 			if err != nil {
@@ -412,8 +352,8 @@ func SessionRead(sm *agent.SessionManager) agent.Tool {
 			}
 
 			return b.String(), nil
-		},
-	}
+		}).
+		Build()
 }
 
 // ---------------------------------------------------------------------------
@@ -423,27 +363,11 @@ func SessionRead(sm *agent.SessionManager) agent.Tool {
 // SessionSearch returns a tool that searches messages across all sessions
 // in the current namespace for a given text pattern.
 func SessionSearch(sm *agent.SessionManager) agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "session_search",
-			Description: "Search for a text pattern across all session messages. Returns matching messages with session info.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"pattern": map[string]any{
-						"type":        "string",
-						"description": "Text pattern to search for (case-insensitive substring match)",
-					},
-					"max_results": map[string]any{
-						"type":        "integer",
-						"description": "Maximum number of matches to return (optional, default 50)",
-					},
-				},
-				"required": []string{"pattern"},
-			},
-		},
-		Tags: []string{"session", "all"},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+	return NewTool("session_search", "Search for a text pattern across all session messages. Returns matching messages with session info.").
+		StringParam("pattern", "Text pattern to search for (case-insensitive substring match)", true).
+		IntParam("max_results", "Maximum number of matches to return (optional, default 50)", false).
+		Tags("session", "all").
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionSearchArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_search", &args)
 			if err != nil {
@@ -507,8 +431,8 @@ func SessionSearch(sm *agent.SessionManager) agent.Tool {
 				b.WriteString("\n")
 			}
 			return b.String(), nil
-		},
-	}
+		}).
+		Build()
 }
 
 // ---------------------------------------------------------------------------
@@ -519,27 +443,11 @@ func SessionSearch(sm *agent.SessionManager) agent.Tool {
 // If a Conversation is provided, it uses the configured LLM to generate
 // the summary. Otherwise it produces a simple heuristic summary.
 func SessionSummarize(sm *agent.SessionManager, conv *agent.Conversation) agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "session_summarize",
-			Description: "Summarize a session's conversation. Uses LLM when available, otherwise produces a statistical summary.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"session_id": map[string]any{
-						"type":        "string",
-						"description": "Session ID or unique prefix",
-					},
-					"max_tokens": map[string]any{
-						"type":        "integer",
-						"description": "Maximum tokens for the summary (optional, default 500)",
-					},
-				},
-				"required": []string{"session_id"},
-			},
-		},
-		Tags: []string{"session", "all"},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+	return NewTool("session_summarize", "Summarize a session's conversation. Uses LLM when available, otherwise produces a statistical summary.").
+		StringParam("session_id", "Session ID or unique prefix", true).
+		IntParam("max_tokens", "Maximum tokens for the summary (optional, default 500)", false).
+		Tags("session", "all").
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionSummarizeArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_summarize", &args)
 			if err != nil {
@@ -574,8 +482,8 @@ func SessionSummarize(sm *agent.SessionManager, conv *agent.Conversation) agent.
 			}
 
 			return buildHeuristicSummary(s), nil
-		},
-	}
+		}).
+		Build()
 }
 
 // generateLLMSummary uses the LLM to generate a session summary.
@@ -679,23 +587,10 @@ func buildHeuristicSummary(s *agent.Session) string {
 
 // SessionDelete returns a tool that deletes a session by ID or prefix.
 func SessionDelete(sm *agent.SessionManager) agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "session_delete",
-			Description: "Delete a session by its ID or unique prefix.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"session_id": map[string]any{
-						"type":        "string",
-						"description": "Session ID or unique prefix",
-					},
-				},
-				"required": []string{"session_id"},
-			},
-		},
-		Tags: []string{"session", "all"},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+	return NewTool("session_delete", "Delete a session by its ID or unique prefix.").
+		StringParam("session_id", "Session ID or unique prefix", true).
+		Tags("session", "all").
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionIdentifyArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_delete", &args)
 			if err != nil {
@@ -722,8 +617,8 @@ func SessionDelete(sm *agent.SessionManager) agent.Tool {
 				return "", fmt.Errorf("session_delete: %w", err)
 			}
 			return fmt.Sprintf("Session %s deleted.", sessionID[:8]), nil
-		},
-	}
+		}).
+		Build()
 }
 
 // ---------------------------------------------------------------------------
@@ -733,17 +628,9 @@ func SessionDelete(sm *agent.SessionManager) agent.Tool {
 // SessionCreate returns a tool that creates a new empty session in the
 // current namespace.
 func SessionCreate(sm *agent.SessionManager) agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "session_create",
-			Description: "Create a new empty session and return its ID.",
-			Parameters: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
-			},
-		},
-		Tags: []string{"session", "all"},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+	return NewTool("session_create", "Create a new empty session and return its ID.").
+		Tags("session", "all").
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			ns, err := sessionToolPreamble(ctx, "session_create")
 			if err != nil {
 				return "", err
@@ -754,8 +641,8 @@ func SessionCreate(sm *agent.SessionManager) agent.Tool {
 				return "", fmt.Errorf("session_create: %w", err)
 			}
 			return fmt.Sprintf("Created new session: %s", session.ID), nil
-		},
-	}
+		}).
+		Build()
 }
 
 // ---------------------------------------------------------------------------
@@ -767,27 +654,11 @@ func SessionCreate(sm *agent.SessionManager) agent.Tool {
 // with tool calls stripped, appends the question as a user message, and
 // calls the LLM bound to that session to get an answer.
 func SessionAskQuestion(sm *agent.SessionManager, conv *agent.Conversation) agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "session_ask_question",
-			Description: "Ask a question about a session's conversation.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"session_id": map[string]any{
-						"type":        "string",
-						"description": "Session ID or unique prefix",
-					},
-					"question": map[string]any{
-						"type":        "string",
-						"description": "Your question about the session",
-					},
-				},
-				"required": []string{"session_id", "question"},
-			},
-		},
-		Tags: []string{"session", "all"},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+	return NewTool("session_ask_question", "Ask a question about a session's conversation.").
+		StringParam("session_id", "Session ID or unique prefix", true).
+		StringParam("question", "Your question about the session", true).
+		Tags("session", "all").
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args sessionAskQuestionArgs
 			ns, err := unmarshalSessionArgs(ctx, raw, "session_ask_question", &args)
 			if err != nil {
@@ -821,8 +692,8 @@ func SessionAskQuestion(sm *agent.SessionManager, conv *agent.Conversation) agen
 			}
 
 			return resp.Message.Content, nil
-		},
-	}
+		}).
+		Build()
 }
 
 // buildAskQuestionMessages builds a message list from a session's history
@@ -854,5 +725,3 @@ func buildAskQuestionMessages(session agent.SessionHistory, question string) []a
 
 	return msgs
 }
-
-

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/ariloulaleelay/hakka/agent"
-		"github.com/ariloulaleelay/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // shellInlineLimit is the per-stream byte threshold below which captured
@@ -27,26 +27,16 @@ const shellInlineLimit = 1000
 //
 // Default timeout is 30s; override with the `timeout_seconds` arg.
 func Shell() agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "shell",
-			Description: (
-				"Execute a shell command via `sh -c`.\n" +
-				"Stdout/stderr are written to tempfiles;\n" +
-				"short output is returned inline, otherwise the file path is reported so the agent can read or grep it.\n" +
-				"Project cwd applied by default"),
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"cmd":             map[string]any{"type": "string"},
-					"cwd":             map[string]any{"type": "string", "description": "Working directory (optional)."},
-					"timeout_seconds": map[string]any{"type": "integer", "description": "Default 30."},
-				},
-				"required": []string{"cmd"},
-			},
-		},
-		Tags: []string{"exec", "dangerous", "developer", "all"},
-		ExecSnippet: func(args json.RawMessage) string {
+	return NewTool("shell",
+		"Execute a shell command via `sh -c`.\n"+
+			"Stdout/stderr are written to tempfiles;\n"+
+			"short output is returned inline, otherwise the file path is reported so the agent can read or grep it.\n"+
+			"Project cwd applied by default").
+		StringParam("cmd", "", true).
+		StringParam("cwd", "Working directory (optional).", false).
+		IntParam("timeout_seconds", "Default 30.", false).
+		Tags("exec", "dangerous", "developer", "all").
+		ExecSnippet(func(args json.RawMessage) string {
 			var params struct {
 				Cmd string `json:"cmd"`
 			}
@@ -54,8 +44,8 @@ func Shell() agent.Tool {
 				return ""
 			}
 			return `"` + params.Cmd + `"`
-		},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+		}).
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args struct {
 				Cmd     string `json:"cmd"`
 				Cwd     string `json:"cwd"`
@@ -114,8 +104,8 @@ func Shell() agent.Tool {
 			result := buildShellResult(exitCode, timedOut, outFile.Name(), errFile.Name())
 			b, _ := json.Marshal(result)
 			return string(b), nil
-		},
-	}
+		}).
+		Build()
 }
 
 // buildShellResult builds a structured JSON result for the shell tool.

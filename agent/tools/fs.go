@@ -42,33 +42,14 @@ func unmarshalToolArgs(raw json.RawMessage, toolName string, args any) error {
 	return nil
 }
 
-// snippetPath returns the path argument as a display snippet (no truncation).
-func snippetPath(args json.RawMessage) string {
-	var params pathArgs
-	if err := json.Unmarshal(args, &params); err != nil || params.Path == "" {
-		return ""
-	}
-	return `"` + params.Path + `"`
-}
-
 // ReadFile reads a UTF-8 file and returns its content (optionally truncated).
 func ReadFile() agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "read_file",
-			Description: "Read a UTF-8 text file from disk and return its contents.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path":      map[string]any{"type": "string", "description": "Absolute or relative path"},
-					"max_bytes": map[string]any{"type": "integer", "description": "Optional max bytes to return (default 200_000)"},
-				},
-				"required": []string{"path"},
-			},
-		},
-		Tags: []string{"filesystem", "read", "developer", "all"},
-		ExecSnippet: snippetPath,
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+	return NewTool("read_file", "Read a UTF-8 text file from disk and return its contents.").
+		StringParam("path", "Absolute or relative path", true).
+		IntParam("max_bytes", "Optional max bytes to return (default 200_000)", false).
+		Tags("filesystem", "read", "developer", "all").
+		ExecSnippetField("path").
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args readFileArgs
 			if err := unmarshalToolArgs(raw, "read_file", &args); err != nil {
 				return "", err
@@ -102,27 +83,17 @@ func ReadFile() agent.Tool {
 				b.WriteString(fmt.Sprintf("[TRUNCATED: %d bytes omitted]", len(data)))
 			}
 			return b.String(), nil
-		},
-	}
+		}).
+		Build()
 }
 
 // ListDir returns directory entries as JSON.
 func ListDir() agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "list_dir",
-			Description: "List the immediate entries of a directory.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path": map[string]any{"type": "string"},
-				},
-				"required": []string{"path"},
-			},
-		},
-		Tags: []string{"filesystem", "read", "developer"},
-		ExecSnippet: snippetPath,
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+	return NewTool("list_dir", "List the immediate entries of a directory.").
+		StringParam("path", "", true).
+		Tags("filesystem", "read", "developer").
+		ExecSnippetField("path").
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args pathArgs
 			if err := unmarshalToolArgs(raw, "list_dir", &args); err != nil {
 				return "", err
@@ -151,28 +122,18 @@ func ListDir() agent.Tool {
 				}
 			}
 			return b.String(), nil
-		},
-	}
+		}).
+		Build()
 }
 
 // WriteFile writes content to a file (creates dirs as needed).
 func WriteFile() agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "write_file",
-			Description: "Create or overwrite a file with the given content. Creates parent dirs.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path":    map[string]any{"type": "string"},
-					"content": map[string]any{"type": "string"},
-				},
-				"required": []string{"path", "content"},
-			},
-		},
-		Tags: []string{"filesystem", "write", "developer", "all"},
-		ExecSnippet: snippetPath,
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+	return NewTool("write_file", "Create or overwrite a file with the given content. Creates parent dirs.").
+		StringParam("path", "", true).
+		StringParam("content", "", true).
+		Tags("filesystem", "write", "developer", "all").
+		ExecSnippetField("path").
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args writeFileArgs
 			if err := unmarshalToolArgs(raw, "write_file", &args); err != nil {
 				return "", err
@@ -189,36 +150,26 @@ func WriteFile() agent.Tool {
 				return fmt.Sprintf("Written 0 bytes to %s (empty file)", resolved), nil
 			}
 			return fmt.Sprintf("Written %d bytes to %s", byteCount, resolved), nil
-		},
-	}
+		}).
+		Build()
 }
 
 // EditFile applies a single literal-string replacement to a file.
 func EditFile() agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "edit_file",
-			Description: "Replace the first occurrence of `old` with `new` in the given file. Set replace_all=true to replace every occurrence.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path":        map[string]any{"type": "string"},
-					"old":         map[string]any{"type": "string"},
-					"new":         map[string]any{"type": "string"},
-					"replace_all": map[string]any{"type": "boolean"},
-				},
-				"required": []string{"path", "old", "new"},
-			},
-		},
-		Tags: []string{"filesystem", "write", "developer"},
-		ExecSnippet: func(args json.RawMessage) string {
+	return NewTool("edit_file", "Replace the first occurrence of `old` with `new` in the given file. Set replace_all=true to replace every occurrence.").
+		StringParam("path", "", true).
+		StringParam("old", "", true).
+		StringParam("new", "", true).
+		BoolParam("replace_all", "", false).
+		Tags("filesystem", "write", "developer").
+		ExecSnippet(func(args json.RawMessage) string {
 			var params editFileArgs
 			if err := json.Unmarshal(args, &params); err != nil {
 				return ""
 			}
 			return `"` + params.Path + `" old="` + params.Old + `"`
-		},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+		}).
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args editFileArgs
 			if err := unmarshalToolArgs(raw, "edit_file", &args); err != nil {
 				return "", err
@@ -247,6 +198,6 @@ func EditFile() agent.Tool {
 				return fmt.Sprintf("Replaced %d occurrence(s) in %s (replace_all)", replaceCount, resolved), nil
 			}
 			return fmt.Sprintf("Replaced %d occurrence(s) in %s", replaceCount, resolved), nil
-		},
-	}
+		}).
+		Build()
 }

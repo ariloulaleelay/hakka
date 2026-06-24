@@ -32,31 +32,13 @@ type (
 // the context (set by the gateway). If they are missing, the tool
 // returns an error.
 func VimRunCommand() agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "vim_run_command",
-			Description: "Execute a Lua command in the user's Neovim instance and return the result. Gives full access to the editor: read buffers, edit text, run Ex commands (`:!`), get cursor position, modify windows, etc. The command is any valid Lua code that returns a JSON-serializable value (number, string, table, etc.). Examples:\n  - `return vim.api.nvim_buf_get_lines(0, 0, -1, false)` — get current buffer contents\n  - `vim.api.nvim_buf_set_lines(0, 0, -1, false, {'new line'}); return 'ok'` — replace buffer\n  - `return vim.fn.expand('%:p')` — get current file path\n  - `return vim.bo.filetype` — get filetype\n  - `local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false); return #lines` — line count\n  - `vim.cmd('write'); return 'saved'` — save the current buffer",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"command": map[string]any{
-						"type":        "string",
-						"description": "A Lua expression/statement to execute in Neovim. Must return a JSON-serializable value (use `return ...` to get a result). For side-effect-only commands, use `return 'ok'`.",
-					},
-				},
-				"required": []string{"command"},
-			},
-		},
-		Timeout: 30 * time.Second,
-		Tags: []string{"vim", "developer", "all"},
-		ExecSnippet: func(args json.RawMessage) string {
-			var params vimCommandArgs
-			if err := json.Unmarshal(args, &params); err != nil || params.Command == "" {
-				return ""
-			}
-			return params.Command
-		},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+	return NewTool("vim_run_command",
+		"Execute a Lua command in the user's Neovim instance and return the result. Gives full access to the editor: read buffers, edit text, run Ex commands (`:!`), get cursor position, modify windows, etc. The command is any valid Lua code that returns a JSON-serializable value (number, string, table, etc.). Examples:\n  - `return vim.api.nvim_buf_get_lines(0, 0, -1, false)` — get current buffer contents\n  - `vim.api.nvim_buf_set_lines(0, 0, -1, false, {'new line'}); return 'ok'` — replace buffer\n  - `return vim.fn.expand('%:p')` — get current file path\n  - `return vim.bo.filetype` — get filetype\n  - `local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false); return #lines` — line count\n  - `vim.cmd('write'); return 'saved'` — save the current buffer").
+		StringParam("command", "A Lua expression/statement to execute in Neovim. Must return a JSON-serializable value (use `return ...` to get a result). For side-effect-only commands, use `return 'ok'`.", true).
+		Tags("vim", "developer", "all").
+		Timeout(30 * time.Second).
+		ExecSnippet(execSnippetOneLine("command")).
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args vimCommandArgs
 			if err := unmarshalToolArgs(raw, "vim_run_command", &args); err != nil {
 				return "", err
@@ -82,8 +64,8 @@ func VimRunCommand() agent.Tool {
 				return string(pretty), nil
 			}
 			return string(result), nil
-		},
-	}
+		}).
+		Build()
 }
 
 // sendClientRequest sends a Lua command to the Neovim client and returns
@@ -129,21 +111,14 @@ func sendClientRequest(ctx context.Context, command string) (json.RawMessage, er
 func VimListBuffers() agent.Tool {
 	const luaCommand = `local bufs = vim.api.nvim_list_bufs(); local info = {}; for _, b in ipairs(bufs) do if vim.api.nvim_buf_is_loaded(b) then table.insert(info, {nr=b, name=vim.api.nvim_buf_get_name(b), ft=vim.bo[b].filetype, modified=vim.api.nvim_buf_get_option(b, 'modified')}) end; end; return info`
 
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "vim_list_buffers",
-			Description: "List all open buffers in the user's Neovim instance. Returns buffer number, name (file path), filetype, and modified status for each loaded buffer. Use this to discover what files the user is currently editing.",
-			Parameters: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
-			},
-		},
-		Timeout: 10 * time.Second,
-		Tags: []string{"vim", "developer", "all"},
-		ExecSnippet: func(args json.RawMessage) string {
+	return NewTool("vim_list_buffers",
+		"List all open buffers in the user's Neovim instance. Returns buffer number, name (file path), filetype, and modified status for each loaded buffer. Use this to discover what files the user is currently editing.").
+		Tags("vim", "developer", "all").
+		Timeout(10 * time.Second).
+		ExecSnippet(func(args json.RawMessage) string {
 			return "list_buffers"
-		},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+		}).
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			result, err := sendClientRequest(ctx, luaCommand)
 			if err != nil {
 				return "", err
@@ -181,38 +156,26 @@ func VimListBuffers() agent.Tool {
 				lines = append(lines, fmt.Sprintf("  buffer %d: %s  (%s)%s", b.Nr, name, ft, mod))
 			}
 			return strings.Join(lines, "\n"), nil
-		},
-	}
+		}).
+		Build()
 }
 
 // VimReadBuffer reads the contents of a specific Neovim buffer by its
 // buffer number (bufnr). Returns the lines as text with line numbers.
 func VimReadBuffer() agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "vim_read_buffer",
-			Description: "Read the contents of a specific Neovim buffer by its buffer number (bufnr). Use vim_list_buffers first to discover buffer numbers. Returns the buffer contents as numbered lines.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"bufnr": map[string]any{
-						"type":        "integer",
-						"description": "The buffer number to read (e.g. 1, 2, 3). Use vim_list_buffers to discover available buffer numbers.",
-					},
-				},
-				"required": []string{"bufnr"},
-			},
-		},
-		Timeout: 10 * time.Second,
-		Tags: []string{"vim", "developer", "all"},
-		ExecSnippet: func(args json.RawMessage) string {
+	return NewTool("vim_read_buffer",
+		"Read the contents of a specific Neovim buffer by its buffer number (bufnr). Use vim_list_buffers first to discover buffer numbers. Returns the buffer contents as numbered lines.").
+		IntParam("bufnr", "The buffer number to read (e.g. 1, 2, 3). Use vim_list_buffers to discover available buffer numbers.", true).
+		Tags("vim", "developer", "all").
+		Timeout(10 * time.Second).
+		ExecSnippet(func(args json.RawMessage) string {
 			var params vimReadBufferArgs
 			if err := json.Unmarshal(args, &params); err != nil || params.Bufnr == 0 {
 				return ""
 			}
 			return fmt.Sprintf("bufnr=%d", params.Bufnr)
-		},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+		}).
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args vimReadBufferArgs
 			if err := unmarshalToolArgs(raw, "vim_read_buffer", &args); err != nil {
 				return "", err
@@ -241,6 +204,6 @@ func VimReadBuffer() agent.Tool {
 				numbered = append(numbered, fmt.Sprintf("%6d  %s", i+1, line))
 			}
 			return strings.Join(numbered, "\n"), nil
-		},
-	}
+		}).
+		Build()
 }

@@ -20,37 +20,14 @@ type searchArgs struct {
 // Search runs ripgrep (rg) over a directory tree. Falls back to an error if
 // rg is not installed.
 func Search() agent.Tool {
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "search",
-			Description: "Search files recursively for a regex using ripgrep. Returns matching lines with file:line:col prefixes.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"pattern":     map[string]any{"type": "string"},
-					"path":        map[string]any{"type": "string", "description": "Directory or file to search; defaults to current dir."},
-					"max_lines":   map[string]any{"type": "integer", "description": "Maximum matching lines to return (default 200)."},
-					"ignore_case": map[string]any{"type": "boolean"},
-				},
-				"required": []string{"pattern"},
-			},
-		},
-		Tags: []string{"filesystem", "read", "developer", "all"},
-		ExecSnippet: func(args json.RawMessage) string {
-			var params struct {
-				Pattern string `json:"pattern"`
-				Path    string `json:"path"`
-			}
-			if err := json.Unmarshal(args, &params); err != nil {
-				return ""
-			}
-			snippet := `pattern="` + params.Pattern + `"`
-			if params.Path != "" && params.Path != "." {
-				snippet += ` path="` + params.Path + `"`
-			}
-			return snippet
-		},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+	return NewTool("search", "Search files recursively for a regex using ripgrep. Returns matching lines with file:line:col prefixes.").
+		StringParam("pattern", "", true).
+		StringParam("path", "Directory or file to search; defaults to current dir.", false).
+		IntParam("max_lines", "Maximum matching lines to return (default 200).", false).
+		BoolParam("ignore_case", "", false).
+		Tags("filesystem", "read", "developer", "all").
+		ExecSnippet(execSnippetPatternWithPath()).
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args searchArgs
 			if err := unmarshalToolArgs(raw, "search", &args); err != nil {
 				return "", err
@@ -92,6 +69,6 @@ func Search() agent.Tool {
 				return "", err
 			}
 			return string(res), nil
-		},
-	}
+		}).
+		Build()
 }

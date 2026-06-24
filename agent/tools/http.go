@@ -52,22 +52,12 @@ func isHTMLContent(contentType string, body []byte) bool {
 // automatically converted to Markdown for easier LLM consumption.
 func HTTPGet() agent.Tool {
 	httpClient := &http.Client{Timeout: 30 * time.Second}
-	return agent.Tool{
-		Schema: agent.ToolSchema{
-			Name:        "http_get",
-			Description: "Perform an HTTP GET and return status, headers, and body. HTML content is automatically converted to Markdown for easier LLM reading.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"url":       map[string]any{"type": "string"},
-					"headers":   map[string]any{"type": "object", "description": "Optional extra request headers."},
-					"max_bytes": map[string]any{"type": "integer", "description": "Max body bytes to include (default 64KB)."},
-				},
-				"required": []string{"url"},
-			},
-		},
-		Tags: []string{"network", "all"},
-		ExecSnippet: func(args json.RawMessage) string {
+	return NewTool("http_get", "Perform an HTTP GET and return status, headers, and body. HTML content is automatically converted to Markdown for easier LLM reading.").
+		StringParam("url", "", true).
+		ObjectParam("headers", "Optional extra request headers.", false).
+		IntParam("max_bytes", "Max body bytes to include (default 64KB).", false).
+		Tags("network", "all").
+		ExecSnippet(func(args json.RawMessage) string {
 			var params struct {
 				URL string `json:"url"`
 			}
@@ -75,8 +65,8 @@ func HTTPGet() agent.Tool {
 				return ""
 			}
 			return `url="` + params.URL + `"`
-		},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+		}).
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args httpGetArgs
 			if err := unmarshalToolArgs(raw, "http_get", &args); err != nil {
 				return "", err
@@ -129,6 +119,6 @@ func HTTPGet() agent.Tool {
 				fmt.Fprintf(&b, "\n%s\n", bodyStr)
 			}
 			return b.String(), nil
-		},
-	}
+		}).
+		Build()
 }
