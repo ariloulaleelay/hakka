@@ -46,7 +46,7 @@ This file is for humans only, agent should not modify it!
     - [x] Session search
     - [x] Session summarize
     - [ ] Session tags
-- [ ] Add standalone agentic mode (batch run without human, for real autonomous tasks)
+- [x] Add standalone agentic mode (batch run without human, for real autonomous tasks)
 - [ ] Advanced session manipulation — on the fly context compression, guided context compression, stashes, forks
 - [x] Implement discovery tool.
 - [x] Revisit discovery tool and check if it works great

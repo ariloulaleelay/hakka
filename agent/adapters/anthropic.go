@@ -3,10 +3,8 @@ package adapters
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/ariloulaleelay/hakka/agent"
@@ -265,45 +263,21 @@ func (ad *AnthropicAdapter) Complete(ctx context.Context, msgs []agent.Message, 
 // --- Stream -----------------------------------------------------------------
 
 func (ad *AnthropicAdapter) Stream(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	req := ad.buildStreamRequest(msgs, tools, opts)
-	raw, err := json.Marshal(req)
+	body, err := doStreamPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildStreamRequest(msgs, tools, opts), "anthropic", ad.extraHeaders())
 	if err != nil {
 		return nil, err
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, ad.messagesURL(), strings.NewReader(string(raw)))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	for k, v := range ad.extraHeaders() {
-		httpReq.Header.Set(k, v)
-	}
-
-	resp, err := ad.HTTPClient.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode >= 400 {
-		buf, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("anthropic: %s: %s", resp.Status, strings.TrimSpace(string(buf)))
 	}
 
 	resultCh := make(chan agent.StreamResult, 16)
 
 	go func() {
 		defer close(resultCh)
-		defer resp.Body.Close()
+		defer body.Close()
 
-		// Accumulate tool calls during stream, keyed by content block index.
-		// The Anthropic API streams tool arguments incrementally via
-		// input_json_delta events, so we merge fragments by index.
-		pendingTools := make(map[int]*agent.ToolCall)
+		accum := newIndexAccumulator()
 		var pendingUsage *agent.Usage
 
-		err = scanSSELines(ctx, resp.Body, func(payload string) error {
+		err = scanSSELines(ctx, body, func(payload string) error {
 			result, parseErr := ad.parseSSEPayload(payload)
 			if parseErr != nil {
 				return parseErr
@@ -321,43 +295,15 @@ func (ad *AnthropicAdapter) Stream(ctx context.Context, msgs []agent.Message, to
 			}
 
 			if result.ToolCall != nil {
-				// Store tool call by block index. The initial input from
-				// content_block_start is an empty stub; real arguments
-				// arrive via input_json_delta events.
-				if _, exists := pendingTools[result.BlockIndex]; !exists {
-					pendingTools[result.BlockIndex] = result.ToolCall
-				}
+				accum.add(result.BlockIndex, result.ToolCall.ID, result.ToolCall.Name, "")
 			}
 
 			if result.PartialJSON != "" {
-				// Accumulate partial JSON into the tool call at this index.
-				idx := result.BlockIndex
-				if pt, ok := pendingTools[idx]; ok {
-					pt.Arguments += result.PartialJSON
-				}
+				accum.add(result.BlockIndex, "", "", result.PartialJSON)
 			}
 
 			if result.Done {
-				// Build tool calls from accumulated state, sorted by index.
-				if len(pendingTools) > 0 {
-					calls := make([]agent.ToolCall, 0, len(pendingTools))
-					indices := make([]int, 0, len(pendingTools))
-					for idx := range pendingTools {
-						indices = append(indices, idx)
-					}
-					sort.Ints(indices)
-					for _, idx := range indices {
-						tc := *pendingTools[idx]
-						args := []byte(tc.Arguments)
-						if len(args) == 0 || !json.Valid(args) {
-							tc.Arguments = "{}"
-						}
-						calls = append(calls, tc)
-					}
-					resultCh <- agent.StreamResult{ToolCalls: calls, Usage: pendingUsage}
-				} else {
-					resultCh <- agent.StreamResult{Done: true, Usage: pendingUsage}
-				}
+				sendStreamFinal(resultCh, accum.flush(), pendingUsage)
 				return io.EOF
 			}
 

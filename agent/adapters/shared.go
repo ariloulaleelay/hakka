@@ -69,6 +69,42 @@ func doJSONPost(ctx context.Context, client *http.Client, url string, body any, 
 	return nil
 }
 
+// doStreamPost is the streaming counterpart of doJSONPost. It marshals the
+// body, POSTs to url with extraHeaders, checks for HTTP errors (>=400), and
+// returns the response body on success. The caller must close the body.
+//
+// Used by Anthropic and Gemini adapters for their streaming endpoints where
+// the response body is read incrementally (SSE) rather than decoded in one
+// shot.
+func doStreamPost(ctx context.Context, client *http.Client, url string, body any, prefix string, extraHeaders map[string]string) (io.ReadCloser, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	for k, v := range extraHeaders {
+		httpReq.Header.Set(k, v)
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		buf, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, &errHTTPStatus{
+			Prefix: prefix,
+			Status: resp.Status,
+			Body:   strings.TrimSpace(string(buf)),
+		}
+	}
+	return resp.Body, nil
+}
+
 // scanSSELines reads lines from body, filters for "data:" SSE events,
 // and calls onPayload for each non-empty, non-[DONE] payload.
 // Returns the first error from onPayload (which may be a sentinel like

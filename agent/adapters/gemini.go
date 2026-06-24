@@ -2,7 +2,6 @@ package adapters
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -291,40 +290,22 @@ func (ad *GeminiAdapter) Complete(ctx context.Context, msgs []agent.Message, too
 // --- Stream -----------------------------------------------------------------
 
 func (ad *GeminiAdapter) Stream(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	req := ad.buildRequest(msgs, tools, opts)
-	raw, err := json.Marshal(req)
+	body, err := doStreamPost(ctx, ad.HTTPClient, ad.streamEndpoint(), ad.buildRequest(msgs, tools, opts), "gemini", nil)
 	if err != nil {
 		return nil, err
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, ad.streamEndpoint(), bytes.NewReader(raw))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := ad.HTTPClient.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode >= 400 {
-		buf, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("gemini: %s: %s", resp.Status, strings.TrimSpace(string(buf)))
 	}
 
 	resultCh := make(chan agent.StreamResult, 16)
 
 	go func() {
 		defer close(resultCh)
-		defer resp.Body.Close()
+		defer body.Close()
 
-		var pendingToolCalls []agent.ToolCall
+		accum := newAppendAccumulator()
 		var pendingUsage *agent.Usage
 		var sigs []string
 
-		scanner := bufio.NewScanner(resp.Body)
+		scanner := bufio.NewScanner(body)
 		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -347,12 +328,11 @@ func (ad *GeminiAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 						if len(args) == 0 {
 							args = []byte("{}")
 						}
-						tc := agent.ToolCall{
+						accum.add(agent.ToolCall{
 							ID:        uuid.NewString(),
 							Name:      part.FunctionCall.Name,
 							Arguments: string(args),
-						}
-						pendingToolCalls = append(pendingToolCalls, tc)
+						})
 						sigs = append(sigs, part.ThoughtSignature)
 						continue
 					}
@@ -368,7 +348,6 @@ func (ad *GeminiAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 
 				// Check finish reason
 				if candidate.FinishReason != "" {
-					// Capture usage from the last response
 					if geminiResp.UsageMetadata.TotalTokenCount > 0 {
 						pendingUsage = &agent.Usage{
 							PromptTokens:     geminiResp.UsageMetadata.PromptTokenCount,
@@ -376,14 +355,7 @@ func (ad *GeminiAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 							TotalTokens:      geminiResp.UsageMetadata.TotalTokenCount,
 						}
 					}
-					if len(pendingToolCalls) > 0 {
-						resultCh <- agent.StreamResult{
-							ToolCalls: pendingToolCalls,
-							Usage:     pendingUsage,
-						}
-					} else {
-						resultCh <- agent.StreamResult{Done: true, Usage: pendingUsage}
-					}
+					sendStreamFinal(resultCh, accum.flush(), pendingUsage)
 					return
 				}
 			}
@@ -393,7 +365,7 @@ func (ad *GeminiAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 			return
 		}
 		// Stream ended without finish reason — normal completion
-		resultCh <- agent.StreamResult{Done: true, Usage: pendingUsage}
+		sendStreamFinal(resultCh, accum.flush(), pendingUsage)
 	}()
 
 	return resultCh, nil

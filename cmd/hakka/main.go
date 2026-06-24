@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -32,11 +34,14 @@ type appConfig struct {
 	telegramToken     string // Telegram bot token; falls back to TELEGRAM_BOT_TOKEN env var
 	telegramWhitelist string // comma-separated list of allowed chat IDs
 	telegramSOCKS5    string // SOCKS5 proxy address; falls back to TELEGRAM_SOCKS5 env var
+	run               string // batch mode: task string
+	runFile           string // batch mode: path to file with task
+	runEnableTools    string // batch mode: comma-separated tool names or tags to enable
 }
 
 func main() {
 	var cfg appConfig
-	flag.StringVar(&cfg.configPath, "config", "cmd/hakka/hakka.json", "Path to model config JSON")
+	flag.StringVar(&cfg.configPath, "config", "hakka.json", "Path to model config JSON")
 	flag.StringVar(&cfg.tcpAddr, "tcp-addr", "127.0.0.1:9876", "TCP gateway bind address")
 	flag.StringVar(&cfg.wsAddr, "ws-addr", ":8765", "WebSocket gateway bind address")
 	flag.StringVar(&cfg.dbPath, "db", "", "Optional SQLite session DB path (default: in-memory)")
@@ -45,16 +50,254 @@ func main() {
 	flag.StringVar(&cfg.telegramToken, "telegram-token", "", "Telegram bot token (env: TELEGRAM_BOT_TOKEN)")
 	flag.StringVar(&cfg.telegramWhitelist, "telegram-whitelist", "", "Comma-separated list of allowed Telegram chat IDs (env: TELEGRAM_WHITELIST)")
 	flag.StringVar(&cfg.telegramSOCKS5, "telegram-socks5", "", "SOCKS5 proxy for Telegram (e.g. 127.0.0.1:1080) (env: TELEGRAM_SOCKS5)")
+	flag.StringVar(&cfg.run, "run", "", "Run a single autonomous task in batch mode (no servers started)")
+	flag.StringVar(&cfg.runFile, "run-file", "", "Read task from file and run in batch mode")
+	flag.StringVar(&cfg.runEnableTools, "run-enable-tool", "", "Comma-separated tools/tags to enable (use '#tag' for explicit tag, e.g. '#utility,read_file')")
 	flag.Parse()
 
 	logger := newLogger(cfg.logLevel)
 	slog.SetDefault(logger)
 
+	// Batch mode: run once and exit.
+	if cfg.run != "" || cfg.runFile != "" {
+		task := cfg.run
+		if cfg.runFile != "" {
+			data, err := os.ReadFile(cfg.runFile)
+			if err != nil {
+				logger.Error("cannot read task file", "path", cfg.runFile, "err", err)
+				os.Exit(1)
+			}
+			task = string(data)
+		}
+		if task == "" {
+			logger.Error("empty task: nothing to run")
+			os.Exit(1)
+		}
+
+		var enableTools []string
+		if cfg.runEnableTools != "" {
+			enableTools = strings.Split(cfg.runEnableTools, ",")
+			for i := range enableTools {
+				enableTools[i] = strings.TrimSpace(enableTools[i])
+			}
+		}
+
+		if err := runBatch(logger, cfg.configPath, task, enableTools); err != nil {
+			logger.Error("batch run failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Server mode: start gateways.
 	if err := run(cfg, logger); err != nil {
 		logger.Error("fatal error", "err", err)
 		os.Exit(1)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Batch mode
+// ---------------------------------------------------------------------------
+
+// RunBatchParams holds parameters for a batch run.
+type RunBatchParams struct {
+	Registry    *agent.Registry
+	Task        string
+	Tools       *agent.ToolRegistry // optional; defaults to all built-in tools
+	EnableTools []string            // tool names or tags to enable; nil/empty means no tools enabled
+	Logger      *slog.Logger        // optional; defaults to slog.Default()
+	Store       agent.SessionStore  // optional; defaults to in-memory store
+}
+
+// resolveToolsByTagOrName resolves a list of tool/tag references to a
+// deduplicated list of tool names.
+//
+// References starting with "#" are treated exclusively as tags — the #
+// prefix is stripped and all tools with that tag are included.
+// Plain references (no "#") are first tried as exact tool names; if no
+// match is found, they are treated as a tag and all tools with that tag
+// are included.
+func resolveToolsByTagOrName(tools *agent.ToolRegistry, refs []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		if strings.HasPrefix(ref, "#") {
+			// Tag-prefixed reference: strip "#" and treat as tag only.
+			tag := strings.TrimSpace(ref[1:])
+			if tag == "" {
+				continue
+			}
+			for _, s := range tools.SchemasByTags(tag) {
+				if !seen[s.Name] {
+					seen[s.Name] = true
+					result = append(result, s.Name)
+				}
+			}
+			continue
+		}
+		// Plain reference: try exact name first.
+		if _, ok := tools.Get(ref); ok {
+			if !seen[ref] {
+				seen[ref] = true
+				result = append(result, ref)
+			}
+			continue
+		}
+		// Not a tool name — treat as tag.
+		for _, s := range tools.SchemasByTags(ref) {
+			if !seen[s.Name] {
+				seen[s.Name] = true
+				result = append(result, s.Name)
+			}
+		}
+	}
+	return result
+}
+
+// RunBatch runs a single autonomous task in batch mode and returns the
+// final assistant reply. All output goes to stdout (reply) and stderr
+// (session ID + token info).
+func RunBatch(ctx context.Context, p RunBatchParams) (string, error) {
+	return RunBatchWithOutput(ctx, p, os.Stdout, os.Stderr)
+}
+
+// RunBatchWithOutput is like RunBatch but allows capturing stdout and
+// stderr-like output to the given writers.
+func RunBatchWithOutput(ctx context.Context, p RunBatchParams, output io.Writer, aux io.Writer) (string, error) {
+	reg := p.Registry
+	if reg == nil {
+		return "", errors.New("registry is required")
+	}
+	if p.Task == "" {
+		return "", errors.New("task is required")
+	}
+	logger := p.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	// Use in-memory store — batch runs are ephemeral.
+	store := p.Store
+	if store == nil {
+		store = agent.NewMemoryStore()
+	}
+	sessions := agent.NewSessionManager(store, "You are Hakka, a helpful assistant.")
+	router := agent.NewRouter(reg)
+
+	tools := p.Tools
+	if tools == nil {
+		tools = agent.NewToolRegistry()
+		hakkatools.RegisterAll(tools)
+		hakkatools.RegisterSessionTools(tools, sessions, nil)
+	}
+
+	cfg := agent.EngineConfig{
+		MaxToolIterations: 256,
+		Logger:            logger,
+	}
+
+	conv := agent.NewConversation(sessions, router, tools, "batch", cfg)
+
+	// Resolve tool names/tags and enable them on the session.
+	resolved := resolveToolsByTagOrName(tools, p.EnableTools)
+	session, err := sessions.GetOrCreate(ctx, "batch", "")
+	if err != nil {
+		return "", fmt.Errorf("create session: %w", err)
+	}
+	for _, name := range resolved {
+		session.EnableTool(name)
+	}
+	if err := sessions.Save(ctx, "batch", session); err != nil {
+		return "", fmt.Errorf("save session: %w", err)
+	}
+
+	eventCh, err := conv.Execute(ctx, session.SessionID(), p.Task)
+	if err != nil {
+		return "", err
+	}
+
+	var reply string
+	for evt := range eventCh {
+		if tf, ok := evt.(event.TurnFinished); ok {
+			if tf.Err != nil {
+				return "", tf.Err
+			}
+			reply = tf.Reply
+			if output != nil {
+				fmt.Fprintln(output, reply)
+			}
+			if aux != nil {
+				fmt.Fprintf(aux, "session: %s\n", tf.SessionID)
+				fmt.Fprintf(aux, "tokens: %d\n", tf.TotalTokens)
+			}
+		}
+	}
+	return reply, nil
+}
+
+func runBatch(logger *slog.Logger, configPath, task string, enableTools []string) error {
+	modelCfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("load config %q: %w", configPath, err)
+	}
+
+	registry, err := config.BuildRegistry(modelCfg, "")
+	if err != nil {
+		return fmt.Errorf("build registry: %w", err)
+	}
+	logger.Info("batch run", "model", registry.Default(), "task", task[:min(len(task), 80)])
+
+	// Connect MCP servers if configured.
+	tools := agent.NewToolRegistry()
+	hakkatools.RegisterAll(tools)
+
+	mcpMgr := mcp.NewManager()
+	mcpMgr.Logger = logger
+	if servers := modelCfg.MCPServerConfigs(); len(servers) > 0 {
+		// We need a temporary session manager for session tools during MCP setup.
+		store := agent.NewMemoryStore()
+		sessions := agent.NewSessionManager(store, "")
+		hakkatools.RegisterSessionTools(tools, sessions, nil)
+
+		for name, srvCfg := range servers {
+			mcpMgr.Add(name, mcp.ServerConfig{
+				Command: srvCfg.Command,
+				Args:    srvCfg.Args,
+				Env:     srvCfg.Env,
+				URL:     srvCfg.URL,
+				Headers: srvCfg.Headers,
+			})
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := mcpMgr.ConnectAll(ctx, tools); err != nil {
+			cancel()
+			mcpMgr.CloseAll()
+			return fmt.Errorf("mcp connect: %w", err)
+		}
+		cancel()
+		logger.Info("mcp servers connected", "count", len(servers))
+	}
+	defer mcpMgr.CloseAll()
+
+	// Run the task.
+	_, err = RunBatch(context.Background(), RunBatchParams{
+		Registry:    registry,
+		Task:        task,
+		Tools:       tools,
+		EnableTools: enableTools,
+		Logger:      logger,
+	})
+	return err
+}
+
+// ---------------------------------------------------------------------------
+// Server mode (unchanged below)
+// ---------------------------------------------------------------------------
 
 func run(cfg appConfig, logger *slog.Logger) error {
 	modelCfg, err := config.Load(cfg.configPath)
@@ -79,13 +322,13 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	mcpMgr := mcp.NewManager()
 	mcpMgr.Logger = logger
 	if servers := modelCfg.MCPServerConfigs(); len(servers) > 0 {
-		for name, cfg := range servers {
+		for name, srvCfg := range servers {
 			mcpMgr.Add(name, mcp.ServerConfig{
-				Command: cfg.Command,
-				Args:    cfg.Args,
-				Env:     cfg.Env,
-				URL:     cfg.URL,
-				Headers: cfg.Headers,
+				Command: srvCfg.Command,
+				Args:    srvCfg.Args,
+				Env:     srvCfg.Env,
+				URL:     srvCfg.URL,
+				Headers: srvCfg.Headers,
 			})
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

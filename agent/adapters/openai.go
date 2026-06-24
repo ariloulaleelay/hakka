@@ -2,23 +2,15 @@ package adapters
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
-	"sort"
-	"sync/atomic"
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
 
 	"github.com/ariloulaleelay/hakka/agent"
 )
-
-var reqCounter atomic.Int64
 
 const (
 	openAIRetryAttempts  = 20
@@ -107,66 +99,16 @@ func (ad *OpenAIAdapter) buildRequest(msgs []agent.Message, tools []agent.ToolSc
 	return req
 }
 
-func (ad *OpenAIAdapter) dumpRequest(req openai.ChatCompletionRequest) {
-	if ad.LLMDebugDir == "" {
-		return
-	}
-	n := reqCounter.Add(1)
-	ts := time.Now().UnixNano()
-	if err := os.MkdirAll(ad.LLMDebugDir, 0755); err != nil {
-		return
-	}
-	path := filepath.Join(ad.LLMDebugDir, fmt.Sprintf("openai_%d_%d_req.json", ts, n))
-	raw, err := json.MarshalIndent(req, "", "  ")
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(path, raw, 0644)
-}
-
-func (ad *OpenAIAdapter) dumpResponse(resp openai.ChatCompletionResponse) {
-	if ad.LLMDebugDir == "" {
-		return
-	}
-	n := reqCounter.Add(1)
-	ts := time.Now().UnixNano()
-	if err := os.MkdirAll(ad.LLMDebugDir, 0755); err != nil {
-		return
-	}
-	path := filepath.Join(ad.LLMDebugDir, fmt.Sprintf("openai_%d_%d_resp.json", ts, n))
-	raw, err := json.MarshalIndent(resp, "", "  ")
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(path, raw, 0644)
-}
-
-func (ad *OpenAIAdapter) dumpStreamResponse(resp openai.ChatCompletionStreamResponse) {
-	if ad.LLMDebugDir == "" {
-		return
-	}
-	n := reqCounter.Add(1)
-	ts := time.Now().UnixNano()
-	if err := os.MkdirAll(ad.LLMDebugDir, 0755); err != nil {
-		return
-	}
-	path := filepath.Join(ad.LLMDebugDir, fmt.Sprintf("openai_%d_%d_stream_resp.json", ts, n))
-	raw, err := json.MarshalIndent(resp, "", "  ")
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(path, raw, 0644)
-}
-
 func (ad *OpenAIAdapter) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (*agent.LLMResponse, error) {
 	req := ad.buildRequest(msgs, tools, opts)
-	resp, err := retryOpenAI(ctx, req, ad.dumpRequest, func() (openai.ChatCompletionResponse, error) {
+	resp, err := retryOpenAI(ctx, req, func() (openai.ChatCompletionResponse, error) {
+		dumpDebugJSON(ad.LLMDebugDir, "openai", "req", req)
 		return ad.Client.CreateChatCompletion(ctx, req)
 	})
 	if err != nil {
 		return nil, err
 	}
-	ad.dumpResponse(resp)
+	dumpDebugJSON(ad.LLMDebugDir, "openai", "resp", resp)
 	if len(resp.Choices) == 0 {
 		return nil, errors.New("openai: empty response")
 	}
@@ -209,12 +151,10 @@ func (ad *OpenAIAdapter) Complete(ctx context.Context, msgs []agent.Message, too
 func retryOpenAI[T any](
 	ctx context.Context,
 	req openai.ChatCompletionRequest,
-	dump func(openai.ChatCompletionRequest),
 	fn func() (T, error),
 ) (T, error) {
 	var lastErr error
 	for attempt := 0; attempt < openAIRetryAttempts; attempt++ {
-		dump(req)
 		result, err := fn()
 		if err == nil {
 			return result, nil
@@ -257,49 +197,13 @@ func sleepOpenAIRetry(ctx context.Context, attempt int) error {
 	}
 }
 
-// toolCallAccumulator merges streaming delta tool calls by Index.
-// OpenAI streams tool calls incrementally — each chunk carries partial
-// data for a specific index. We must merge across chunks, not append.
-type toolCallAccumulator struct {
-	ID        string
-	Name      string
-	Arguments string
-}
-
-// flushToolCalls builds the final agent.ToolCall slice from accumulators
-// in index order. Empty Arguments are replaced with "{}".
-func flushToolCalls(accum map[int]*toolCallAccumulator) []agent.ToolCall {
-	if len(accum) == 0 {
-		return nil
-	}
-	indices := make([]int, 0, len(accum))
-	for idx := range accum {
-		indices = append(indices, idx)
-	}
-	sort.Ints(indices)
-
-	out := make([]agent.ToolCall, 0, len(indices))
-	for _, idx := range indices {
-		acc := accum[idx]
-		args := acc.Arguments
-		if args == "" {
-			args = "{}"
-		}
-		out = append(out, agent.ToolCall{
-			ID:        acc.ID,
-			Name:      acc.Name,
-			Arguments: args,
-		})
-	}
-	return out
-}
-
 func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (<-chan agent.StreamResult, error) {
 	req := ad.buildRequest(msgs, tools, opts)
 	req.Stream = true
 	req.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
 
-	stream, err := retryOpenAI(ctx, req, ad.dumpRequest, func() (*openai.ChatCompletionStream, error) {
+	stream, err := retryOpenAI(ctx, req, func() (*openai.ChatCompletionStream, error) {
+		dumpDebugJSON(ad.LLMDebugDir, "openai", "req", req)
 		return ad.Client.CreateChatCompletionStream(ctx, req)
 	})
 	if err != nil {
@@ -312,24 +216,14 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 		defer close(resultCh)
 		defer stream.Close()
 
-		// Accumulate tool calls across deltas. OpenAI streams tool calls
-		// as incremental deltas, each chunk carries partial data for a
-		// specific tool call Index. We merge by index rather than appending.
-		accum := make(map[int]*toolCallAccumulator)
+		accum := newIndexAccumulator()
 		var pendingUsage *agent.Usage
 
 		for {
 			resp, err := stream.Recv()
 			if errors.Is(err, io.EOF) {
 				// Stream complete — flush accumulated tool calls if any.
-				if toolCalls := flushToolCalls(accum); len(toolCalls) > 0 {
-					resultCh <- agent.StreamResult{
-						ToolCalls: toolCalls,
-						Usage:     pendingUsage,
-					}
-				} else {
-					resultCh <- agent.StreamResult{Done: true, Usage: pendingUsage}
-				}
+				sendStreamFinal(resultCh, accum.flush(), pendingUsage)
 				return
 			}
 			if err != nil {
@@ -337,27 +231,16 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 				return
 			}
 
+			dumpDebugJSON(ad.LLMDebugDir, "openai", "stream_resp", resp)
+
 			for _, choice := range resp.Choices {
-				// Merge tool call deltas by index.
+				// Merge tool call deltas by index using the shared accumulator.
 				for _, tc := range choice.Delta.ToolCalls {
 					idx := 0
 					if tc.Index != nil {
 						idx = *tc.Index
 					}
-					acc, exists := accum[idx]
-					if !exists {
-						acc = &toolCallAccumulator{}
-						accum[idx] = acc
-					}
-					if tc.ID != "" {
-						acc.ID = tc.ID
-					}
-					if tc.Function.Name != "" {
-						acc.Name = tc.Function.Name
-					}
-					if tc.Function.Arguments != "" {
-						acc.Arguments += tc.Function.Arguments
-					}
+					accum.add(idx, tc.ID, tc.Function.Name, tc.Function.Arguments)
 				}
 
 				// Emit text delta if present
@@ -381,14 +264,7 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 
 				// Finish reason signals end of this assistant turn
 				if choice.FinishReason != "" {
-					if toolCalls := flushToolCalls(accum); len(toolCalls) > 0 {
-						resultCh <- agent.StreamResult{
-							ToolCalls: toolCalls,
-							Usage:     pendingUsage,
-						}
-					} else {
-						resultCh <- agent.StreamResult{Done: true, Usage: pendingUsage}
-					}
+					sendStreamFinal(resultCh, accum.flush(), pendingUsage)
 					return
 				}
 			}

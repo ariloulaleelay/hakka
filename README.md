@@ -19,6 +19,7 @@
 - **Rich Tool System** — Built-in file, shell, search, HTTP, session management, and MCP server tools. Enable/disable per-session.
 - **Runtime Model Switching** — Change the active model per-session with slash commands — no restart needed.
 - **Zero CGO** — Pure Go SQLite, easy cross-compilation.
+- **Batch Mode** — Run autonomous tasks without starting servers, ideal for scripting and CI/CD integration.
 
 ---
 
@@ -101,6 +102,59 @@ websocat ws://127.0.0.1:8765/ws
 | `--ws-addr` | `:8765` | WebSocket gateway bind address |
 | `--db` | *(in-memory)* | SQLite database file path |
 | `--log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+| `--run` | — | **Batch mode**: run a single autonomous task (no servers started) |
+| `--run-file` | — | **Batch mode**: read task from file and run it |
+| `--run-enable-tool` | — | **Batch mode**: comma-separated tool names or tags to enable. Use `#tag` to force tag resolution (e.g. `--run-enable-tool "#utility,read_file"`) |
+
+### Batch Mode
+
+Run a single autonomous task without starting any network gateways. The agent
+executes the task using the configured LLM, prints the final response to stdout,
+writes session info (ID + token usage) to stderr, and exits.
+
+```sh
+# Run a simple task
+./bin/hakka --config hakka.json --run "What files are in the current directory?"
+
+# Read task from a file
+./bin/hakka --config hakka.json --run-file task.txt
+
+# Limit which tools the agent can use (whitelist by name or tag)
+./bin/hakka --config hakka.json \
+  --run "Summarize TODO.md" \
+  --run-enable-tool "read_file,search"
+
+# Enable only safe utility tools using the #tag syntax
+./bin/hakka --config hakka.json \
+  --run "Generate a random number" \
+  --run-enable-tool "#utility"
+
+# Enable a specific tool by name alongside a group by tag
+./bin/hakka --config hakka.json \
+  --run "Create a file called hello.txt" \
+  --run-enable-tool "write_file,#utility"
+
+# Use # prefix when a tag name collides with a tool name
+./bin/hakka --config hakka.json \
+  --run "List all tools" \
+  --run-enable-tool "#all"  # forces tag resolution, avoids tool name "all"
+```
+
+Batch mode uses an **in-memory session store** — no database is created or
+persisted. MCP servers from the configuration are connected and available
+during the run.
+
+Tool tags available for `--run-enable-tool`:
+
+| Tag | Included tools |
+|-----|---------------|
+| `filesystem` | `read_file`, `list_dir`, `write_file`, `edit_file`, `search` |
+| `network` | `http_get` |
+| `exec` | `shell` |
+| `utility` | `random`, `echo`, session tools |
+| `vim` | `vim_list_buffers`, `vim_read_buffer` |
+| `session` | All session management tools |
+| `all` | Every tool |
 
 ### Slash Commands
 
