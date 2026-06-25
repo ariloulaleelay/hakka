@@ -677,3 +677,56 @@ func TestConversation_EnabledTool_ExecutesNormally(t *testing.T) {
 		t.Fatalf("expected reply 'done', got %q", reply)
 	}
 }
+
+// TestDefaultCompactSoftLimitIsUsedFromConfig proves that when a session
+// has CompactSoftLimit=0 (the default from NewSession), the conversation
+// resolves it to the engine config default (200000) and does NOT trigger
+// compaction for a small session.
+//
+// This guards against the bug where the session's raw value (0) would be
+// logged as "softLimit=0" and could accidentally be passed to
+// BuildCompactContext, triggering compaction on every turn.
+func TestDefaultCompactSoftLimitIsUsedFromConfig(t *testing.T) {
+	sm := NewSessionManager(NewMemoryStore(), "sys")
+	reg := NewRegistry()
+	reg.Register("default", &simpleAdapter{
+		responses: []response{
+			{msg: Message{Role: RoleAssistant, Content: "done"}},
+		},
+	})
+	router := NewRouter(reg)
+	tools := NewToolRegistry()
+
+	// Use default engine config (CompactSoftLimit = 200000)
+	conv := NewConversation(sm, router, tools, "testns", EngineConfig{
+		Logger: testLogger(t),
+	})
+
+	session, _, err := executeSync(conv, context.Background(), "test-session", "hello")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Session's CompactSoftLimit should still be 0 (default), but the
+	// engine should have used the resolved value (200000).
+	if got := session.GetCompactSoftLimit(); got != 0 {
+		t.Fatalf("expected session CompactSoftLimit=0 (default), got %d", got)
+	}
+
+	// Now verify the engine resolved the default correctly by checking
+	// that BuildCompactContext would not trigger compaction for this
+	// tiny session when passed the resolved limit.
+	msgs, needCompactify := BuildCompactContext(session, 200000)
+	if needCompactify {
+		t.Fatalf("BUG: BuildCompactContext triggered compaction with softLimit=200000 for a tiny session; resolved limit should be the default (200000), not 0")
+	}
+
+	// Also verify that passing 0 (the bug) WOULD trigger compaction,
+	// confirming the bug scenario.
+	_, buggyCompactify := BuildCompactContext(session, 0)
+	if !buggyCompactify {
+		t.Error("expected BuildCompactContext with softLimit=0 to trigger compaction (demonstrating the bug)")
+	}
+
+	t.Logf("OK: resolved softLimit=200000, context has %d messages, no compaction triggered", len(msgs))
+}

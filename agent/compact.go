@@ -327,9 +327,9 @@ func BuildCompactContext(session SessionHistory, softLimit int) ([]Message, bool
 		// last raw message is not already a compaction warning.
 		totalTokens := estimateTokens(rawMsgs)
 		warning := Message{
-			Role:     RoleSystem,
+			Role:     RoleUser,
 			Internal: true,
-			Content:  fmt.Sprintf("STOP! Context exceeded ~%dK tokens (soft limit: %dK)! You MUST compact old history NOW using `context_compactify` with range_start/range_end before responding to the user. Range indices refer to [N] prefixes of each message. Decide what info you do not need anymore, and I remove it from our context, replacing it with your summarization.", totalTokens/1000, softLimit/1000),
+			Content:  fmt.Sprintf("STOP! Context exceeded ~%dK tokens (soft limit: %dK)! You MUST compact old history NOW using `context_compactify` before responding to the user. Range indices refer to [N] prefixes of each message. Decide what info you do not need anymore, and those ranges will be replaced with your summarization. Thus you can keep only importang info and drop boilerplate.", totalTokens/1000, softLimit/1000),
 		}
 		view = append(view, warning)
 	}
@@ -340,11 +340,13 @@ func BuildCompactContext(session SessionHistory, softLimit int) ([]Message, bool
 	if len(history) > 0 && history[0].Role == RoleSystem {
 		result = append(result, history[0])
 	}
-	compactNotice := Message{
-		Role:    RoleSystem,
-		Content: "You have access to `context_compactify` tool for compacting old conversation history when context gets too large. When warned about context quota, use it with range_start/range_end to compact unneeded tool-call rounds before continuing. Add meaningful summarization for compacted messages. You can call this tool multiple times to throw out obsolete and unneeded data.",
+	if needCompactify {
+		compactNotice := Message{
+			Role:    RoleSystem,
+			Content: "You have access to `context_compactify` tool for compacting old conversation history when context gets too large. When warned about context quota, use it with range_start/range_end to compact unneeded tool-call rounds before continuing. Add meaningful summarization for compacted messages. You can call this tool multiple times to throw out obsolete and unneeded data.",
+		}
+		result = append(result, compactNotice)
 	}
-	result = append(result, compactNotice)
 	if cwdMsg := session.CWDMessage(); cwdMsg != nil {
 		result = append(result, *cwdMsg)
 	}

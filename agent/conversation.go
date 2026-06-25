@@ -335,7 +335,7 @@ func (conv *Conversation) runToolIterations(
 			"iteration", i,
 			"session", session.SessionID(),
 			"estTokens", estTokens,
-			"softLimit", session.GetCompactSoftLimit(),
+			"softLimit", softLimit,
 			"needCompactify", needCompactify,
 			"schemaCount", len(turnSchemas))
 
