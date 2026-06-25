@@ -135,49 +135,6 @@ func TestExtractCompactifyRanges_MultipleCalls(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mergeRanges tests
-// ---------------------------------------------------------------------------
-
-func TestMergeRanges_Empty(t *testing.T) {
-	merged := mergeRanges(nil)
-	if len(merged) != 0 {
-		t.Fatalf("expected empty, got %v", merged)
-	}
-}
-
-func TestMergeRanges_NoOverlap(t *testing.T) {
-	input := []compactRange{{from: 1, to: 3}, {from: 5, to: 7}}
-	merged := mergeRanges(input)
-	if len(merged) != 2 {
-		t.Fatalf("expected 2 ranges, got %v", merged)
-	}
-}
-
-func TestMergeRanges_Overlapping(t *testing.T) {
-	input := []compactRange{{from: 1, to: 5}, {from: 3, to: 8}}
-	merged := mergeRanges(input)
-	if len(merged) != 1 {
-		t.Fatalf("expected 1 merged range, got %v", merged)
-	}
-}
-
-func TestMergeRanges_Adjacent(t *testing.T) {
-	input := []compactRange{{from: 1, to: 3}, {from: 4, to: 7}}
-	merged := mergeRanges(input)
-	if len(merged) != 1 {
-		t.Fatalf("adjacent ranges should merge: expected 1, got %v", merged)
-	}
-}
-
-func TestMergeRanges_Contained(t *testing.T) {
-	input := []compactRange{{from: 1, to: 10}, {from: 3, to: 5}}
-	merged := mergeRanges(input)
-	if len(merged) != 1 {
-		t.Fatalf("expected 1 range, got %v", merged)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // computeEffectiveInRange tests
 // ---------------------------------------------------------------------------
 
@@ -452,7 +409,7 @@ func TestBuildCompactContext_NoCompactionUnderLimit(t *testing.T) {
 	s.Append(Message{Role: RoleUser, Content: "hello"})
 	s.Append(Message{Role: RoleAssistant, Content: "hi there"})
 
-	result, needCompactify := BuildCompactContext(s, 100000)
+	result, needCompactify, _ := BuildCompactContext(s, 100000)
 
 	if needCompactify {
 		t.Fatal("expected needCompactify=false")
@@ -477,7 +434,7 @@ func TestBuildCompactContext_SoftLimitTriggersWarning(t *testing.T) {
 	s.Append(Message{Role: RoleUser, Content: bigContent})
 	s.Append(Message{Role: RoleAssistant, Content: "ok"})
 
-	result, needCompactify := BuildCompactContext(s, 10)
+	result, needCompactify, _ := BuildCompactContext(s, 10)
 
 	if !needCompactify {
 		t.Fatal("expected needCompactify=true because content exceeds soft limit")
@@ -527,7 +484,7 @@ func TestBuildCompactContext_PastCompactifyCallApplied(t *testing.T) {
 	s.Append(Message{Role: RoleUser, Content: "now write"})
 	s.Append(Message{Role: RoleAssistant, Content: "Writing..."})
 
-	result, needCompactify := BuildCompactContext(s, 100000)
+	result, needCompactify, _:= BuildCompactContext(s, 100000)
 
 	for _, m := range result {
 		if m.Role == RoleTool && m.Name == "context_compactify" {
@@ -578,7 +535,7 @@ func TestBuildCompactContext_UserMessagesNeverCompacted(t *testing.T) {
 
 	makeCompactifyCall(s, []compactRange{{from: 0, to: 7}})
 
-	result, _ := BuildCompactContext(s, 100000)
+	result, _, _ := BuildCompactContext(s, 100000)
 
 	foundInitial := false
 	foundSecond := false
@@ -610,7 +567,7 @@ func TestBuildCompactContext_PartialRoundNotCompacted(t *testing.T) {
 	// Try to compact only index 2 (the tool result) — should fail atomic check
 	makeCompactifyCall(s, []compactRange{{from: 2, to: 2}})
 
-	result, _ := BuildCompactContext(s, 100000)
+	result, _, _ := BuildCompactContext(s, 100000)
 
 	// The tool result must still be present
 	foundTool := false
@@ -649,7 +606,7 @@ func TestBuildCompactContext_NoSoftLimitWhenUnder(t *testing.T) {
 	s.Append(Message{Role: RoleUser, Content: "hi"})
 	s.Append(Message{Role: RoleAssistant, Content: "hello"})
 
-	result, needCompactify := BuildCompactContext(s, 150000)
+	result, needCompactify, _ := BuildCompactContext(s, 150000)
 
 	if needCompactify {
 		t.Fatal("expected needCompactify=false")
@@ -674,7 +631,7 @@ func TestBuildCompactContext_NoSoftLimitWhenUnder(t *testing.T) {
 
 func TestBuildCompactContext_EmptySession(t *testing.T) {
 	s := NewSession("testns", "You are helpful.")
-	result, needCompactify := BuildCompactContext(s, 100000)
+	result, needCompactify, _ := BuildCompactContext(s, 100000)
 
 	if needCompactify {
 		t.Fatal("empty session should not trigger compactify")
@@ -693,7 +650,7 @@ func TestBuildCompactContext_InternalMessagesFiltered(t *testing.T) {
 	s.Append(Message{Role: RoleUser, Content: "hello"})
 	s.Append(Message{Role: RoleAssistant, Content: "hi"})
 
-	result, _ := BuildCompactContext(s, 100000)
+	result, _, _ := BuildCompactContext(s, 100000)
 
 	for _, m := range result {
 		if m.Internal {
@@ -715,7 +672,7 @@ func TestBuildCompactContext_InternalMessagesDontGetIndexPrefixes(t *testing.T) 
 	s.Append(Message{Role: RoleUser, Content: bigContent})
 	s.Append(Message{Role: RoleAssistant, Content: "ok"})
 
-	result, _ := BuildCompactContext(s, 10)
+	result, _, _ := BuildCompactContext(s, 10)
 
 	// The [N] prefix on the user message should be [1] (index 1 in raw session),
 	// NOT [2] — because the internal message at index 0 is skipped.
@@ -749,7 +706,7 @@ func TestBuildCompactContext_CompactifyMessagesNeverInOutput(t *testing.T) {
 	s.Append(Message{Role: RoleAssistant, Content: "ok"})
 
 	// Test with high soft limit (needCompactify=false).
-	result, needCompactify := BuildCompactContext(s, 100000)
+	result, needCompactify, _ := BuildCompactContext(s, 100000)
 	if needCompactify {
 		t.Fatal("soft limit 100000 should not trigger compaction")
 	}
@@ -780,7 +737,7 @@ func TestBuildCompactContext_CompactifyMessagesNeverInOutput(t *testing.T) {
 	s.Append(Message{Role: RoleUser, Content: bigContent})
 	s.Append(Message{Role: RoleAssistant, Content: "final"})
 
-	result2, needCompactify2 := BuildCompactContext(s, 10)
+	result2, needCompactify2, _ := BuildCompactContext(s, 10)
 	if !needCompactify2 {
 		t.Fatal("soft limit 10 should trigger compaction")
 	}
@@ -825,7 +782,7 @@ func TestBuildCompactContext_TokenEstimateExcludesCompactifyMessages(t *testing.
 	// The compactify call adds ~10000 chars → ~2500 tokens if counted.
 	// With a soft limit of 500, we should see needCompactify=true
 	// because 1000 > 500 (compactify messages are excluded from estimate).
-	result, needCompactify := BuildCompactContext(s, 500)
+	result, needCompactify, _ := BuildCompactContext(s, 500)
 
 	if !needCompactify {
 		t.Fatal("expected needCompactify=true (real content ~1000 tokens > soft limit 500)")
@@ -975,7 +932,7 @@ func TestBuildCompactContext_InvalidRangeDoesNotCausePanic(t *testing.T) {
 	s.Append(Message{Role: RoleAssistant, Content: "ok"})
 
 	// Must not panic.
-	result, _ := BuildCompactContext(s, 100000)
+	result, _, _ := BuildCompactContext(s, 100000)
 
 	// The invalid compactify call must be filtered, and normal messages
 	// must still appear.
@@ -1012,7 +969,7 @@ func TestBuildCompactContext_NoDuplicateWarnings(t *testing.T) {
 	// Call BuildCompactContext multiple times — simulating multiple
 	// tool-loop iterations where the LLM has not yet called compactify.
 	for i := 0; i < 5; i++ {
-		result, needCompactify := BuildCompactContext(s, 10)
+		result, needCompactify, _ := BuildCompactContext(s, 10)
 		if !needCompactify {
 			t.Fatalf("iteration %d: expected needCompactify=true", i)
 		}
@@ -1087,7 +1044,7 @@ func TestBuildCompactContext_MixedCompactifyAndRegularTools(t *testing.T) {
 
 	s.Append(Message{Role: RoleAssistant, Content: "done"})
 
-	result, _ := BuildCompactContext(s, 100000)
+	result, _, _ := BuildCompactContext(s, 100000)
 
 	// Verify: no context_compactify tool results in the view.
 	for _, m := range result {
@@ -1357,5 +1314,300 @@ func TestMessageTokens_WithToolCallsAndNoUsage(t *testing.T) {
 	expected := len("result")/4 + len("read_file")/4 + len(`{"path":"/foo"}`)/4
 	if total != expected {
 		t.Fatalf("expected %d (chars/4), got %d", expected, total)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug: Separate compaction ranges separated by compactify messages get merged
+// into one marker instead of producing separate markers with distinct summaries.
+// ---------------------------------------------------------------------------
+
+func TestBuildCompactedView_SeparateRangesStaySeparateAcrossCompactifyMessages(t *testing.T) {
+	// Scenario: Two separate tool-call rounds that have been compacted by two
+	// different compactify calls. The compactify call/result messages sit
+	// BETWEEN the two inRange spans in the raw message list.
+	//
+	// Raw messages:
+	//   idx 0: User "task1"
+	//   idx 1: Assistant (read_file)  ← inRange (compact range 1: [1,2])
+	//   idx 2: Tool (result1)         ← inRange (compact range 1: [1,2])
+	//   idx 3: Assistant (compactify)  ← first compactify call (isCompactifyMessage)
+	//   idx 4: Tool (compactify result) ← first compactify result (isCompactifyMessage)
+	//   idx 5: User "task2"
+	//   idx 6: Assistant (shell)      ← inRange (compact range 2: [6,7])
+	//   idx 7: Tool (result2)         ← inRange (compact range 2: [6,7])
+	//   idx 8: Assistant (compactify)  ← second compactify call (isCompactifyMessage)
+	//   idx 9: Tool (compactify result) ← second compactify result (isCompactifyMessage)
+	//
+	// Expected: TWO separate [Compacted ...] markers, one for each range,
+	// with their respective summaries.
+
+	rawMsgs := []Message{
+		{Role: RoleUser, Content: "task1"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "result1", ToolCallID: "c1", Name: "read_file"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc1", Name: "context_compactify", Arguments: `{"range_start":1,"range_end":2,"summary":"Reading files"}`}}},
+		{Role: RoleTool, Content: "Noted.", ToolCallID: "cc1", Name: "context_compactify"},
+		{Role: RoleUser, Content: "task2"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "shell", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "result2", ToolCallID: "c2", Name: "shell"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc2", Name: "context_compactify", Arguments: `{"range_start":6,"range_end":7,"summary":"Executing shell"}`}}},
+		{Role: RoleTool, Content: "Noted.", ToolCallID: "cc2", Name: "context_compactify"},
+	}
+
+	// Extract and merge ranges, then build the view.
+	ranges := extractCompactifyRanges(rawMsgs)
+	inRange := computeEffectiveInRange(rawMsgs, ranges)
+	summaryAt := buildSummaryLookup(len(rawMsgs), ranges)
+
+	view, _ := buildCompactedView(rawMsgs, inRange, summaryAt)
+
+	// We should see: user "task1", marker1, user "task2", marker2
+	// = 4 messages in view (compactify calls/results are filtered).
+	if len(view) != 4 {
+		t.Fatalf("expected 4 view messages (2 users + 2 markers), got %d: %+v", len(view), view)
+	}
+
+	if view[0].Content != "task1" {
+		t.Fatalf("view[0] = %q, want 'task1'", view[0].Content)
+	}
+	if view[2].Content != "task2" {
+		t.Fatalf("view[2] = %q, want 'task2'", view[2].Content)
+	}
+
+	// First marker should have summary "Reading files"
+	if !strings.Contains(view[1].Content, "Reading files") {
+		t.Fatalf("view[1] (first marker) should contain 'Reading files', got %q", view[1].Content)
+	}
+	if strings.Contains(view[1].Content, "Executing shell") {
+		t.Fatalf("view[1] (first marker) should NOT contain 'Executing shell', got %q", view[1].Content)
+	}
+
+	// Second marker should have summary "Executing shell"
+	if !strings.Contains(view[3].Content, "Executing shell") {
+		t.Fatalf("view[3] (second marker) should contain 'Executing shell', got %q", view[3].Content)
+	}
+	if strings.Contains(view[3].Content, "Reading files") {
+		t.Fatalf("view[3] (second marker) should NOT contain 'Reading files', got %q", view[3].Content)
+	}
+}
+
+func TestBuildCompactContext_MultipleSeparateCompactionsHaveDistinctSummaries(t *testing.T) {
+	// Integration test: Two rounds of tool use, each compacted separately
+	// with different summaries. The result should show two distinct markers.
+	s := NewSession("testns", "")
+
+	// Round 1
+	s.Append(Message{Role: RoleUser, Content: "read files"})
+	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`}}})
+	s.Append(Message{Role: RoleTool, Content: "content1", ToolCallID: "c1", Name: "read_file"})
+	s.Append(Message{Role: RoleAssistant, Content: "done reading"})
+
+	// First compactify call with summary "Reading project files"
+	compactifyArgs1, _ := json.Marshal(struct {
+		RangeStart int    `json:"range_start"`
+		RangeEnd   int    `json:"range_end"`
+		Summary    string `json:"summary,omitempty"`
+	}{RangeStart: 1, RangeEnd: 3, Summary: "Reading project files"})
+	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc1", Name: "context_compactify", Arguments: string(compactifyArgs1)}}})
+	s.Append(Message{Role: RoleTool, Content: "Noted.", ToolCallID: "cc1", Name: "context_compactify"})
+
+	// Round 2
+	s.Append(Message{Role: RoleUser, Content: "write code"})
+	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "write_file", Arguments: `{"path":"b.go"}`}}})
+	s.Append(Message{Role: RoleTool, Content: "written", ToolCallID: "c2", Name: "write_file"})
+	s.Append(Message{Role: RoleAssistant, Content: "done writing"})
+
+	// Second compactify call with different summary
+	compactifyArgs2, _ := json.Marshal(struct {
+		RangeStart int    `json:"range_start"`
+		RangeEnd   int    `json:"range_end"`
+		Summary    string `json:"summary,omitempty"`
+	}{RangeStart: 6, RangeEnd: 8, Summary: "Writing implementation"})
+	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc2", Name: "context_compactify", Arguments: string(compactifyArgs2)}}})
+	s.Append(Message{Role: RoleTool, Content: "Noted.", ToolCallID: "cc2", Name: "context_compactify"})
+
+	// Now build compact context
+	result, needCompactify, _ := BuildCompactContext(s, 100000)
+	if needCompactify {
+		t.Fatal("expected needCompactify=false")
+	}
+
+	// Count compacted markers
+	var markers []string
+	for _, m := range result {
+		if m.Role == RoleSystem && strings.Contains(m.Content, "Compacted") {
+			markers = append(markers, m.Content)
+		}
+	}
+
+	if len(markers) != 2 {
+		t.Fatalf("expected 2 compacted markers, got %d: %v", len(markers), markers)
+	}
+
+	// First marker should mention "Reading project files"
+	if !strings.Contains(markers[0], "Reading project files") {
+		t.Fatalf("first marker should contain 'Reading project files', got %q", markers[0])
+	}
+	if strings.Contains(markers[0], "Writing implementation") {
+		t.Fatalf("first marker should NOT contain 'Writing implementation', got %q", markers[0])
+	}
+
+	// Second marker should mention "Writing implementation"
+	if !strings.Contains(markers[1], "Writing implementation") {
+		t.Fatalf("second marker should contain 'Writing implementation', got %q", markers[1])
+	}
+	if strings.Contains(markers[1], "Reading project files") {
+		t.Fatalf("second marker should NOT contain 'Reading project files', got %q", markers[1])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug: buildCompactedView inner loop skips compactify messages between two
+// separate inRange spans, causing them to merge into ONE marker with combined
+// summaries — instead of producing separate markers with distinct summaries.
+// ---------------------------------------------------------------------------
+
+func TestBuildCompactedView_CompactifyMessagesBetweenRangesDoNotMerge(t *testing.T) {
+	// Scenario: Two separate inRange spans [1,2] and [5,6], separated ONLY
+	// by compactify messages at indices 3-4 (no user/normal messages).
+	//
+	// This happens when the LLM calls compactify for the first tool round,
+	// and then immediately (in the next assistant message) starts a new tool
+	// round without user input.
+	//
+	// Raw messages:
+	//   idx 0: User
+	//   idx 1: Assistant (read_file)   ← inRange [1,2]
+	//   idx 2: Tool (result)           ← inRange [1,2]
+	//   idx 3: Assistant (compactify)  ← isCompactifyMessage (first compactify call)
+	//   idx 4: Tool (compactify r.)    ← isCompactifyMessage
+	//   idx 5: Assistant (shell)       ← inRange [5,6] (second tool round)
+	//   idx 6: Tool (result)           ← inRange [5,6]
+	//   idx 7: Assistant (compactify)  ← isCompactifyMessage (second compactify call)
+	//   idx 8: Tool (compactify r.)    ← isCompactifyMessage
+	//
+	// BUG: The inner loop at i=1 skips indices 3-4 (compactify) and continues
+	// into index 5 (inRange), merging [1,2] and [5,6] into ONE compacted marker.
+
+	rawMsgs := []Message{
+		{Role: RoleUser, Content: "task"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "result1", ToolCallID: "c1", Name: "read_file"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc1", Name: "context_compactify", Arguments: `{"range_start":1,"range_end":2,"summary":"Reading files"}`}}},
+		{Role: RoleTool, Content: "Noted.", ToolCallID: "cc1", Name: "context_compactify"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "shell", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "result2", ToolCallID: "c2", Name: "shell"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc2", Name: "context_compactify", Arguments: `{"range_start":5,"range_end":6,"summary":"Executing shell"}`}}},
+		{Role: RoleTool, Content: "Noted.", ToolCallID: "cc2", Name: "context_compactify"},
+	}
+
+	ranges := extractCompactifyRanges(rawMsgs)
+	inRange := computeEffectiveInRange(rawMsgs, ranges)
+	summaryAt := buildSummaryLookup(len(rawMsgs), ranges)
+
+	view, _ := buildCompactedView(rawMsgs, inRange, summaryAt)
+
+	// Should have 3 messages: user "task", marker1, marker2
+	// (compactify messages filtered, two separate markers)
+	if len(view) != 3 {
+		t.Fatalf("expected 3 view messages (user + 2 markers), got %d: %+v", len(view), view)
+	}
+
+	if view[0].Content != "task" {
+		t.Fatalf("view[0] = %q, want 'task'", view[0].Content)
+	}
+
+	// Count markers
+	markerCount := 0
+	for _, m := range view {
+		if m.Role == RoleSystem && strings.Contains(m.Content, "Compacted") {
+			markerCount++
+		}
+	}
+	if markerCount != 2 {
+		t.Fatalf("expected 2 markers, got %d. View: %+v", markerCount, view)
+	}
+
+	// First marker should have summary "Reading files"
+	if !strings.Contains(view[1].Content, "Reading files") {
+		t.Fatalf("view[1] (first marker) should contain 'Reading files', got %q", view[1].Content)
+	}
+	if strings.Contains(view[1].Content, "Executing shell") {
+		t.Fatalf("view[1] (first marker) should NOT contain 'Executing shell', got %q", view[1].Content)
+	}
+
+	// Second marker should have summary "Executing shell"
+	if !strings.Contains(view[2].Content, "Executing shell") {
+		t.Fatalf("view[2] (second marker) should contain 'Executing shell', got %q", view[2].Content)
+	}
+	if strings.Contains(view[2].Content, "Reading files") {
+		t.Fatalf("view[2] (second marker) should NOT contain 'Reading files', got %q", view[2].Content)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Same bug but at the BuildCompactContext integration level
+// ---------------------------------------------------------------------------
+
+func TestBuildCompactContext_TwoToolRoundsWithCompactifyBetween_NoUserMessage(t *testing.T) {
+	s := NewSession("testns", "")
+
+	// Round 1: user asks to read a file, assistant does it
+	s.Append(Message{Role: RoleUser, Content: "read file"})
+	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`}}})
+	s.Append(Message{Role: RoleTool, Content: "content", ToolCallID: "c1", Name: "read_file"})
+
+	// Compactify round 1
+	compactifyArgs1, _ := json.Marshal(struct {
+		RangeStart int    `json:"range_start"`
+		RangeEnd   int    `json:"range_end"`
+		Summary    string `json:"summary,omitempty"`
+	}{RangeStart: 1, RangeEnd: 2, Summary: "Reading files"})
+	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc1", Name: "context_compactify", Arguments: string(compactifyArgs1)}}})
+	s.Append(Message{Role: RoleTool, Content: "Noted.", ToolCallID: "cc1", Name: "context_compactify"})
+
+	// Round 2: assistant continues with shell (no user in between!)
+	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "shell", Arguments: `{"cmd":"ls"}`}}})
+	s.Append(Message{Role: RoleTool, Content: "filelist", ToolCallID: "c2", Name: "shell"})
+
+	// Compactify round 2
+	compactifyArgs2, _ := json.Marshal(struct {
+		RangeStart int    `json:"range_start"`
+		RangeEnd   int    `json:"range_end"`
+		Summary    string `json:"summary,omitempty"`
+	}{RangeStart: 5, RangeEnd: 6, Summary: "Listing directory"})
+	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc2", Name: "context_compactify", Arguments: string(compactifyArgs2)}}})
+	s.Append(Message{Role: RoleTool, Content: "Noted.", ToolCallID: "cc2", Name: "context_compactify"})
+
+	// Now build compact context
+	result, needCompactify, _ := BuildCompactContext(s, 100000)
+	if needCompactify {
+		t.Fatal("expected needCompactify=false")
+	}
+
+	// Count compacted markers
+	var markers []string
+	for _, m := range result {
+		if m.Role == RoleSystem && strings.Contains(m.Content, "Compacted") {
+			markers = append(markers, m.Content)
+		}
+	}
+
+	if len(markers) != 2 {
+		t.Fatalf("expected 2 compacted markers, got %d: %v", len(markers), markers)
+	}
+
+	if !strings.Contains(markers[0], "Reading files") {
+		t.Fatalf("marker[0] should contain 'Reading files', got %q", markers[0])
+	}
+	if strings.Contains(markers[0], "Listing directory") {
+		t.Fatalf("marker[0] should NOT contain 'Listing directory', got %q", markers[0])
+	}
+	if !strings.Contains(markers[1], "Listing directory") {
+		t.Fatalf("marker[1] should contain 'Listing directory', got %q", markers[1])
+	}
+	if strings.Contains(markers[1], "Reading files") {
+		t.Fatalf("marker[1] should NOT contain 'Reading files', got %q", markers[1])
 	}
 }

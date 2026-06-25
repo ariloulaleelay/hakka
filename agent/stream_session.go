@@ -41,6 +41,9 @@ func NewStreamSession(conv *Conversation, namespace string) *StreamSession {
 // Handles tool calls transparently by executing them and continuing
 // the stream.
 //
+// When userInput is empty, no user message is appended to the session —
+// the LLM picks up from the existing context. Used by /continue.
+//
 // Implements TurnExecutor by delegating to the shared Conversation
 // lifecycle with a streaming step function. Session setup (get-or-create,
 // append user message) uses StreamSession.Namespace directly, while the
@@ -50,9 +53,11 @@ func (ss *StreamSession) Execute(ctx context.Context, sessionID, userInput strin
 	if err != nil {
 		return nil, err
 	}
-	session.Append(Message{Role: RoleUser, Content: userInput})
-	if err := ss.conv.Sessions.Save(ctx, ss.Namespace, session); err != nil {
-		return nil, err
+	if userInput != "" {
+		session.Append(Message{Role: RoleUser, Content: userInput})
+		if err := ss.conv.Sessions.Save(ctx, ss.Namespace, session); err != nil {
+			return nil, err
+		}
 	}
 	// Promote namespace into context if not already set (e.g. by Telegram
 	// gateway), so that runTurnWithStep's internal session persistence

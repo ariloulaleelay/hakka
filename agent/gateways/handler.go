@@ -75,14 +75,26 @@ func (h *TurnHandler) executor(stream bool) agent.TurnExecutor {
 // The request runs under a cancellable context derived from ctx, keyed by
 // session ID. Another connection can call CancelSession(sessionID) to
 // abort this request.
+//
+// Special case: /continue (ActionContinue) is handled by passing empty
+// input to the executor — Execute skips appending a user message when
+// input is empty, allowing the LLM to continue from existing context.
 func (h *TurnHandler) HandleRequest(ctx context.Context, req FrameRequest, w frameWriter, responseReader *InProcessResponseReader) {
+	input := req.Input
 	if h.Cmd != nil {
 		cmdRes := h.Cmd.Execute(ctx, req.SessionID, req.Input)
-		if handled, ok := writeCommandResult(w, cmdRes, req.Stream); handled {
-			if !ok {
-				// Write failed — client disconnected, nothing more to do.
+		if cmdRes.Handled {
+			if cmdRes.Action == commands.ActionContinue {
+				// /continue: trigger LLM without adding a user message.
+				input = ""
+			} else {
+				if handled, ok := writeCommandResult(w, cmdRes, req.Stream); handled {
+					if !ok {
+						// Write failed — client disconnected, nothing more to do.
+					}
+					return
+				}
 			}
-			return
 		}
 	}
 
@@ -102,7 +114,7 @@ func (h *TurnHandler) HandleRequest(ctx context.Context, req FrameRequest, w fra
 	reqCtx = clientCtx(reqCtx, w, responseReader, sessionID)
 	reqCtx = enrichCtxWithCWD(reqCtx, h.Conv, req)
 
-	h.handleWithEngine(reqCtx, w, sessionID, req.Input, h.executor(req.Stream), reqCancel)
+	h.handleWithEngine(reqCtx, w, sessionID, input, h.executor(req.Stream), reqCancel)
 }
 
 // handleWithEngine runs a turn using the given executor and processes

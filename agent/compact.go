@@ -44,35 +44,6 @@ func extractCompactifyRanges(messages []Message) []compactRange {
 	return ranges
 }
 
-// mergeRanges sorts and merges overlapping/adjacent compactRange values,
-// combining their summaries.
-func mergeRanges(ranges []compactRange) []compactRange {
-	if len(ranges) == 0 {
-		return nil
-	}
-	sort.Slice(ranges, func(i, j int) bool { return ranges[i].from < ranges[j].from })
-	merged := []compactRange{ranges[0]}
-	for _, r := range ranges[1:] {
-		last := &merged[len(merged)-1]
-		if r.from <= last.to+1 {
-			if r.to > last.to {
-				last.to = r.to
-			}
-			// Merge summaries.
-			if r.summary != "" && !strings.Contains(last.summary, r.summary) {
-				if last.summary != "" {
-					last.summary += "; " + r.summary
-				} else {
-					last.summary = r.summary
-				}
-			}
-		} else {
-			merged = append(merged, r)
-		}
-	}
-	return merged
-}
-
 // sortedKeys returns sorted keys from a string set.
 func sortedKeys(set map[string]bool) []string {
 	keys := make([]string, 0, len(set))
@@ -199,11 +170,13 @@ func computeEffectiveInRange(rawMsgs []Message, merged []compactRange) []bool {
 }
 
 // buildSummaryLookup creates a per-message summary lookup from merged ranges.
-func buildSummaryLookup(numMsgs int, merged []compactRange) []string {
+func buildSummaryLookup(numMsgs int, ranges []compactRange) []string {
 	summaryAt := make([]string, numMsgs)
-	for _, r := range merged {
+	for _, r := range ranges {
 		for i := r.from; i <= r.to && i < numMsgs; i++ {
-			summaryAt[i] = r.summary
+			if (summaryAt[i] == "") {
+				summaryAt[i] = r.summary
+			}
 		}
 	}
 	return summaryAt
@@ -230,7 +203,7 @@ func buildCompactedView(rawMsgs []Message, inRange []bool, summaryAt []string) (
 			compactStart := i
 			toolSet := make(map[string]bool)
 			msgCount := 0
-			for i < len(rawMsgs) && (inRange[i] || isCompactifyMessage(rawMsgs[i]) || isInternalMessage(rawMsgs[i])) {
+			for i < len(rawMsgs) && inRange[i] {
 				if !isCompactifyMessage(rawMsgs[i]) && !isInternalMessage(rawMsgs[i]) {
 					msgCount++
 					for _, tc := range rawMsgs[i].ToolCalls {
@@ -245,19 +218,13 @@ func buildCompactedView(rawMsgs []Message, inRange []bool, summaryAt []string) (
 				i++
 			}
 			if msgCount > 0 {
-				toolList := sortedKeys(toolSet)
-				// Gather summaries from this compacted span.
-				var summaries []string
-				seen := make(map[string]bool)
-				for j := compactStart; j < i; j++ {
-					if s := summaryAt[j]; s != "" && !seen[s] {
-						seen[s] = true
-						summaries = append(summaries, s)
-					}
-				}
-				markerText := fmt.Sprintf("[Compacted %d messages: %s]", msgCount, strings.Join(toolList, ", "))
-				if len(summaries) > 0 {
-					markerText = fmt.Sprintf("[Compacted %d messages: %s]", msgCount, strings.Join(summaries, "; "))
+				lastSummary := summaryAt[compactStart]
+				markerText := ""
+				if lastSummary != "" {
+					markerText = fmt.Sprintf("[Compacted %d messages: %s]", msgCount, lastSummary)
+				} else {
+					toolList := sortedKeys(toolSet)
+					markerText = fmt.Sprintf("[Compacted %d messages: %s]", msgCount, strings.Join(toolList, ", "))
 				}
 				view = append(view, Message{Role: RoleSystem, Content: markerText})
 				origIdx = append(origIdx, -1)
@@ -295,24 +262,24 @@ func buildCompactedView(rawMsgs []Message, inRange []bool, summaryAt []string) (
 //
 // Returns the context messages and a bool indicating whether
 // context_compactify should be added to tool schemas for this turn.
-func BuildCompactContext(session SessionHistory, softLimit int) ([]Message, bool) {
+func BuildCompactContext(session SessionHistory, softLimit int) ([]Message, bool, int) {
 	rawMsgs := session.AllMessages()
 
 	// Extract and merge all past compactify ranges.
 	ranges := extractCompactifyRanges(rawMsgs)
-	merged := mergeRanges(ranges)
 
 	// Compute effective in-range set, respecting atomic tool-call rounds.
-	inRange := computeEffectiveInRange(rawMsgs, merged)
+	inRange := computeEffectiveInRange(rawMsgs, ranges)
 
-	// Build a summary lookup from merged ranges.
-	summaryAt := buildSummaryLookup(len(rawMsgs), merged)
+	// Build a summary lookup from ranges.
+	summaryAt := buildSummaryLookup(len(rawMsgs), ranges)
 
 	// Build the compacted view with markers.
 	view, origIdx := buildCompactedView(rawMsgs, inRange, summaryAt)
 
 	// Estimate token usage.
-	needCompactify := estimateTokens(rawMsgs) > softLimit
+	estimatedTokens := estimateTokens(rawMsgs, inRange)
+	needCompactify := estimatedTokens > softLimit
 
 	if needCompactify {
 		// Add [N] ~Tt index prefixes with per-message token estimates.
@@ -325,11 +292,10 @@ func BuildCompactContext(session SessionHistory, softLimit int) ([]Message, bool
 		// Append warning — persisted to session as a system message.
 		// Avoid accumulating duplicate warnings: only persist if the
 		// last raw message is not already a compaction warning.
-		totalTokens := estimateTokens(rawMsgs)
 		warning := Message{
 			Role:     RoleUser,
 			Internal: true,
-			Content:  fmt.Sprintf("STOP! Context exceeded ~%dK tokens (soft limit: %dK)! You MUST compact old history NOW using `context_compactify` before responding to the user. Range indices refer to [N] prefixes of each message. Decide what info you do not need anymore, and those ranges will be replaced with your summarization. Thus you can keep only importang info and drop boilerplate.", totalTokens/1000, softLimit/1000),
+			Content:  fmt.Sprintf("STOP! Context exceeded ~%dK tokens (soft limit: %dK)! You MUST compact old history NOW using `context_compactify` before responding to the user. Range indices refer to [N] prefixes of each message. Decide what info you do not need anymore, and those ranges will be replaced with your summarization. Thus you can keep only importang info and drop boilerplate.", estimatedTokens/1000, softLimit/1000),
 		}
 		view = append(view, warning)
 	}
@@ -351,18 +317,27 @@ func BuildCompactContext(session SessionHistory, softLimit int) ([]Message, bool
 		result = append(result, *cwdMsg)
 	}
 	result = append(result, view...)
-	return result, needCompactify
+	return result, needCompactify, estimatedTokens
 }
 
-// estimateTokens returns a token count for a message list.
 // Prefers the last available provider-reported Usage.PromptTokens
 // because each LLM response reports the total prompt size (not per-
 // message increments). Falls back to a chars/4 heuristic when no
 // message carries usage info (e.g. brand-new sessions).
 // heuristicTokens returns a chars/4 token estimate for the given messages.
-func heuristicTokens(msgs []Message) int {
+func heuristicTokens(msgs []Message, inRange ...[]bool) int {
 	total := 0
-	for _, m := range msgs {
+	for i, m := range msgs {
+		skip := false
+		for _, rng := range inRange {
+			if rng[i] {
+				skip = true
+				break
+			}
+		}
+		if (skip) {
+			continue
+		}
 		total += messageTokens(m)
 	}
 	return total
@@ -388,11 +363,11 @@ func latestAccurateUsage(rawMsgs []Message) int {
 // Prefers the last available provider-reported Usage.PromptTokens
 // (accounting for compaction staleness) and falls back to a heuristic
 // count of all raw messages (conservative — overcounts compacted ranges).
-func estimateTokens(rawMsgs []Message) int {
+func estimateTokens(rawMsgs []Message, inRange ...[]bool) int {
 	if usage := latestAccurateUsage(rawMsgs); usage > 0 {
 		return usage
 	}
-	return heuristicTokens(rawMsgs)
+	return heuristicTokens(rawMsgs, inRange...)
 }
 
 // messageTokens returns a rough token estimate for a single message

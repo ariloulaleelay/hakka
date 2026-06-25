@@ -1375,3 +1375,58 @@ func TestSessionDeleteThis_WithNoSession(t *testing.T) {
 		t.Fatalf("should handle delete this with no current session gracefully")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// /continue command
+// ---------------------------------------------------------------------------
+
+func TestHandleContinue(t *testing.T) {
+	_, cmd, _ := newCommandComponents(t)
+	res := cmd.Execute(context.Background(), "sid", "/continue")
+	if !res.Handled {
+		t.Fatal("expected /continue to be handled")
+	}
+	if res.Action != ActionContinue {
+		t.Fatalf("expected ActionContinue, got %v", res.Action)
+	}
+	if res.Reply != "" {
+		t.Fatalf("expected empty reply for /continue, got %q", res.Reply)
+	}
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+}
+
+func TestHandleContinueWithExtraArgs(t *testing.T) {
+	_, cmd, _ := newCommandComponents(t)
+	// Extra args after /continue should be ignored — the command still triggers a continue.
+	res := cmd.Execute(context.Background(), "sid", "/continue with extra args")
+	if !res.Handled {
+		t.Fatal("expected /continue to be handled even with extra args")
+	}
+	if res.Action != ActionContinue {
+		t.Fatalf("expected ActionContinue, got %v", res.Action)
+	}
+}
+
+func TestHandleContinueWithBotUsernameSuffix(t *testing.T) {
+	_, cmd, _ := newCommandComponents(t)
+	res := cmd.Execute(context.Background(), "sid", "/continue@my_bot")
+	if !res.Handled {
+		t.Fatal("expected /continue@my_bot to be handled")
+	}
+	if res.Action != ActionContinue {
+		t.Fatalf("expected ActionContinue, got %v", res.Action)
+	}
+}
+
+func TestHelpIncludesContinue(t *testing.T) {
+	_, cmd, _ := newCommandComponents(t)
+	res := cmd.Execute(context.Background(), "sid", "/help")
+	if !res.Handled {
+		t.Fatal("expected /help to be handled")
+	}
+	if !strings.Contains(res.Reply, "/continue") {
+		t.Fatalf("expected /help to mention /continue, got: %q", res.Reply)
+	}
+}

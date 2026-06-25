@@ -27,6 +27,7 @@ const (
 	ActionClearSession                // active session was deleted
 	ActionSessionSwitch               // session was switched to a different one
 	ActionSessionCreate               // a new session was created
+	ActionContinue                    // trigger LLM without adding a user message
 )
 
 // CommandProcessor handles slash-commands (/help, /model, /session, /tool, ...).
@@ -117,6 +118,8 @@ func (cp *CommandProcessor) Execute(ctx context.Context, sessionID, input string
 	switch cmd {
 	case "/help":
 		return cp.handleHelp(ctx, sessionID, parts)
+	case "/continue":
+		return cp.handleContinue(ctx, sessionID, parts)
 	case "/start":
 		return cp.handleStart(ctx, sessionID, parts)
 	case "/compact":
@@ -148,6 +151,7 @@ func (cp *CommandProcessor) trySubHandlers(ctx context.Context, sessionID string
 func (cp *CommandProcessor) handleHelp(_ context.Context, _ string, _ []string) CommandResult {
 	helpText := `available commands:
   /help                         - Show this help menu
+  /continue                     - Continue the conversation (LLM responds without new user input)
   /start                        - Start a fresh session with all tools enabled
   /model list                   - List available models
   /model show                   - Show current model
@@ -164,6 +168,16 @@ func (cp *CommandProcessor) handleHelp(_ context.Context, _ string, _ []string) 
   /tool disable <name-or-#tag>...  - Disable a tool or all tools with a #tag
   /compact <n>                  - Set context soft limit in tokens (default 150000)`
 	return CommandResult{Handled: true, Action: ActionReply, Reply: helpText}
+}
+
+// handleContinue triggers an LLM request without adding a new user message.
+// This is useful after network crashes — the LLM picks up from the existing
+// conversation context and continues.
+func (cp *CommandProcessor) handleContinue(_ context.Context, _ string, _ []string) CommandResult {
+	return CommandResult{
+		Handled: true,
+		Action:  ActionContinue,
+	}
 }
 
 // handleCompact sets the compact soft limit on the current session.

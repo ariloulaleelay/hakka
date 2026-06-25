@@ -12,7 +12,7 @@ import (
 )
 
 // eventSender is an optional sink for EngineEvents. When set on a
-// Conversation via Execute/Resume, the run loop sends typed events into
+// Conversation via Execute, the run loop sends typed events into
 // the channel. The channel is closed when the turn finishes.
 type eventSender chan<- event.EngineEvent
 
@@ -95,7 +95,7 @@ func NewConversation(sm *SessionManager, router *Router, tools *ToolRegistry, na
 //
 // Gateways serving multiple isolated namespaces set the namespace in
 // the context via event.ContextWithNamespace. Entry-point methods on
-// Conversation (Execute, Resume, AutoRename, BindSessionModel) promote
+// Conversation (Execute, AutoRename, BindSessionModel) promote
 // the configured Namespace field into the context before any internal
 // operation, so downstream code always finds it there.
 func (conv *Conversation) resolveNamespace(ctx context.Context) string {
@@ -105,6 +105,10 @@ func (conv *Conversation) resolveNamespace(ctx context.Context) string {
 // Execute runs one full user turn and returns an event channel. The
 // channel emits typed EngineEvents and closes when the turn is complete.
 // The final TurnFinished event carries the reply or error.
+//
+// When userInput is empty, no user message is appended to the session —
+// the LLM picks up from the existing context. This is used by /continue
+// after network crashes.
 //
 // Implements TurnExecutor.
 func (conv *Conversation) Execute(ctx context.Context, sessionID, userInput string) (<-chan event.EngineEvent, error) {
@@ -118,38 +122,21 @@ func (conv *Conversation) Execute(ctx context.Context, sessionID, userInput stri
 	return conv.runTurnWithStep(ctx, session, conv.defaultStep(session)), nil
 }
 
-// Resume re-enters the tool loop on an existing session without
-// appending a new user message. Useful after streaming detects a tool
-// call and needs to drive the loop to completion.
-func (conv *Conversation) Resume(ctx context.Context, sessionID string) (<-chan event.EngineEvent, error) {
-	if event.NamespaceFromContext(ctx) == "" {
-		ctx = event.ContextWithNamespace(ctx, conv.Namespace)
-	}
-	session, err := conv.sessionOrError(ctx, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	return conv.runTurnWithStep(ctx, session, conv.defaultStep(session)), nil
-}
-
-// prepareWithInput gets or creates a session, appends a user message,
-// persists it, and returns the session as a SessionView.
+// prepareWithInput gets or creates a session. If userInput is non-empty,
+// it appends a user message and persists. Returns the session as SessionView.
 func (conv *Conversation) prepareWithInput(ctx context.Context, sessionID, userInput string) (SessionView, error) {
 	ns := conv.resolveNamespace(ctx)
 	session, err := conv.Sessions.GetOrCreate(ctx, ns, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	session.Append(Message{Role: RoleUser, Content: userInput})
-	if err := conv.Sessions.Save(ctx, ns, session); err != nil {
-		return nil, err
+	if userInput != "" {
+		session.Append(Message{Role: RoleUser, Content: userInput})
+		if err := conv.Sessions.Save(ctx, ns, session); err != nil {
+			return nil, err
+		}
 	}
 	return session, nil
-}
-
-// sessionOrError gets or creates a session without modifying it.
-func (conv *Conversation) sessionOrError(ctx context.Context, sessionID string) (SessionView, error) {
-	return conv.Sessions.GetOrCreate(ctx, conv.resolveNamespace(ctx), sessionID)
 }
 
 // runTurnWithStep runs the tool loop in a background goroutine and returns
@@ -311,7 +298,7 @@ func (conv *Conversation) runToolIterations(
 		if softLimit <= 0 {
 			softLimit = DefaultEngineConfig().CompactSoftLimit
 		}
-		msgs, needCompactify := BuildCompactContext(session, softLimit)
+		msgs, needCompactify, estimatedTokens := BuildCompactContext(session, softLimit)
 
 		// When context is over soft limit, offer context_compactify alongside
 		// all normal tools so the LLM can choose to compact.
@@ -330,34 +317,12 @@ func (conv *Conversation) runToolIterations(
 		}
 
 		// Log compaction state for debugging.
-		estTokens := estimateTokens(msgs)
 		conv.Config.Logger.Debug("tool-iteration context",
 			"iteration", i,
 			"session", session.SessionID(),
-			"estTokens", estTokens,
+			"estTokens", estimatedTokens,
 			"softLimit", softLimit,
-			"needCompactify", needCompactify,
-			"schemaCount", len(turnSchemas))
-
-		// Assert: if the last message is a compaction warning, context_compactify
-		// MUST be in schemas. Otherwise the LLM is told to compact but can't.
-		if needCompactify {
-			hasCompactify := false
-			for _, s := range turnSchemas {
-				if s.Name == "context_compactify" {
-					hasCompactify = true
-					break
-				}
-			}
-			if !hasCompactify {
-				conv.Config.Logger.Error("BUG: needCompactify=true but context_compactify not in schemas",
-					"iteration", i,
-					"session", session.SessionID(),
-					"schemaNames", schemaNames(turnSchemas),
-				)
-			}
-		}
-
+			"needCompactify", needCompactify)
 		resp, err := step(ctx, msgs, turnSchemas, events)
 		if err != nil {
 			// Save session before returning error — preserve work done so far.

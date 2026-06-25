@@ -716,14 +716,14 @@ func TestDefaultCompactSoftLimitIsUsedFromConfig(t *testing.T) {
 	// Now verify the engine resolved the default correctly by checking
 	// that BuildCompactContext would not trigger compaction for this
 	// tiny session when passed the resolved limit.
-	msgs, needCompactify := BuildCompactContext(session, 200000)
+	msgs, needCompactify, _ := BuildCompactContext(session, 200000)
 	if needCompactify {
 		t.Fatalf("BUG: BuildCompactContext triggered compaction with softLimit=200000 for a tiny session; resolved limit should be the default (200000), not 0")
 	}
 
 	// Also verify that passing 0 (the bug) WOULD trigger compaction,
 	// confirming the bug scenario.
-	_, buggyCompactify := BuildCompactContext(session, 0)
+	_, buggyCompactify, _ := BuildCompactContext(session, 0)
 	if !buggyCompactify {
 		t.Error("expected BuildCompactContext with softLimit=0 to trigger compaction (demonstrating the bug)")
 	}

@@ -537,3 +537,113 @@ func TestEngineChat_SaveFailureBeforeAutoRename(t *testing.T) {
 		t.Fatal("auto-rename should NOT have been requested — session save failed so naming would be lost")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Execute with empty input — no user message appended (used by /continue)
+// ---------------------------------------------------------------------------
+
+func TestConversationExecuteEmptyInput(t *testing.T) {
+	conv, _, adapter, _ := newTestComponents(t, []LLMResponse{
+		{Message: Message{Role: RoleAssistant, Content: "first reply"}, FinishReason: "stop"},
+		{Message: Message{Role: RoleAssistant, Content: "continued"}, FinishReason: "stop"},
+	})
+
+	// First, execute a normal turn to add some history.
+	session, _, err := executeSync(conv, context.Background(), "resume-test", "hello")
+	if err != nil {
+		t.Fatalf("first Execute: %v", err)
+	}
+	initialMsgCount := len(session.Messages)
+
+	// Now resume — should NOT add a user message.
+	eventCh, err := conv.Execute(context.Background(), "resume-test", "")
+	if err != nil {
+		t.Fatalf("Conversation.Execute with empty input: %v", err)
+	}
+	var reply string
+	for evt := range eventCh {
+		if te, ok := evt.(event.TurnFinished); ok {
+			if te.Err != nil {
+				t.Fatalf("TurnFinished error: %v", te.Err)
+			}
+			reply = te.Reply
+		}
+	}
+	if reply != "continued" {
+		t.Fatalf("expected reply %q, got: %q", "continued", reply)
+	}
+	if adapter.calls != 2 {
+		t.Fatalf("expected 2 LLM calls total (1 Execute + 1 empty Execute), got %d", adapter.calls)
+	}
+
+	// Verify no new user message was appended.
+	session, _ = conv.Sessions.GetOrCreate(context.Background(), "testns", "resume-test")
+	if len(session.Messages) != initialMsgCount+1 {
+		t.Fatalf("expected %d messages (initial + new assistant reply), got %d", initialMsgCount+1, len(session.Messages))
+	}
+	lastMsg := session.Messages[len(session.Messages)-1]
+	if lastMsg.Role != RoleAssistant {
+		t.Fatalf("expected last message to be assistant, got %s", lastMsg.Role)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Execute with empty input — no user message appended (used by /continue)
+// ---------------------------------------------------------------------------
+
+func TestStreamSessionExecuteEmptyInput(t *testing.T) {
+	_, streamer, adapter, _ := newTestComponents(t, []LLMResponse{
+		{Message: Message{Role: RoleAssistant, Content: "first stream reply"}, FinishReason: "stop"},
+		{Message: Message{Role: RoleAssistant, Content: "stream continued"}, FinishReason: "stop"},
+	})
+
+	// First, execute a normal turn to create the session.
+	eventCh, err := streamer.Execute(context.Background(), "stream-empty-test", "hello")
+	if err != nil {
+		t.Fatalf("first StreamSession.Execute: %v", err)
+	}
+	for evt := range eventCh {
+		if te, ok := evt.(event.TurnFinished); ok {
+			if te.Err != nil {
+				t.Fatalf("TurnFinished error: %v", te.Err)
+			}
+		}
+	}
+
+	// Count existing messages.
+	sm := streamer.conv.Sessions
+	session, _ := sm.GetOrCreate(context.Background(), "testns", "stream-empty-test")
+	initialMsgCount := len(session.Messages)
+
+	// Now execute with empty input — should NOT add a user message.
+	eventCh2, err := streamer.Execute(context.Background(), "stream-empty-test", "")
+	if err != nil {
+		t.Fatalf("StreamSession.Execute with empty input: %v", err)
+	}
+	var reply string
+	for evt := range eventCh2 {
+		if te, ok := evt.(event.TurnFinished); ok {
+			if te.Err != nil {
+				t.Fatalf("TurnFinished error: %v", te.Err)
+			}
+			reply = te.Reply
+		}
+	}
+	if reply != "stream continued" {
+		t.Fatalf("expected reply %q, got: %q", "stream continued", reply)
+	}
+	if adapter.calls != 2 {
+		t.Fatalf("expected 2 Stream calls total (1 Execute + 1 empty Execute), got %d", adapter.calls)
+	}
+
+	// Verify no new user message was appended.
+	session, _ = sm.GetOrCreate(context.Background(), "testns", "stream-empty-test")
+	if len(session.Messages) != initialMsgCount+1 {
+		t.Fatalf("expected %d messages (initial + new assistant reply), got %d", initialMsgCount+1, len(session.Messages))
+	}
+	lastMsg := session.Messages[len(session.Messages)-1]
+	if lastMsg.Role != RoleAssistant {
+		t.Fatalf("expected last message to be assistant, got %s", lastMsg.Role)
+	}
+}
+
