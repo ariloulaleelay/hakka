@@ -30,8 +30,12 @@ func Open(path string) (*Store, error) {
 	runMigration(db, `ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT ''`)
 	// Migration: add enabled_tools column for older databases
 	runMigration(db, `ALTER TABLE sessions ADD COLUMN enabled_tools TEXT NOT NULL DEFAULT ''`)
-	// Migration: add compact_chains column for older databases
-	runMigration(db, `ALTER TABLE sessions ADD COLUMN compact_chains INTEGER NOT NULL DEFAULT 5`)
+	// Migration: add compact_soft_limit column for older databases.
+	// Replaces the old compact_chains column (chain-count based compaction).
+	// The compact_chains column is intentionally left behind — its values are
+	// no longer read or written. The old compaction model was removed; the new
+	// LLM-driven compaction uses a token-based soft limit instead.
+	runMigration(db, `ALTER TABLE sessions ADD COLUMN compact_soft_limit INTEGER NOT NULL DEFAULT 200000`)
 	return &Store{db: db}, nil
 }
 
@@ -67,14 +71,14 @@ CREATE TABLE IF NOT EXISTS sessions (
 	total_tokens  INTEGER NOT NULL DEFAULT 0,
 	name          TEXT NOT NULL DEFAULT '',
 	enabled_tools TEXT NOT NULL DEFAULT '',
-	compact_chains INTEGER NOT NULL DEFAULT 5,
+	compact_soft_limit INTEGER NOT NULL DEFAULT 200000,
 	PRIMARY KEY (namespace, id)
 );
 `
 
 func (st *Store) Get(ctx context.Context, namespace, id string) (*agent.Session, bool, error) {
 	row := st.db.QueryRowContext(ctx,
-		`SELECT namespace, id, system_prompt, messages, created_at, client_cwd, model, total_tokens, name, enabled_tools, compact_chains FROM sessions WHERE namespace = ? AND id = ?`, namespace, id)
+		`SELECT namespace, id, system_prompt, messages, created_at, client_cwd, model, total_tokens, name, enabled_tools, compact_soft_limit FROM sessions WHERE namespace = ? AND id = ?`, namespace, id)
 
 	var (
 		session       agent.Session
@@ -83,9 +87,9 @@ func (st *Store) Get(ctx context.Context, namespace, id string) (*agent.Session,
 		modelStr      string
 		totalTokens   int
 		enabledStr    string
-		compactChains int
+		compactSoftLimit int
 	)
-	err := row.Scan(&session.Namespace, &session.ID, &session.SystemPrompt, &messagesJSON, &createdText, &session.ClientCWD, &modelStr, &totalTokens, &session.Name, &enabledStr, &compactChains)
+	err := row.Scan(&session.Namespace, &session.ID, &session.SystemPrompt, &messagesJSON, &createdText, &session.ClientCWD, &modelStr, &totalTokens, &session.Name, &enabledStr, &compactSoftLimit)
 	if err == sql.ErrNoRows {
 		return nil, false, nil
 	}
@@ -104,7 +108,7 @@ func (st *Store) Get(ctx context.Context, namespace, id string) (*agent.Session,
 	}
 	session.SetModel(modelStr)
 	session.SetTotalTokenUsage(totalTokens)
-	session.SetCompactChains(compactChains)
+	session.SetCompactSoftLimit(compactSoftLimit)
 	if err := session.CreatedAt.UnmarshalText([]byte(createdText)); err != nil {
 		return nil, false, fmt.Errorf("decode created_at: %w", err)
 	}
@@ -134,7 +138,7 @@ func (st *Store) Put(ctx context.Context, namespace string, session *agent.Sessi
 	}
 
 	_, err = st.db.ExecContext(ctx, `
-		INSERT INTO sessions (namespace, id, system_prompt, messages, created_at, client_cwd, model, total_tokens, name, enabled_tools, compact_chains)
+		INSERT INTO sessions (namespace, id, system_prompt, messages, created_at, client_cwd, model, total_tokens, name, enabled_tools, compact_soft_limit)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(namespace, id) DO UPDATE SET
 			system_prompt = excluded.system_prompt,
@@ -144,8 +148,8 @@ func (st *Store) Put(ctx context.Context, namespace string, session *agent.Sessi
 			total_tokens  = excluded.total_tokens,
 			name          = excluded.name,
 			enabled_tools = excluded.enabled_tools,
-			compact_chains = excluded.compact_chains
-	`, namespace, session.ID, session.SystemPrompt, string(messagesJSON), string(createdText), session.ClientCWD, session.GetModel(), session.TotalTokenUsage(), session.Name, enabledJSON, session.GetCompactChains())
+			compact_soft_limit = excluded.compact_soft_limit
+	`, namespace, session.ID, session.SystemPrompt, string(messagesJSON), string(createdText), session.ClientCWD, session.GetModel(), session.TotalTokenUsage(), session.Name, enabledJSON, session.GetCompactSoftLimit())
 	return err
 }
 
@@ -155,7 +159,7 @@ func (st *Store) Delete(ctx context.Context, namespace, id string) error {
 }
 
 func (st *Store) List(ctx context.Context, namespace string) ([]*agent.Session, error) {
-	rows, err := st.db.QueryContext(ctx, `SELECT namespace, id, system_prompt, messages, created_at, client_cwd, model, total_tokens, name, enabled_tools, compact_chains FROM sessions WHERE namespace = ? ORDER BY created_at ASC`, namespace)
+	rows, err := st.db.QueryContext(ctx, `SELECT namespace, id, system_prompt, messages, created_at, client_cwd, model, total_tokens, name, enabled_tools, compact_soft_limit FROM sessions WHERE namespace = ? ORDER BY created_at ASC`, namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -169,9 +173,9 @@ func (st *Store) List(ctx context.Context, namespace string) ([]*agent.Session, 
 			modelStr     string
 			totalTokens  int
 			enabledStr   string
-			compactChains int
+			compactSoftLimit int
 		)
-		err := rows.Scan(&session.Namespace, &session.ID, &session.SystemPrompt, &messagesJSON, &createdText, &session.ClientCWD, &modelStr, &totalTokens, &session.Name, &enabledStr, &compactChains)
+		err := rows.Scan(&session.Namespace, &session.ID, &session.SystemPrompt, &messagesJSON, &createdText, &session.ClientCWD, &modelStr, &totalTokens, &session.Name, &enabledStr, &compactSoftLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -185,7 +189,7 @@ func (st *Store) List(ctx context.Context, namespace string) ([]*agent.Session, 
 		}
 		session.SetModel(modelStr)
 		session.SetTotalTokenUsage(totalTokens)
-		session.SetCompactChains(compactChains)
+		session.SetCompactSoftLimit(compactSoftLimit)
 		if err := session.CreatedAt.UnmarshalText([]byte(createdText)); err != nil {
 			return nil, fmt.Errorf("decode created_at: %w", err)
 		}

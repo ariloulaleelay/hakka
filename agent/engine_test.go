@@ -50,10 +50,10 @@ func (f *fakeAdapter) Stream(_ context.Context, msgs []Message, _ []ToolSchema, 
 		ch <- StreamResult{Delta: content[mid:]}
 	}
 	for _, tc := range r.Message.ToolCalls {
-		ch <- StreamResult{ToolCalls: []ToolCall{tc}}
+		ch <- StreamResult{ToolCalls: []ToolCall{tc}, Usage: r.Usage}
 	}
 	if len(r.Message.ToolCalls) == 0 {
-		ch <- StreamResult{Done: true}
+		ch <- StreamResult{Done: true, Usage: r.Usage}
 	}
 	close(ch)
 	return ch, nil
@@ -248,6 +248,126 @@ func TestEngineChatTokensAccumulateAcrossTurns(t *testing.T) {
 	}
 }
 
+// TestMessageUsageStored verifies that per-message token usage from the
+// provider is stored on the assistant Message, not just accumulated in
+// Session.TotalTokens.
+func TestMessageUsageStored(t *testing.T) {
+	conv, _, _, _ := newTestComponents(t, []LLMResponse{
+		{
+			Message:      Message{Role: RoleAssistant, Content: "hi there"},
+			FinishReason: "stop",
+			Usage:        &Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+	})
+	session, _, err := executeSync(conv, context.Background(), "usage-on-msg", "hello")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	// Find the assistant message — it should have Usage set.
+	var found bool
+	for _, m := range session.Messages {
+		if m.Role == RoleAssistant && m.Content == "hi there" {
+			found = true
+			if m.Usage == nil {
+				t.Fatal("BUG CONFIRMED: assistant message has nil Usage — provider-reported tokens not stored on message")
+			}
+			if m.Usage.PromptTokens != 10 {
+				t.Fatalf("expected PromptTokens=10, got %d", m.Usage.PromptTokens)
+			}
+			if m.Usage.CompletionTokens != 5 {
+				t.Fatalf("expected CompletionTokens=5, got %d", m.Usage.CompletionTokens)
+			}
+			if m.Usage.TotalTokens != 15 {
+				t.Fatalf("expected TotalTokens=15, got %d", m.Usage.TotalTokens)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected assistant message not found in session")
+	}
+	if session.TotalTokenUsage() != 15 {
+		t.Fatalf("expected 15 total tokens on session, got %d", session.TotalTokenUsage())
+	}
+}
+
+// TestMessageUsageJSONRoundTrip verifies that per-message usage survives
+// JSON serialization/deserialization (relevant for SQLite store).
+func TestMessageUsageJSONRoundTrip(t *testing.T) {
+	msg := Message{
+		Role:    RoleAssistant,
+		Content: "hello world",
+		Usage:   &Usage{PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var restored Message
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if restored.Usage == nil {
+		t.Fatal("BUG CONFIRMED: Usage lost after JSON round-trip")
+	}
+	if restored.Usage.PromptTokens != 2 {
+		t.Fatalf("expected PromptTokens=2, got %d", restored.Usage.PromptTokens)
+	}
+	if restored.Usage.CompletionTokens != 3 {
+		t.Fatalf("expected CompletionTokens=3, got %d", restored.Usage.CompletionTokens)
+	}
+	if restored.Usage.TotalTokens != 5 {
+		t.Fatalf("expected TotalTokens=5, got %d", restored.Usage.TotalTokens)
+	}
+}
+
+// TestMessageUsageViaStream verifies that per-message token usage is stored
+// even when using the streaming path (StreamSession.Execute).
+func TestMessageUsageViaStream(t *testing.T) {
+	_, streamer, _, _ := newTestComponents(t, []LLMResponse{
+		{
+			Message:      Message{Role: RoleAssistant, Content: "streamed reply"},
+			FinishReason: "stop",
+			Usage:        &Usage{PromptTokens: 7, CompletionTokens: 4, TotalTokens: 11},
+		},
+	})
+	eventCh, err := streamer.Execute(context.Background(), "stream-usage", "hi")
+	if err != nil {
+		t.Fatalf("StreamSession.Execute: %v", err)
+	}
+	for evt := range eventCh {
+		if te, ok := evt.(event.TurnFinished); ok {
+			if te.Err != nil {
+				t.Fatalf("TurnFinished error: %v", te.Err)
+			}
+		}
+	}
+
+	// Retrieve the session and check the assistant message has usage.
+	sm := streamer.conv.Sessions
+	session, err := sm.GetOrCreate(context.Background(), "testns", "stream-usage")
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	var found bool
+	for _, m := range session.Messages {
+		if m.Role == RoleAssistant && m.Content == "streamed reply" {
+			found = true
+			if m.Usage == nil {
+				t.Fatal("BUG CONFIRMED: streaming assistant message has nil Usage")
+			}
+			if m.Usage.TotalTokens != 11 {
+				t.Fatalf("expected TotalTokens=11 via stream, got %d", m.Usage.TotalTokens)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected streaming assistant message not found in session")
+	}
+}
+
 // TestStreamSession_AutoRename verifies that auto-rename fires after a
 // streaming turn with enough user messages. This is a regression test:
 // StreamSession.runStream was not calling autoRenameIfNeeded (only
@@ -295,5 +415,125 @@ func TestStreamSession_AutoRename(t *testing.T) {
 	}
 	if !adapter.NamingRequested {
 		t.Fatal("BUG CONFIRMED: expected naming LLM call to have been made during streaming turn, but it was not")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Save-failure propagation tests
+// ---------------------------------------------------------------------------
+
+// errStore is a SessionStore wrapper that fails Put calls once
+// failAfterPuts puts have succeeded.
+type errStore struct {
+	SessionStore
+	failCount    int // number of Puts that should fail (0 = never)
+	putCalls     int
+}
+
+func (es *errStore) Put(ctx context.Context, namespace string, s *Session) error {
+	es.putCalls++
+	if es.failCount > 0 && es.putCalls > es.failCount {
+		return errors.New("disk full")
+	}
+	return es.SessionStore.Put(ctx, namespace, s)
+}
+
+// TestEngineChat_SaveFailurePropagatesToTurnFinished verifies that when the
+// final session save fails after a successful LLM turn, the error is
+// propagated via TurnFinished.Err — not silently swallowed.
+func TestEngineChat_SaveFailurePropagatesToTurnFinished(t *testing.T) {
+	adapter := &fakeAdapter{
+		responses: []LLMResponse{
+			{Message: Message{Role: RoleAssistant, Content: "hello"}, FinishReason: "stop"},
+		},
+	}
+	memStore := NewMemoryStore()
+	// Seed the session first so prepareWithInput succeeds.
+	seedSession := NewSession("testns", "sys")
+	seedSession.ID = "save-fail-test"
+	if err := memStore.Put(context.Background(), "testns", seedSession); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Now wrap with errStore that lets the initial creates succeed but
+	// fails after 2 successful Puts (session creation + user message).
+	failStore := &errStore{SessionStore: memStore, failCount: 1}
+	sm := NewSessionManager(failStore, "sys")
+	tools := NewToolRegistry()
+	reg := NewRegistry()
+	reg.Register("default", adapter)
+	router := NewRouter(reg)
+	cfg := EngineConfig{MaxToolIterations: 4, Logger: testLogger(t)}
+	conv := NewConversation(sm, router, tools, "testns", cfg)
+
+	eventCh, err := conv.Execute(context.Background(), "save-fail-test", "hi")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var turnErr error
+	for evt := range eventCh {
+		if te, ok := evt.(event.TurnFinished); ok {
+			turnErr = te.Err
+		}
+	}
+
+	if turnErr == nil {
+		t.Fatal("BUG CONFIRMED: TurnFinished.Err is nil — save failure was silently swallowed")
+	}
+	if !strings.Contains(turnErr.Error(), "disk full") {
+		t.Fatalf("expected error containing 'disk full', got: %v", turnErr)
+	}
+}
+
+// TestEngineChat_SaveFailureBeforeAutoRename verifies that auto-rename is
+// skipped when the final session save fails.
+func TestEngineChat_SaveFailureBeforeAutoRename(t *testing.T) {
+	adapter := &namingTestAdapter{
+		responses: []response{
+			{msg: Message{Role: RoleAssistant, Content: "hello back"}},
+		},
+	}
+	memStore := NewMemoryStore()
+	// Seed the session with 2 user messages to enable auto-rename.
+	seedSession := NewSession("testns", "sys")
+	seedSession.ID = "auto-fail"
+	seedSession.Append(Message{Role: RoleUser, Content: "first"})
+	seedSession.Append(Message{Role: RoleAssistant, Content: "resp1"})
+	seedSession.Append(Message{Role: RoleUser, Content: "second"})
+	seedSession.Append(Message{Role: RoleAssistant, Content: "resp2"})
+	if err := memStore.Put(context.Background(), "testns", seedSession); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// After seeding, fail on every Put (user message save will also fail — that's OK,
+	// the turn error should still propagate).
+	failStore := &errStore{SessionStore: memStore, failCount: 1}
+	sm := NewSessionManager(failStore, "sys")
+	tools := NewToolRegistry()
+	reg := NewRegistry()
+	reg.Register("default", adapter)
+	router := NewRouter(reg)
+	cfg := EngineConfig{MaxToolIterations: 5, Logger: testLogger(t)}
+	conv := NewConversation(sm, router, tools, "testns", cfg)
+
+	eventCh, err := conv.Execute(context.Background(), "auto-fail", "third")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var turnErr error
+	for evt := range eventCh {
+		if te, ok := evt.(event.TurnFinished); ok {
+			turnErr = te.Err
+		}
+	}
+	if turnErr == nil {
+		t.Fatal("BUG CONFIRMED: TurnFinished.Err is nil — save failure was silently swallowed")
+	}
+	if !strings.Contains(turnErr.Error(), "disk full") {
+		t.Fatalf("expected error containing 'disk full', got: %v", turnErr)
+	}
+
+	// Verify the adapter's naming was NOT requested (auto-rename skipped because save failed).
+	if adapter.NamingRequested {
+		t.Fatal("auto-rename should NOT have been requested — session save failed so naming would be lost")
 	}
 }

@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -72,12 +73,18 @@ func toOpenAITools(tools []agent.ToolSchema) []openai.Tool {
 	}
 	out := make([]openai.Tool, 0, len(tools))
 	for _, toolDef := range tools {
+		params := json.RawMessage("{}")
+		if toolDef.Parameters != nil {
+			if b, err := json.Marshal(toolDef.Parameters); err == nil {
+				params = b
+			}
+		}
 		out = append(out, openai.Tool{
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        toolDef.Name,
 				Description: toolDef.Description,
-				Parameters:  toolDef.Parameters,
+				Parameters:  params,
 			},
 		})
 	}

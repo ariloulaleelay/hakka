@@ -54,11 +54,15 @@ func (h Hooks) FireError(sid string, err error) {
 // EngineConfig tunes the orchestration loop.
 type EngineConfig struct {
 	MaxToolIterations int
+	CompactSoftLimit  int // 0 = use DefaultEngineConfig().CompactSoftLimit; > 0 = override
 	Options           CompleteOptions
 	Logger            *slog.Logger
 	Hooks             Hooks
 }
 
 func DefaultEngineConfig() EngineConfig {
-	return EngineConfig{MaxToolIterations: 128}
+	return EngineConfig{
+		MaxToolIterations: 512,
+		CompactSoftLimit:  200000,
+	}
 }

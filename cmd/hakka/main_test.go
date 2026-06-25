@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ariloulaleelay/hakka/agent"
+	"github.com/ariloulaleelay/hakka/batch"
 )
 
 // ---------------------------------------------------------------------------
@@ -97,7 +98,7 @@ func TestBatchTaskGivenSimpleQueryWhenRunThenReturnsAssistantReply(t *testing.T)
 	reg := testAdapterRegistry(t, adapter)
 
 	// When we run a batch task
-	reply, err := RunBatch(context.Background(), RunBatchParams{
+	reply, err := batch.RunBatch(context.Background(), batch.RunBatchParams{
 		Registry: reg,
 		Task:     "say hello",
 		Logger:   testLogger(t),
@@ -132,7 +133,7 @@ func TestBatchTaskGivenToolUseWhenRunThenExecutesToolsAndReturnsFinalReply(t *te
 	tools.Register(echoTool())
 
 	// When we run a batch task with the echo tool enabled
-	reply, err := RunBatch(context.Background(), RunBatchParams{
+	reply, err := batch.RunBatch(context.Background(), batch.RunBatchParams{
 		Registry:    reg,
 		Task:        "echo hello world",
 		Tools:       tools,
@@ -169,7 +170,7 @@ func TestBatchTaskGivenNoToolEnablingWhenRunThenNoToolsAreAvailable(t *testing.T
 
 	// When we run a batch task WITHOUT specifying any enabled tools
 	var auxBuf strings.Builder
-	_, err := RunBatchWithOutput(context.Background(), RunBatchParams{
+	_, err := batch.RunBatchWithOutput(context.Background(), batch.RunBatchParams{
 		Registry: reg,
 		Task:     "hello",
 		Tools:    tools,
@@ -230,7 +231,7 @@ func TestBatchTaskGivenTagBasedToolEnablingWhenRunThenOnlyMatchingToolsEnabled(t
 	reg := testAdapterRegistry(t, adapter)
 
 	// When we enable only "utility" tag tools
-	reply, err := RunBatch(context.Background(), RunBatchParams{
+	reply, err := batch.RunBatch(context.Background(), batch.RunBatchParams{
 		Registry:    reg,
 		Task:        "test",
 		Tools:       tools,
@@ -251,7 +252,7 @@ func TestBatchTaskGivenExactToolNameWhenResolvingThenMatchesByName(t *testing.T)
 	tools.Register(echoTool())
 
 	// When we resolve "echo" as an exact name
-	resolved := resolveToolsByTagOrName(tools, []string{"echo"})
+	resolved := batch.ResolveToolsByTagOrName(tools, []string{"echo"})
 
 	// Then only echo is resolved
 	if len(resolved) != 1 || resolved[0] != "echo" {
@@ -279,7 +280,7 @@ func TestBatchTaskGivenTagWhenResolvingThenMatchesAllTaggedTools(t *testing.T) {
 	})
 
 	// When we resolve "utility" as a tag
-	resolved := resolveToolsByTagOrName(tools, []string{"utility"})
+	resolved := batch.ResolveToolsByTagOrName(tools, []string{"utility"})
 
 	// Then both echo and uppercase are resolved, but not secret
 	if len(resolved) != 2 {
@@ -300,7 +301,7 @@ func TestBatchTaskGivenTagCollidesWithToolNameWhenPlainRefThenOnlyToolEnabled(t 
 	tools.Register(echoTool()) // tagged "utility", "all"
 
 	// When we resolve "all" as a plain reference (no prefix)
-	resolved := resolveToolsByTagOrName(tools, []string{"all"})
+	resolved := batch.ResolveToolsByTagOrName(tools, []string{"all"})
 
 	// Then only the tool named "all" is matched — the tag "all" is shadowed
 	if len(resolved) != 1 || resolved[0] != "all" {
@@ -321,7 +322,7 @@ func TestBatchTaskGivenTagCollidesWithToolNameWhenPrefixedRefThenTagExpanded(t *
 	tools.Register(echoTool()) // tagged "utility", "all"
 
 	// When we resolve "#all" as a tag-prefixed reference
-	resolved := resolveToolsByTagOrName(tools, []string{"#all"})
+	resolved := batch.ResolveToolsByTagOrName(tools, []string{"#all"})
 
 	// Then all tools tagged "all" are expanded — echo gets included,
 	// but the tool named "all" is NOT included (it's tagged "utility", not "all")
@@ -339,7 +340,7 @@ func TestBatchTaskGivenMixedTagsAndNamesWhenResolvingThenCombinesBoth(t *testing
 	})
 
 	// When we resolve "echo" (by name) and "utility" (by tag)
-	resolved := resolveToolsByTagOrName(tools, []string{"echo", "utility"})
+	resolved := batch.ResolveToolsByTagOrName(tools, []string{"echo", "utility"})
 
 	// Then echo is included once and random is included from the tag
 	if len(resolved) != 2 {
@@ -362,7 +363,7 @@ func TestBatchTaskGivenModelDirWhenRunThenOutputsSessionIdAndTokenUsage(t *testi
 	// When we run a batch task and capture auxiliary output
 	var outputBuf strings.Builder
 	var auxBuf strings.Builder
-	_, err := RunBatchWithOutput(context.Background(), RunBatchParams{
+	_, err := batch.RunBatchWithOutput(context.Background(), batch.RunBatchParams{
 		Registry: reg,
 		Task:     "test",
 		Logger:   testLogger(t),
@@ -406,7 +407,7 @@ func TestBatchTaskGivenToolThatFailsWhenRunThenEngineContinues(t *testing.T) {
 	reg := testAdapterRegistry(t, adapter)
 
 	// When we run a batch task with the failing tool enabled
-	reply, err := RunBatch(context.Background(), RunBatchParams{
+	reply, err := batch.RunBatch(context.Background(), batch.RunBatchParams{
 		Registry:    reg,
 		Task:        "use failing tool",
 		Tools:       tools,

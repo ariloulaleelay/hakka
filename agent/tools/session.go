@@ -248,7 +248,7 @@ func SessionInfo(sm *agent.SessionManager) agent.Tool {
 			b.WriteString(fmt.Sprintf("Model:        %s\n", s.Model))
 			b.WriteString(fmt.Sprintf("Messages:     %d\n", len(s.Messages)))
 			b.WriteString(fmt.Sprintf("Total Tokens: %d\n", s.TotalTokenUsage()))
-			b.WriteString(fmt.Sprintf("Compact chains: %d\n", s.GetCompactChains()))
+			b.WriteString(fmt.Sprintf("Compact soft limit: %d tokens\n", s.GetCompactSoftLimit()))
 			b.WriteString(fmt.Sprintf("Client CWD:   %s\n", s.ClientCWD))
 
 			if len(s.Messages) > 0 {
@@ -698,25 +698,8 @@ func SessionAskQuestion(sm *agent.SessionManager, conv *agent.Conversation) agen
 
 // buildAskQuestionMessages builds a message list from a session's history
 // with tool calls stripped, then appends the question as a user message.
-// This is similar to buildNamingMessages but uses a caller-supplied question
-// and always appends it as a user message.
 func buildAskQuestionMessages(session agent.SessionHistory, question string) []agent.Message {
-	history := session.History()
-
-	msgs := make([]agent.Message, 0, len(history)+1)
-	for _, m := range history {
-		if m.Role == agent.RoleTool {
-			continue
-		}
-		if m.Role == agent.RoleAssistant && len(m.ToolCalls) > 0 {
-			msgs = append(msgs, agent.Message{
-				Role:    agent.RoleSystem,
-				Content: "[TRUNCATED TOOL CALLS]",
-			})
-			continue
-		}
-		msgs = append(msgs, m)
-	}
+	msgs := agent.StripToolCalls(session.History(), false)
 
 	msgs = append(msgs, agent.Message{
 		Role:    agent.RoleUser,

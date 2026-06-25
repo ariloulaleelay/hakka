@@ -505,3 +505,55 @@ func TestExecSnippet_AllToolsDontTruncate(t *testing.T) {
 		}
 	}
 }
+
+func TestRegisterAllDoesNotIncludeMetaTools(t *testing.T) {
+	reg := agent.NewToolRegistry()
+	RegisterAll(reg)
+	schemas := reg.Schemas()
+
+	for _, s := range schemas {
+		if s.Name == "context_compactify" {
+			t.Fatal("RegisterAll must NOT include context_compactify — meta tools are registered via RegisterMeta to prevent schema duplication")
+		}
+	}
+}
+
+// TestBuildAskQuestionMessages_SkipsInternalMessages verifies that internal
+// messages (e.g. compaction warnings) never leak into the session_ask_question LLM call.
+func TestBuildAskQuestionMessages_SkipsInternalMessages(t *testing.T) {
+	session := agent.NewSession("testns", "You are helpful.")
+	session.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
+	session.Append(agent.Message{Role: agent.RoleSystem, Content: "⚠ compaction warning", Internal: true})
+	session.Append(agent.Message{Role: agent.RoleAssistant, Content: "hi there"})
+
+	msgs := buildAskQuestionMessages(session, "what was said?")
+
+	// Internal messages should be skipped entirely.
+	for _, m := range msgs {
+		if m.Internal {
+			t.Fatalf("internal message leaked into ask-question context: %+v", m)
+		}
+		if m.Role == agent.RoleSystem && strings.Contains(m.Content, "compaction warning") {
+			t.Fatal("compaction warning leaked into ask-question context")
+		}
+	}
+
+	// The last message should be the question.
+	last := msgs[len(msgs)-1]
+	if last.Role != agent.RoleUser || last.Content != "what was said?" {
+		t.Fatalf("expected last message to be user question, got: %+v", last)
+	}
+}
+
+func TestRegisterMetaIncludesCompactify(t *testing.T) {
+	reg := agent.NewToolRegistry()
+	RegisterMeta(reg)
+
+	tool, ok := reg.Get("context_compactify")
+	if !ok {
+		t.Fatal("RegisterMeta must include context_compactify so Execute() can find it")
+	}
+	if tool.Schema.Name != "context_compactify" {
+		t.Fatalf("expected schema name 'context_compactify', got %q", tool.Schema.Name)
+	}
+}

@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -22,6 +20,7 @@ import (
 	"github.com/ariloulaleelay/hakka/agent/mcp"
 	sqlitestore "github.com/ariloulaleelay/hakka/agent/stores/sqlite"
 	hakkatools "github.com/ariloulaleelay/hakka/agent/tools"
+	"github.com/ariloulaleelay/hakka/batch"
 )
 
 type appConfig struct {
@@ -37,6 +36,7 @@ type appConfig struct {
 	run               string // batch mode: task string
 	runFile           string // batch mode: path to file with task
 	runEnableTools    string // batch mode: comma-separated tool names or tags to enable
+	runCompactLimit   int    // batch mode: compact soft limit (0 = default 200000)
 }
 
 func main() {
@@ -53,6 +53,7 @@ func main() {
 	flag.StringVar(&cfg.run, "run", "", "Run a single autonomous task in batch mode (no servers started)")
 	flag.StringVar(&cfg.runFile, "run-file", "", "Read task from file and run in batch mode")
 	flag.StringVar(&cfg.runEnableTools, "run-enable-tool", "", "Comma-separated tools/tags to enable (use '#tag' for explicit tag, e.g. '#utility,read_file')")
+	flag.IntVar(&cfg.runCompactLimit, "compact-soft-limit", 0, "Compact soft limit in tokens (0 = default 200000, use in batch mode)")
 	flag.Parse()
 
 	logger := newLogger(cfg.logLevel)
@@ -82,7 +83,7 @@ func main() {
 			}
 		}
 
-		if err := runBatch(logger, cfg.configPath, task, enableTools); err != nil {
+		if err := runBatch(logger, cfg.configPath, task, enableTools, cfg.runCompactLimit); err != nil {
 			logger.Error("batch run failed", "err", err)
 			os.Exit(1)
 		}
@@ -96,151 +97,7 @@ func main() {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Batch mode
-// ---------------------------------------------------------------------------
-
-// RunBatchParams holds parameters for a batch run.
-type RunBatchParams struct {
-	Registry    *agent.Registry
-	Task        string
-	Tools       *agent.ToolRegistry // optional; defaults to all built-in tools
-	EnableTools []string            // tool names or tags to enable; nil/empty means no tools enabled
-	Logger      *slog.Logger        // optional; defaults to slog.Default()
-	Store       agent.SessionStore  // optional; defaults to in-memory store
-}
-
-// resolveToolsByTagOrName resolves a list of tool/tag references to a
-// deduplicated list of tool names.
-//
-// References starting with "#" are treated exclusively as tags — the #
-// prefix is stripped and all tools with that tag are included.
-// Plain references (no "#") are first tried as exact tool names; if no
-// match is found, they are treated as a tag and all tools with that tag
-// are included.
-func resolveToolsByTagOrName(tools *agent.ToolRegistry, refs []string) []string {
-	seen := make(map[string]bool)
-	var result []string
-	for _, ref := range refs {
-		ref = strings.TrimSpace(ref)
-		if ref == "" {
-			continue
-		}
-		if strings.HasPrefix(ref, "#") {
-			// Tag-prefixed reference: strip "#" and treat as tag only.
-			tag := strings.TrimSpace(ref[1:])
-			if tag == "" {
-				continue
-			}
-			for _, s := range tools.SchemasByTags(tag) {
-				if !seen[s.Name] {
-					seen[s.Name] = true
-					result = append(result, s.Name)
-				}
-			}
-			continue
-		}
-		// Plain reference: try exact name first.
-		if _, ok := tools.Get(ref); ok {
-			if !seen[ref] {
-				seen[ref] = true
-				result = append(result, ref)
-			}
-			continue
-		}
-		// Not a tool name — treat as tag.
-		for _, s := range tools.SchemasByTags(ref) {
-			if !seen[s.Name] {
-				seen[s.Name] = true
-				result = append(result, s.Name)
-			}
-		}
-	}
-	return result
-}
-
-// RunBatch runs a single autonomous task in batch mode and returns the
-// final assistant reply. All output goes to stdout (reply) and stderr
-// (session ID + token info).
-func RunBatch(ctx context.Context, p RunBatchParams) (string, error) {
-	return RunBatchWithOutput(ctx, p, os.Stdout, os.Stderr)
-}
-
-// RunBatchWithOutput is like RunBatch but allows capturing stdout and
-// stderr-like output to the given writers.
-func RunBatchWithOutput(ctx context.Context, p RunBatchParams, output io.Writer, aux io.Writer) (string, error) {
-	reg := p.Registry
-	if reg == nil {
-		return "", errors.New("registry is required")
-	}
-	if p.Task == "" {
-		return "", errors.New("task is required")
-	}
-	logger := p.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-
-	// Use in-memory store — batch runs are ephemeral.
-	store := p.Store
-	if store == nil {
-		store = agent.NewMemoryStore()
-	}
-	sessions := agent.NewSessionManager(store, "You are Hakka, a helpful assistant.")
-	router := agent.NewRouter(reg)
-
-	tools := p.Tools
-	if tools == nil {
-		tools = agent.NewToolRegistry()
-		hakkatools.RegisterAll(tools)
-		hakkatools.RegisterSessionTools(tools, sessions, nil)
-	}
-
-	cfg := agent.EngineConfig{
-		MaxToolIterations: 256,
-		Logger:            logger,
-	}
-
-	conv := agent.NewConversation(sessions, router, tools, "batch", cfg)
-
-	// Resolve tool names/tags and enable them on the session.
-	resolved := resolveToolsByTagOrName(tools, p.EnableTools)
-	session, err := sessions.GetOrCreate(ctx, "batch", "")
-	if err != nil {
-		return "", fmt.Errorf("create session: %w", err)
-	}
-	for _, name := range resolved {
-		session.EnableTool(name)
-	}
-	if err := sessions.Save(ctx, "batch", session); err != nil {
-		return "", fmt.Errorf("save session: %w", err)
-	}
-
-	eventCh, err := conv.Execute(ctx, session.SessionID(), p.Task)
-	if err != nil {
-		return "", err
-	}
-
-	var reply string
-	for evt := range eventCh {
-		if tf, ok := evt.(event.TurnFinished); ok {
-			if tf.Err != nil {
-				return "", tf.Err
-			}
-			reply = tf.Reply
-			if output != nil {
-				fmt.Fprintln(output, reply)
-			}
-			if aux != nil {
-				fmt.Fprintf(aux, "session: %s\n", tf.SessionID)
-				fmt.Fprintf(aux, "tokens: %d\n", tf.TotalTokens)
-			}
-		}
-	}
-	return reply, nil
-}
-
-func runBatch(logger *slog.Logger, configPath, task string, enableTools []string) error {
+func runBatch(logger *slog.Logger, configPath, task string, enableTools []string, compactSoftLimit int) error {
 	modelCfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load config %q: %w", configPath, err)
@@ -255,6 +112,7 @@ func runBatch(logger *slog.Logger, configPath, task string, enableTools []string
 	// Connect MCP servers if configured.
 	tools := agent.NewToolRegistry()
 	hakkatools.RegisterAll(tools)
+	hakkatools.RegisterMeta(tools)
 
 	mcpMgr := mcp.NewManager()
 	mcpMgr.Logger = logger
@@ -285,12 +143,13 @@ func runBatch(logger *slog.Logger, configPath, task string, enableTools []string
 	defer mcpMgr.CloseAll()
 
 	// Run the task.
-	_, err = RunBatch(context.Background(), RunBatchParams{
-		Registry:    registry,
-		Task:        task,
-		Tools:       tools,
-		EnableTools: enableTools,
-		Logger:      logger,
+	_, err = batch.RunBatch(context.Background(), batch.RunBatchParams{
+		Registry:         registry,
+		Task:             task,
+		Tools:            tools,
+		EnableTools:      enableTools,
+		CompactSoftLimit: compactSoftLimit,
+		Logger:           logger,
 	})
 	return err
 }
@@ -370,20 +229,19 @@ func setupComponents(store agent.SessionStore, registry *agent.Registry, logger 
 
 	tools := agent.NewToolRegistry()
 	hakkatools.RegisterAll(tools)
+	hakkatools.RegisterMeta(tools)
 
-	cfg := agent.EngineConfig{
-		MaxToolIterations: 256,
-		Logger:            logger,
-		Hooks: agent.Hooks{
-			OnToolCall: func(sessionID string, call agent.ToolCall) {
-				logger.Info("tool call", "session", sessionID, "name", call.Name, "args", call.Arguments)
-			},
-			OnToolResult: func(sessionID string, call agent.ToolCall, result event.ToolResult) {
-				logger.Info("tool result", "session", sessionID, "name", call.Name, "result", result.ForLLM())
-			},
-			OnError: func(sessionID string, err error) {
-				logger.Error("engine error", "session", sessionID, "err", err)
-			},
+	cfg := agent.DefaultEngineConfig()
+	cfg.Logger = logger
+	cfg.Hooks = agent.Hooks{
+		OnToolCall: func(sessionID string, call agent.ToolCall) {
+			logger.Info("tool call", "session", sessionID, "name", call.Name, "args", call.Arguments)
+		},
+		OnToolResult: func(sessionID string, call agent.ToolCall, result event.ToolResult) {
+			logger.Info("tool result", "session", sessionID, "name", call.Name, "result", result.ForLLM())
+		},
+		OnError: func(sessionID string, err error) {
+			logger.Error("engine error", "session", sessionID, "err", err)
 		},
 	}
 
@@ -394,6 +252,7 @@ func buildGateways(sessions *agent.SessionManager, router *agent.Router, tools *
 	if tools == nil {
 		tools = agent.NewToolRegistry()
 		hakkatools.RegisterAll(tools)
+		hakkatools.RegisterMeta(tools)
 	}
 
 	// Register session-control tools on the main (TCP/WS) tool registry.

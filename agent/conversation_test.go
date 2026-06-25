@@ -428,6 +428,27 @@ func TestBuildNamingMessages_ExcludesAssistantToolCallMessages(t *testing.T) {
 	}
 }
 
+// TestBuildNamingMessages_SkipsInternalMessages verifies that internal
+// messages (e.g. compaction warnings) never leak into the naming LLM call.
+func TestBuildNamingMessages_SkipsInternalMessages(t *testing.T) {
+	session := NewSession("testns", "sys")
+	session.Append(Message{Role: RoleUser, Content: "hello"})
+	session.Append(Message{Role: RoleSystem, Content: "⚠ compaction warning", Internal: true})
+	session.Append(Message{Role: RoleAssistant, Content: "hi there"})
+
+	msgs := buildNamingMessages(session)
+
+	// Internal system messages should be skipped entirely.
+	for _, m := range msgs {
+		if m.Internal {
+			t.Fatalf("internal message leaked into naming context: %+v", m)
+		}
+		if m.Role == RoleSystem && strings.Contains(m.Content, "compaction warning") {
+			t.Fatal("compaction warning leaked into naming context")
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Per-session tool control — Conversation integration tests
 //

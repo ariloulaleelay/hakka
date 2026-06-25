@@ -66,14 +66,19 @@ type Conversation struct {
 	ToolContext ToolContextDecorator
 }
 
-// NewConversation builds a Conversation. Config.Logger defaults to
-// slog.Default() and MaxToolIterations defaults to 128.
+// NewConversation builds a Conversation. Zero-valued config fields are
+// filled from DefaultEngineConfig() — the single source of truth for
+// engine configuration defaults.
 func NewConversation(sm *SessionManager, router *Router, tools *ToolRegistry, namespace string, cfg EngineConfig) *Conversation {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	def := DefaultEngineConfig()
 	if cfg.MaxToolIterations <= 0 {
-		cfg.MaxToolIterations = 128
+		cfg.MaxToolIterations = def.MaxToolIterations
+	}
+	if cfg.CompactSoftLimit <= 0 {
+		cfg.CompactSoftLimit = def.CompactSoftLimit
 	}
 	return &Conversation{
 		Router:    router,
@@ -164,8 +169,10 @@ func (conv *Conversation) runTurnWithStep(ctx context.Context, session SessionVi
 			if saveErr := conv.finishTurn(ctx, session); saveErr != nil {
 				conv.Config.Logger.Error("failed to save session after turn",
 					"session", session.SessionID(), "error", saveErr)
+				err = fmt.Errorf("save session: %w", saveErr)
+			} else {
+				conv.autoRenameIfNeeded(ctx, session)
 			}
-			conv.autoRenameIfNeeded(ctx, session)
 		}
 
 		eventCh <- event.TurnFinished{
@@ -297,17 +304,71 @@ func (conv *Conversation) runToolIterations(
 
 	for i := 0; i < conv.Config.MaxToolIterations; i++ {
 		var msgs []Message
-		if keep := session.GetCompactChains(); keep > 0 {
-			msgs = CompactContext(session, keep)
-		} else {
-			msgs = BuildContext(session)
+		softLimit := session.GetCompactSoftLimit()
+		if softLimit <= 0 {
+			softLimit = conv.Config.CompactSoftLimit
 		}
-		resp, err := step(ctx, msgs, schemas, events)
+		if softLimit <= 0 {
+			softLimit = DefaultEngineConfig().CompactSoftLimit
+		}
+		msgs, needCompactify := BuildCompactContext(session, softLimit)
+
+		// When context is over soft limit, offer context_compactify alongside
+		// all normal tools so the LLM can choose to compact.
+		turnSchemas := schemas
+		if needCompactify {
+			found := false
+			for _, s := range schemas {
+				if s.Name == "context_compactify" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				turnSchemas = append(schemas, contextCompactifySchema)
+			}
+		}
+
+		// Log compaction state for debugging.
+		estTokens := estimateTokens(msgs)
+		conv.Config.Logger.Debug("tool-iteration context",
+			"iteration", i,
+			"session", session.SessionID(),
+			"estTokens", estTokens,
+			"softLimit", session.GetCompactSoftLimit(),
+			"needCompactify", needCompactify,
+			"schemaCount", len(turnSchemas))
+
+		// Assert: if the last message is a compaction warning, context_compactify
+		// MUST be in schemas. Otherwise the LLM is told to compact but can't.
+		if needCompactify {
+			hasCompactify := false
+			for _, s := range turnSchemas {
+				if s.Name == "context_compactify" {
+					hasCompactify = true
+					break
+				}
+			}
+			if !hasCompactify {
+				conv.Config.Logger.Error("BUG: needCompactify=true but context_compactify not in schemas",
+					"iteration", i,
+					"session", session.SessionID(),
+					"schemaNames", schemaNames(turnSchemas),
+				)
+			}
+		}
+
+		resp, err := step(ctx, msgs, turnSchemas, events)
 		if err != nil {
+			// Save session before returning error — preserve work done so far.
+			if saveErr := conv.finishTurn(ctx, session); saveErr != nil {
+				conv.Config.Logger.Error("failed to save session on error",
+					"session", session.SessionID(), "error", saveErr)
+			}
 			return "", conv.notifyError(session.SessionID(), err, hooks)
 		}
 
-		msg := Message{Role: RoleAssistant, Content: resp.content, ToolCalls: resp.toolCalls}
+		msg := Message{Role: RoleAssistant, Content: resp.content, ToolCalls: resp.toolCalls, Usage: resp.usage}
 		session.Append(msg)
 
 		llmResp := &LLMResponse{Message: msg, Usage: resp.usage}
@@ -328,10 +389,38 @@ func (conv *Conversation) runToolIterations(
 			return resp.content, nil
 		}
 
+		if needCompactify {
+			names := make([]string, len(resp.toolCalls))
+			for j, tc := range resp.toolCalls {
+				names[j] = tc.Name
+			}
+			conv.Config.Logger.Debug("tool-iteration compactify-needed-but-llm-called",
+				"iteration", i,
+				"session", session.SessionID(),
+				"calledTools", names,
+			)
+		}
+
 		conv.executeToolCalls(ctx, session, resp.toolCalls, hooks, events)
+
+		// Save after every completed tool round so progress is not lost.
+		if saveErr := conv.finishTurn(ctx, session); saveErr != nil {
+			conv.Config.Logger.Error("failed to save session mid-turn",
+				"session", session.SessionID(), "iteration", i, "error", saveErr)
+			return "", fmt.Errorf("save session: %w", saveErr)
+		}
 	}
 
 	return "", ErrMaxIterations
+}
+
+// schemaNames returns the names of the given schemas for logging.
+func schemaNames(schemas []ToolSchema) []string {
+	names := make([]string, len(schemas))
+	for i, s := range schemas {
+		names[i] = s.Name
+	}
+	return names
 }
 
 // sendEvent sends an event to the optional event channel (non-blocking).
@@ -394,7 +483,9 @@ func (conv *Conversation) runSingleTool(ctx context.Context, session SessionView
 	// Defense-in-depth: check if the tool is enabled for this session.
 	// Even if the LLM somehow calls a disabled tool (e.g. from context window),
 	// we reject it here without invoking the handler.
-	if session != nil && !session.IsToolEnabled(call.Name) {
+	// context_compactify is a system meta-tool that is always allowed;
+	// it only appears in schemas when the engine determines compaction is needed.
+	if session != nil && !session.IsToolEnabled(call.Name) && call.Name != "context_compactify" {
 		res := event.ErrorResult(errors.New("tool '" + call.Name + "' is disabled for this session"))
 		hooks.FireToolCall(session.SessionID(), call)
 		conv.sendEvent(events, event.ToolCallStarted{SessionID: session.SessionID(), ID: call.ID, Name: call.Name, Arguments: call.Arguments})
@@ -563,6 +654,48 @@ func (conv *Conversation) autoRenameIfNeeded(ctx context.Context, session Sessio
 		"session", session.SessionID(), "name", name)
 }
 
+// StripToolCalls filters a raw message list for human-readable consumption
+// by removing internal messages and replacing assistant messages that only
+// contain tool calls with a placeholder.
+//
+// When replaceToolsWithPlaceholder is true, tool-role messages are also
+// replaced with the placeholder (as buildNamingMessages does). When false,
+// they are dropped entirely (as buildAskQuestionMessages does).
+func StripToolCalls(messages []Message, replaceToolsWithPlaceholder bool) []Message {
+	msgs := make([]Message, 0, len(messages))
+	for _, m := range messages {
+		if m.Internal {
+			continue
+		}
+		// Skip context_compactify messages entirely — they are engine
+		// meta-tool artifacts that should never appear in human-readable
+		// contexts (naming, ask-question). Without this, compactify-only
+		// assistant messages would leak a misleading [TRUNCATED TOOL CALLS]
+		// placeholder.
+		if isCompactifyMessage(m) {
+			continue
+		}
+		if m.Role == RoleTool {
+			if replaceToolsWithPlaceholder {
+				msgs = append(msgs, Message{
+					Role:    RoleSystem,
+					Content: "[TRUNCATED TOOL CALLS]",
+				})
+			}
+			continue
+		}
+		if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
+			msgs = append(msgs, Message{
+				Role:    RoleSystem,
+				Content: "[TRUNCATED TOOL CALLS]",
+			})
+			continue
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs
+}
+
 // buildNamingMessages builds a short message list for the LLM naming task.
 // It includes only user messages and assistant replies that are actual text
 // responses (not tool-call messages). Tool-role messages and assistant
@@ -576,29 +709,22 @@ func (conv *Conversation) autoRenameIfNeeded(ctx context.Context, session Sessio
 //
 // Depends only on SessionHistory — the narrowest interface needed.
 func buildNamingMessages(session SessionHistory) []Message {
-	msgs := make([]Message, 0, 8)
-	for _, m := range session.AllMessages() {
-		// Skip tool messages and assistant tool-call messages (those with ToolCalls).
-		if m.Role == RoleTool || (m.Role == RoleAssistant && len(m.ToolCalls) > 0) {
-			msgs = append(msgs, Message{
-				Role:    RoleSystem,
-				Content: "[TRUNCATED TOOL CALLS]",
-			})
-			continue
-		}
+	msgs := StripToolCalls(session.AllMessages(), true)
+	// Drop genuine system messages but keep the [TRUNCATED TOOL CALLS] placeholders.
+	filtered := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
 		if m.Role == RoleUser || m.Role == RoleAssistant {
-			msgs = append(msgs, Message{
-				Role:    m.Role,
-				Content: m.Content,
-			})
+			filtered = append(filtered, m)
+		} else if m.Role == RoleSystem && m.Content == "[TRUNCATED TOOL CALLS]" {
+			filtered = append(filtered, m)
 		}
 	}
-	// Append the naming instruction as the final system message so it is
+	// Append the naming instruction as the final user message so it is
 	// the last thing the model sees.
-	msgs = append(msgs, Message{
+	filtered = append(filtered, Message{
 		Role:    RoleUser,
 		Content: "Suggest name for this chat. One sentence.",
 	})
-	return msgs
+	return filtered
 }
 

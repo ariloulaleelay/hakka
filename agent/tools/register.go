@@ -16,6 +16,14 @@ func RegisterAll(r *agent.ToolRegistry) {
 	r.Register(VimReadBuffer())
 }
 
+// RegisterMeta registers system meta-tools that are always executable
+// but never appear in SchemasForSession — the engine injects them
+// into schemas conditionally. For example, context_compactify only
+// appears when the soft token limit is exceeded.
+func RegisterMeta(r *agent.ToolRegistry) {
+	r.Register(Compactify())
+}
+
 // RegisterSessionTools registers session-control tools on the given
 // registry. These tools read the current namespace from the Go context
 // (set by the gateway per-request) to enforce isolation — e.g. a TCP

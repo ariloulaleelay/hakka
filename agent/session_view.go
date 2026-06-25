@@ -46,10 +46,10 @@ type SessionTokenTracking interface {
 	AddTokenUsage(tokens int)
 }
 
-// SessionCompactionConfig provides per-session compaction settings.
-type SessionCompactionConfig interface {
-	GetCompactChains() int
-	SetCompactChains(n int)
+// SessionCompactLimits provides per-session compaction settings.
+type SessionCompactLimits interface {
+	GetCompactSoftLimit() int
+	SetCompactSoftLimit(n int)
 }
 
 // SessionView is the full composite interface that the orchestration
@@ -63,5 +63,5 @@ type SessionView interface {
 	SessionToolAuth
 	SessionModelBinding
 	SessionTokenTracking
-	SessionCompactionConfig
+	SessionCompactLimits
 }

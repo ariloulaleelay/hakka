@@ -162,12 +162,12 @@ func (cp *CommandProcessor) handleHelp(_ context.Context, _ string, _ []string) 
   /tool list                    - List available tools with status
   /tool enable <name-or-#tag>...   - Enable a tool or all tools with a #tag
   /tool disable <name-or-#tag>...  - Disable a tool or all tools with a #tag
-  /compact <n>                  - Set how many tool-call chains to keep intact (0=off, default 5)`
+  /compact <n>                  - Set context soft limit in tokens (default 150000)`
 	return CommandResult{Handled: true, Action: ActionReply, Reply: helpText}
 }
 
-// handleCompact sets the compact_chains value on the current session.
-// /compact 0 — disable compaction; /compact 3 — keep last 3 chains (default).
+// handleCompact sets the compact soft limit on the current session.
+// /compact 150000 — set soft limit; /compact 0 — disable compaction prompts.
 func (cp *CommandProcessor) handleCompact(ctx context.Context, sessionID string, parts []string) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 
@@ -180,29 +180,29 @@ func (cp *CommandProcessor) handleCompact(ctx context.Context, sessionID string,
 		return CommandResult{
 			Handled: true,
 			Action:  ActionReply,
-			Reply:   fmt.Sprintf("compact chains: %d (0=off, keep last N chains intact)", session.GetCompactChains()),
+			Reply:   fmt.Sprintf("compact soft limit: %d tokens (0=off, default 150000)", session.GetCompactSoftLimit()),
 		}
 	}
 
 	n := 0
 	if _, err := fmt.Sscanf(parts[1], "%d", &n); err != nil || n < 0 {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "usage: /compact <n> — where n is a non-negative integer"}
+		return CommandResult{Handled: true, Action: ActionReply, Reply: "usage: /compact <n> — where n is a non-negative integer (soft token limit)"}
 	}
 
 	session, err := cp.Sessions.GetOrCreate(ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}
-	session.SetCompactChains(n)
+	session.SetCompactSoftLimit(n)
 	if err := cp.Sessions.Save(ctx, ns, session); err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}
 
 	desc := "off"
 	if n > 0 {
-		desc = fmt.Sprintf("keeping last %d chains intact", n)
+		desc = fmt.Sprintf("warning at %d tokens", n)
 	}
-	return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("compact chains set to %d (%s)", n, desc)}
+	return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("compact soft limit set to %d (%s)", n, desc)}
 }
 
 // handleStart creates a fresh session and enables all registered tools.

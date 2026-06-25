@@ -32,6 +32,18 @@ type Message struct {
 	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	Name       string         `json:"name,omitempty"`
+	// Internal marks messages that are persisted for debugging but never
+	// sent to the LLM. Used for compaction warnings and other engine-
+	// injected annotations that should not pollute the context window.
+	Internal bool `json:"internal,omitempty"`
+	// Usage holds the provider-reported token consumption for this
+	// message. Only assistant-role messages carry usage; user, system,
+	// and tool messages store nil here.
+	//
+	// This is more precise than any estimate the engine could compute
+	// and is recorded per-call so consumers (hooks, session_info,
+	// gateways) can inspect per-message token cost.
+	Usage *Usage `json:"usage,omitempty"`
 	// ProviderMetadata holds provider-specific data that the core engine
 	// treats as opaque. Each adapter stores its own key-value pairs here:
 	//
@@ -81,11 +93,12 @@ type Session struct {
 	// Only tools listed here will appear in the LLM's tool schemas.
 	EnabledTools map[string]bool `json:"enabled_tools,omitempty"`
 
-	// CompactChains controls on-the-fly session compaction.
-	// When > 0, old tool-call chains are compacted into short system
-	// summaries before each LLM call, keeping the last N chains intact.
-	// 0 (default) disables compaction.
-	CompactChains int `json:"compact_chains,omitempty"`
+	// CompactSoftLimit is the token threshold at which the engine
+	// prompts the LLM to call context_compactify. When the estimated
+	// context exceeds this value, [N] index prefixes and a system
+	// warning are injected.
+	// 0 (default) means "use engine config default" (DefaultEngineConfig()).
+	CompactSoftLimit int `json:"compact_soft_limit,omitempty"`
 
 	mu sync.Mutex
 }
@@ -122,7 +135,7 @@ func NewSession(namespace, systemPrompt string) *Session {
 		SystemPrompt:  systemPrompt,
 		CreatedAt:     time.Now(),
 		ClientCWD:     cwd,
-		CompactChains: 5,
+		CompactSoftLimit: 0, // 0 means "use engine config default"; see DefaultEngineConfig()
 	}
 }
 
@@ -221,18 +234,18 @@ func (sess *Session) DisableTool(name string) {
 	sess.EnabledTools[name] = false
 }
 
-// GetCompactChains returns the session's compaction setting.
-func (sess *Session) GetCompactChains() int {
+// GetCompactSoftLimit returns the session's compaction soft limit.
+func (sess *Session) GetCompactSoftLimit() int {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	return sess.CompactChains
+	return sess.CompactSoftLimit
 }
 
-// SetCompactChains sets the session's compaction setting.
-func (sess *Session) SetCompactChains(n int) {
+// SetCompactSoftLimit sets the session's compaction soft limit.
+func (sess *Session) SetCompactSoftLimit(n int) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	sess.CompactChains = n
+	sess.CompactSoftLimit = n
 }
 
 // SessionID returns the unique identifier of this session.
