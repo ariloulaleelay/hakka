@@ -75,12 +75,12 @@ func TestTCPGatewayInitHandshake(t *testing.T) {
 
 	// Now verify that a subsequent request with this session_id uses the CWD
 	sid := resp.SessionID
-	_, err = fmt.Fprintln(conn, fmt.Sprintf(`{"session_id":%q,"input":"hello"}`, sid))
+	_, err = fmt.Fprintf(conn, `{"session_id":%q,"input":"hello"}`+"\n", sid)
 	if err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	line, err = r.ReadBytes('\n')
+	_, err = r.ReadBytes('\n')
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}

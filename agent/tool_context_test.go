@@ -7,6 +7,9 @@ import (
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
+// testCtxKey is a private context key type used in tests to avoid collisions.
+type testCtxKey struct{}
+
 // ---------------------------------------------------------------------------
 // ToolContextDecoratorFunc
 // ---------------------------------------------------------------------------
@@ -18,7 +21,7 @@ func TestToolContextDecoratorFunc_calls_the_wrapped_function(t *testing.T) {
 	var capturedEvents chan<- event.EngineEvent
 
 	events := make(chan event.EngineEvent, 1)
-	originalCtx := context.WithValue(context.Background(), struct{}{}, "hello")
+	originalCtx := context.WithValue(context.Background(), testCtxKey{}, "hello")
 
 	decorator := ToolContextDecoratorFunc(func(ctx context.Context, sessionID string, ch chan<- event.EngineEvent) context.Context {
 		capturedCtx = ctx
@@ -46,7 +49,7 @@ func TestToolContextDecoratorFunc_returns_the_context_from_the_wrapped_function(
 	// Given a decorator that returns a modified context
 	events := make(chan event.EngineEvent, 1)
 	original := context.Background()
-	expected := context.WithValue(original, struct{}{}, "modified")
+	expected := context.WithValue(original, testCtxKey{}, "modified")
 
 	decorator := ToolContextDecoratorFunc(func(ctx context.Context, _ string, _ chan<- event.EngineEvent) context.Context {
 		return expected

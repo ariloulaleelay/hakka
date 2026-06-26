@@ -966,11 +966,4 @@ func newGatewayComponentsWithAdapter(adapter agent.LLMAdapter) (*agent.Conversat
 	return conv, streamer, cmd
 }
 
-func historyHasUserMessage(history []agent.Message, content string) bool {
-	for _, msg := range history {
-		if msg.Role == agent.RoleUser && msg.Content == content {
-			return true
-		}
-	}
-	return false
-}
+

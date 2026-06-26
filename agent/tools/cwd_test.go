@@ -43,22 +43,6 @@ func runWithCWDPlain(t *testing.T, h func(context.Context, json.RawMessage) (str
 	return res
 }
 
-// runWithCWDErr invokes a tool handler with CWD context, expecting an error.
-func runWithCWDErr(t *testing.T, h func(context.Context, json.RawMessage) (string, error), args any, cwd string) string {
-	t.Helper()
-	raw, _ := json.Marshal(args)
-	ctx := event.ContextWithCWD(context.Background(), cwd)
-	res, err := h(ctx, raw)
-	if err != nil {
-		return err.Error()
-	}
-	if strings.HasPrefix(res, "Error: ") {
-		return strings.TrimPrefix(res, "Error: ")
-	}
-	t.Fatalf("expected error result, got: %q", res)
-	return ""
-}
-
 // TestShellRespectsCWDFromContext verifies that when a CWD is set in the
 // context, the shell tool runs the command in that directory, even without
 // a cwd argument.

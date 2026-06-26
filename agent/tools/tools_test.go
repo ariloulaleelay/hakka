@@ -518,23 +518,24 @@ func TestRegisterAllDoesNotIncludeMetaTools(t *testing.T) {
 	}
 }
 
-// TestBuildAskQuestionMessages_SkipsInternalMessages verifies that internal
-// messages (e.g. compaction warnings) never leak into the session_ask_question LLM call.
-func TestBuildAskQuestionMessages_SkipsInternalMessages(t *testing.T) {
+// TestBuildAskQuestionMessages_ExcludesCompactifyMessages verifies that
+// context_compactify messages never leak into the session_ask_question LLM call.
+func TestBuildAskQuestionMessages_ExcludesCompactifyMessages(t *testing.T) {
 	session := agent.NewSession("testns", "You are helpful.")
 	session.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
-	session.Append(agent.Message{Role: agent.RoleSystem, Content: "⚠ compaction warning", Internal: true})
+	// Add a compactify call/result pair — must be stripped.
+	session.Append(agent.Message{Role: agent.RoleAssistant, ToolCalls: []agent.ToolCall{
+		{ID: "cc", Name: "context_compactify", Arguments: `{"range_start":0,"range_end":0}`},
+	}})
+	session.Append(agent.Message{Role: agent.RoleTool, Content: "Noted.", ToolCallID: "cc", Name: "context_compactify"})
 	session.Append(agent.Message{Role: agent.RoleAssistant, Content: "hi there"})
 
 	msgs := buildAskQuestionMessages(session, "what was said?")
 
-	// Internal messages should be skipped entirely.
+	// Compactify messages should be skipped entirely.
 	for _, m := range msgs {
-		if m.Internal {
-			t.Fatalf("internal message leaked into ask-question context: %+v", m)
-		}
-		if m.Role == agent.RoleSystem && strings.Contains(m.Content, "compaction warning") {
-			t.Fatal("compaction warning leaked into ask-question context")
+		if m.Name == "context_compactify" {
+			t.Fatalf("compactify message leaked into ask-question context: %+v", m)
 		}
 	}
 

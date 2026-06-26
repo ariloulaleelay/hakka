@@ -330,48 +330,12 @@ func TestBuildCompactedView_MixedCompactifyAndRegularTools(t *testing.T) {
 	}
 }
 
-func TestBuildCompactedView_InternalMessagesFiltered(t *testing.T) {
-	rawMsgs := []Message{
-		{Role: RoleUser, Content: "hello"},
-		{Role: RoleSystem, Content: "debug", Internal: true},
-		{Role: RoleAssistant, Content: "hi"},
-	}
-	inRange := []bool{false, false, false}
-	summaryAt := make([]string, len(rawMsgs))
-
-	view, _ := buildCompactedView(rawMsgs, inRange, summaryAt)
-
-	if len(view) != 2 {
-		t.Fatalf("expected 2 messages (internal filtered), got %d", len(view))
-	}
-}
-
 func TestBuildCompactedView_EmptyInput(t *testing.T) {
 	view, origIdx := buildCompactedView(nil, nil, nil)
 	if len(view) != 0 || len(origIdx) != 0 {
 		t.Fatalf("expected empty, got view=%v origIdx=%v", view, origIdx)
 	}
 }
-
-func TestBuildCompactedView_InternalMessagesDontGetIndexPrefixes(t *testing.T) {
-	rawMsgs := []Message{
-		{Role: RoleUser, Content: "hi"},
-		{Role: RoleSystem, Content: "internal", Internal: true},
-		{Role: RoleAssistant, Content: "hello"},
-	}
-	inRange := []bool{false, false, false}
-	summaryAt := make([]string, len(rawMsgs))
-
-	view, _ := buildCompactedView(rawMsgs, inRange, summaryAt)
-	if len(view) != 2 {
-		t.Fatalf("expected 2 view messages, got %d", len(view))
-	}
-	// verifies internal messages don't appear in view at all
-}
-
-// ---------------------------------------------------------------------------
-// buildSummaryLookup tests
-// ---------------------------------------------------------------------------
 
 func TestBuildSummaryLookup_Empty(t *testing.T) {
 	result := buildSummaryLookup(5, nil)
@@ -638,53 +602,6 @@ func TestBuildCompactContext_EmptySession(t *testing.T) {
 	}
 	if len(result) < 2 {
 		t.Fatalf("expected at least 2 messages (system prompt + CWD), got %d", len(result))
-	}
-}
-
-func TestBuildCompactContext_InternalMessagesFiltered(t *testing.T) {
-	// Internal messages should never appear in the LLM view,
-	// regardless of their role.
-
-	s := NewSession("testns", "You are helpful.")
-	s.Append(Message{Role: RoleSystem, Content: "internal debug note", Internal: true})
-	s.Append(Message{Role: RoleUser, Content: "hello"})
-	s.Append(Message{Role: RoleAssistant, Content: "hi"})
-
-	result, _, _ := BuildCompactContext(s, 100000)
-
-	for _, m := range result {
-		if m.Internal {
-			t.Fatalf("internal message leaked into LLM view: %+v", m)
-		}
-		if m.Role == RoleSystem && strings.Contains(m.Content, "internal debug note") {
-			t.Fatal("internal message content leaked into LLM view")
-		}
-	}
-}
-
-func TestBuildCompactContext_InternalMessagesDontGetIndexPrefixes(t *testing.T) {
-	// Internal messages must not get [N] index prefixes (they're never
-	// shown to the LLM, so they shouldn't affect indexing).
-
-	s := NewSession("testns", "You are helpful.")
-	s.Append(Message{Role: RoleSystem, Content: "internal note", Internal: true})
-	bigContent := strings.Repeat("x", 500)
-	s.Append(Message{Role: RoleUser, Content: bigContent})
-	s.Append(Message{Role: RoleAssistant, Content: "ok"})
-
-	result, _, _ := BuildCompactContext(s, 10)
-
-	// The [N] prefix on the user message should be [1] (index 1 in raw session),
-	// NOT [2] — because the internal message at index 0 is skipped.
-	foundUser := false
-	for _, m := range result {
-		if m.Role == RoleUser && strings.Contains(m.Content, "[1] ~") && strings.Contains(m.Content, bigContent) {
-			foundUser = true
-			break
-		}
-	}
-	if !foundUser {
-		t.Fatal("user message not found in result")
 	}
 }
 
@@ -955,9 +872,11 @@ func TestBuildCompactContext_InvalidRangeDoesNotCausePanic(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Bug #1: Warning accumulation — BuildCompactContext appends a new
-// Internal warning to the session on every call when needCompactify=true.
-// Over many iterations this bloats session storage.
+// Bug #1: Warning accumulation — BuildCompactContext used to persist
+// Internal warnings to the session on every call when needCompactify=true.
+// Warnings are now ephemeral (in LLM view only, not persisted) to avoid
+// accumulation. This test verifies no warning messages accumulate in the
+// session across multiple calls.
 // ---------------------------------------------------------------------------
 
 func TestBuildCompactContext_NoDuplicateWarnings(t *testing.T) {
@@ -986,17 +905,11 @@ func TestBuildCompactContext_NoDuplicateWarnings(t *testing.T) {
 		}
 	}
 
-	// Count how many internal warnings were persisted to the session.
-	// Warnings are now ephemeral (in LLM view only, not persisted) to avoid
-	// accumulation. There should be 0 persisted warnings.
-	warningCount := 0
-	for _, m := range s.AllMessages() {
-		if m.Role == RoleSystem && strings.Contains(m.Content, "context_compactify") && m.Internal {
-			warningCount++
-		}
-	}
-	if warningCount != 0 {
-		t.Fatalf("expected 0 internal warnings persisted to session (ephemeral), got %d", warningCount)
+	// Warnings are ephemeral — they appear only in the LLM view, never
+	// persisted to the session. Verify no warning messages accumulated.
+	sessionMsgCount := len(s.AllMessages())
+	if sessionMsgCount != 2 {
+		t.Fatalf("expected 2 messages in session (warnings not persisted), got %d", sessionMsgCount)
 	}
 }
 
@@ -1106,35 +1019,39 @@ func TestBuildCompactContext_MixedCompactifyAndRegularTools(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// estimateTokens tests — using per-message Usage when available
+// estimateTokens tests — always uses text-based (chars/4) heuristic.
 // ---------------------------------------------------------------------------
 
-func TestEstimateTokens_UsesLastMessageUsagePromptTokens(t *testing.T) {
+func TestEstimateTokens_UsesHeuristicWhenUsagePresent(t *testing.T) {
+	// Provider-reported Usage is deliberately ignored — the chars/4
+	// heuristic is used regardless, because it is provider-agnostic and
+	// stable across backends.
 	msgs := []Message{
 		{Role: RoleUser, Content: "hello"},
 		{Role: RoleAssistant, Content: "world", Usage: &Usage{PromptTokens: 42, CompletionTokens: 5, TotalTokens: 47}},
 	}
 	total := estimateTokens(msgs)
-	// Should use PromptTokens from the last message with Usage
-	if total != 42 {
-		t.Fatalf("expected 42 (last Usage.PromptTokens), got %d", total)
+	expected := len("hello")/4 + len("world")/4
+	if total != expected {
+		t.Fatalf("expected %d (chars/4 heuristic, ignoring Usage.PromptTokens=42), got %d", expected, total)
 	}
 }
 
-func TestEstimateTokens_UsesOnlyLastUsage(t *testing.T) {
+func TestEstimateTokens_IgnoresUsage(t *testing.T) {
 	msgs := []Message{
 		{Role: RoleAssistant, Content: "first", Usage: &Usage{PromptTokens: 10, CompletionTokens: 3, TotalTokens: 13}},
 		{Role: RoleTool, Content: "result", ToolCallID: "c1"},
 		{Role: RoleAssistant, Content: "last", Usage: &Usage{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120}},
 	}
 	total := estimateTokens(msgs)
-	// Should use PromptTokens from the last (most recent) Usage
-	if total != 100 {
-		t.Fatalf("expected 100 (last Usage.PromptTokens), got %d", total)
+	// All messages counted via chars/4: 5/4=1 + 6/4=1 + 4/4=1 = 3
+	expected := len("first")/4 + len("result")/4 + len("last")/4
+	if total != expected {
+		t.Fatalf("expected %d (chars/4, ignoring Usage.PromptTokens=100), got %d", expected, total)
 	}
 }
 
-func TestEstimateTokens_FallsBackToHeuristicWhenNoUsage(t *testing.T) {
+func TestEstimateTokens_HeuristicOnPlainMessages(t *testing.T) {
 	content := strings.Repeat("x", 100)
 	msgs := []Message{
 		{Role: RoleAssistant, Content: content},
@@ -1227,78 +1144,6 @@ func TestHeuristicTokens_Empty(t *testing.T) {
 	}
 	if heuristicTokens([]Message{}) != 0 {
 		t.Fatal("expected 0 for empty")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// latestAccurateUsage tests
-// ---------------------------------------------------------------------------
-
-func TestLatestAccurateUsage_ReturnsLastUsage(t *testing.T) {
-	rawMsgs := []Message{
-		{Role: RoleUser, Content: "hello"},
-		{Role: RoleAssistant, Content: "hi", Usage: &Usage{PromptTokens: 100}},
-		{Role: RoleUser, Content: "more"},
-		{Role: RoleAssistant, Content: "done", Usage: &Usage{PromptTokens: 250}},
-	}
-	usage := latestAccurateUsage(rawMsgs)
-	if usage != 250 {
-		t.Fatalf("expected 250, got %d", usage)
-	}
-}
-
-func TestLatestAccurateUsage_ResetsOnCompactify(t *testing.T) {
-	rawMsgs := []Message{
-		{Role: RoleAssistant, Content: "old", Usage: &Usage{PromptTokens: 500}},
-		{Role: RoleTool, Content: "Noted.", Name: "context_compactify"},
-		{Role: RoleAssistant, Content: "new", Usage: &Usage{PromptTokens: 60}},
-	}
-	usage := latestAccurateUsage(rawMsgs)
-	if usage != 60 {
-		t.Fatalf("expected 60 (post-compactify), got %d", usage)
-	}
-}
-
-func TestLatestAccurateUsage_CompactifyClearsStaleUsage(t *testing.T) {
-	rawMsgs := []Message{
-		{Role: RoleAssistant, Content: "old", Usage: &Usage{PromptTokens: 500}},
-		{Role: RoleTool, Content: "Noted.", Name: "context_compactify"},
-		// No new usage after compactify — should return -1
-		{Role: RoleUser, Content: "hello"},
-	}
-	usage := latestAccurateUsage(rawMsgs)
-	if usage != -1 {
-		t.Fatalf("expected -1 (stale after compactify), got %d", usage)
-	}
-}
-
-func TestLatestAccurateUsage_NoUsageReturnsMinusOne(t *testing.T) {
-	rawMsgs := []Message{
-		{Role: RoleUser, Content: "hello"},
-		{Role: RoleAssistant, Content: "hi"},
-	}
-	usage := latestAccurateUsage(rawMsgs)
-	if usage != -1 {
-		t.Fatalf("expected -1, got %d", usage)
-	}
-}
-
-func TestLatestAccurateUsage_EmptyReturnsMinusOne(t *testing.T) {
-	if latestAccurateUsage(nil) != -1 {
-		t.Fatal("expected -1 for nil")
-	}
-	if latestAccurateUsage([]Message{}) != -1 {
-		t.Fatal("expected -1 for empty")
-	}
-}
-
-func TestLatestAccurateUsage_ZeroPromptTokensIgnored(t *testing.T) {
-	rawMsgs := []Message{
-		{Role: RoleAssistant, Content: "msg", Usage: &Usage{PromptTokens: 0, CompletionTokens: 100, TotalTokens: 100}},
-	}
-	usage := latestAccurateUsage(rawMsgs)
-	if usage != -1 {
-		t.Fatalf("expected -1 (0 PromptTokens ignored), got %d", usage)
 	}
 }
 

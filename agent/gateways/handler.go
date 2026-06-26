@@ -50,8 +50,8 @@ func (h *TurnHandler) CancelSession(sessionID string) bool {
 	if !ok {
 		return false
 	}
-	cancel, ok := val.(context.CancelFunc)
-	if !ok {
+	cancel, _ := val.(context.CancelFunc)
+	if cancel == nil {
 		return false
 	}
 	cancel()

@@ -290,85 +290,20 @@ func (conv *Conversation) runToolIterations(
 	hooks := conv.serialisedHooks(&turnMu)
 
 	for i := 0; i < conv.Config.MaxToolIterations; i++ {
-		var msgs []Message
-		softLimit := session.GetCompactSoftLimit()
-		if softLimit <= 0 {
-			softLimit = conv.Config.CompactSoftLimit
-		}
-		if softLimit <= 0 {
-			softLimit = DefaultEngineConfig().CompactSoftLimit
-		}
-		msgs, needCompactify, estimatedTokens := BuildCompactContext(session, softLimit)
-
-		// When context is over soft limit, offer context_compactify alongside
-		// all normal tools so the LLM can choose to compact.
-		turnSchemas := schemas
-		if needCompactify {
-			found := false
-			for _, s := range schemas {
-				if s.Name == "context_compactify" {
-					found = true
-					break
-				}
-			}
-			if !found {
-				turnSchemas = append(schemas, contextCompactifySchema)
-			}
-		}
-
-		// Log compaction state for debugging.
-		conv.Config.Logger.Debug("tool-iteration context",
-			"iteration", i,
-			"session", session.SessionID(),
-			"estTokens", estimatedTokens,
-			"softLimit", softLimit,
-			"needCompactify", needCompactify)
-		resp, err := step(ctx, msgs, turnSchemas, events)
+		resp, needCompactify, err := conv.runOneIteration(ctx, session, schemas, events, step, hooks, i)
 		if err != nil {
-			// Save session before returning error — preserve work done so far.
-			if saveErr := conv.finishTurn(ctx, session); saveErr != nil {
-				conv.Config.Logger.Error("failed to save session on error",
-					"session", session.SessionID(), "error", saveErr)
-			}
-			return "", conv.notifyError(session.SessionID(), err, hooks)
+			return "", err
 		}
-
-		msg := Message{Role: RoleAssistant, Content: resp.content, ToolCalls: resp.toolCalls, Usage: resp.usage}
-		session.Append(msg)
-
-		llmResp := &LLMResponse{Message: msg, Usage: resp.usage}
-		hooks.FireLLMResponse(session.SessionID(), llmResp)
-		if resp.usage != nil {
-			session.AddTokenUsage(resp.usage.TotalTokens)
-			conv.sendEvent(events, event.UsageReported{
-				SessionID: session.SessionID(),
-				Usage: event.UsageInfo{
-					PromptTokens:     resp.usage.PromptTokens,
-					CompletionTokens: resp.usage.CompletionTokens,
-					TotalTokens:      resp.usage.TotalTokens,
-				},
-			})
+		if resp == nil {
+			continue // compactify-only round — loop again
 		}
-
 		if len(resp.toolCalls) == 0 {
 			return resp.content, nil
 		}
 
-		if needCompactify {
-			names := make([]string, len(resp.toolCalls))
-			for j, tc := range resp.toolCalls {
-				names[j] = tc.Name
-			}
-			conv.Config.Logger.Debug("tool-iteration compactify-needed-but-llm-called",
-				"iteration", i,
-				"session", session.SessionID(),
-				"calledTools", names,
-			)
-		}
-
+		conv.logCompactifySkipped(session.SessionID(), i, needCompactify, resp.toolCalls)
 		conv.executeToolCalls(ctx, session, resp.toolCalls, hooks, events)
 
-		// Save after every completed tool round so progress is not lost.
 		if saveErr := conv.finishTurn(ctx, session); saveErr != nil {
 			conv.Config.Logger.Error("failed to save session mid-turn",
 				"session", session.SessionID(), "iteration", i, "error", saveErr)
@@ -379,13 +314,123 @@ func (conv *Conversation) runToolIterations(
 	return "", ErrMaxIterations
 }
 
-// schemaNames returns the names of the given schemas for logging.
-func schemaNames(schemas []ToolSchema) []string {
-	names := make([]string, len(schemas))
-	for i, s := range schemas {
-		names[i] = s.Name
+// runOneIteration executes a single LLM-call+record cycle within the
+// tool loop. It builds the compacted context, calls the step function,
+// records the assistant response, and returns the result.
+//
+// Returns (nil, _, nil) when the LLM only called context_compactify —
+// the caller should loop again so the newly-compacted context takes effect.
+func (conv *Conversation) runOneIteration(
+	ctx context.Context,
+	session SessionView,
+	schemas []ToolSchema,
+	events eventSender,
+	step stepFunc,
+	hooks Hooks,
+	iteration int,
+) (*llmStepResult, bool, error) {
+	softLimit := conv.resolveSoftLimit(session)
+	msgs, needCompactify, estimatedTokens := BuildCompactContext(session, softLimit)
+	turnSchemas := conv.augmentSchemasWithCompactify(schemas, needCompactify)
+
+	conv.Config.Logger.Debug("tool-iteration context",
+		"iteration", iteration,
+		"session", session.SessionID(),
+		"estTokens", estimatedTokens,
+		"softLimit", softLimit,
+		"needCompactify", needCompactify)
+
+	resp, err := step(ctx, msgs, turnSchemas, events)
+	if err != nil {
+		conv.finishTurnOnError(ctx, session)
+		return nil, needCompactify, conv.notifyError(session.SessionID(), err, hooks)
 	}
-	return names
+
+	conv.recordLLMResponse(session, resp, hooks, events)
+
+	// If the LLM only called context_compactify (no real tool calls),
+	// signal the caller to loop again so the newly-compacted context
+	// takes effect immediately.
+	if len(resp.toolCalls) == 1 && resp.toolCalls[0].Name == "context_compactify" {
+		return nil, needCompactify, nil
+	}
+
+	return resp, needCompactify, nil
+}
+
+// resolveSoftLimit returns the effective compaction soft limit for the
+// session. Falls back from session → engine config → global default.
+func (conv *Conversation) resolveSoftLimit(session SessionView) int {
+	softLimit := session.GetCompactSoftLimit()
+	if softLimit <= 0 {
+		softLimit = conv.Config.CompactSoftLimit
+	}
+	if softLimit <= 0 {
+		softLimit = DefaultEngineConfig().CompactSoftLimit
+	}
+	return softLimit
+}
+
+// augmentSchemasWithCompactify returns a copy of schemas with
+// context_compactify appended when compaction is needed and the
+// schema is not already present.
+func (conv *Conversation) augmentSchemasWithCompactify(schemas []ToolSchema, needCompactify bool) []ToolSchema {
+	if !needCompactify {
+		return schemas
+	}
+	for _, s := range schemas {
+		if s.Name == "context_compactify" {
+			return schemas // already present
+		}
+	}
+	return append(schemas, contextCompactifySchema)
+}
+
+// recordLLMResponse appends the assistant message to the session,
+// fires the LLM response hook, and updates token usage.
+func (conv *Conversation) recordLLMResponse(session SessionView, resp *llmStepResult, hooks Hooks, events eventSender) {
+	msg := Message{Role: RoleAssistant, Content: resp.content, ToolCalls: resp.toolCalls, Usage: resp.usage}
+	session.Append(msg)
+
+	hooks.FireLLMResponse(session.SessionID(), &LLMResponse{Message: msg, Usage: resp.usage})
+	if resp.usage != nil {
+		session.AddTokenUsage(resp.usage.TotalTokens)
+		conv.sendEvent(events, event.UsageReported{
+			SessionID: session.SessionID(),
+			Usage: event.UsageInfo{
+				PromptTokens:     resp.usage.PromptTokens,
+				CompletionTokens: resp.usage.CompletionTokens,
+				TotalTokens:      resp.usage.TotalTokens,
+			},
+		})
+	}
+}
+
+// finishTurnOnError saves the session before propagating an error.
+// Unlike finishTurn, it never returns — errors are logged and swallowed
+// because the caller already has a primary error to propagate.
+func (conv *Conversation) finishTurnOnError(ctx context.Context, session SessionView) {
+	if saveErr := conv.finishTurn(ctx, session); saveErr != nil {
+		conv.Config.Logger.Error("failed to save session on error",
+			"session", session.SessionID(), "error", saveErr)
+	}
+}
+
+// logCompactifySkipped logs a debug message when the LLM chose not to
+// call context_compactify despite the soft limit being exceeded.
+func (conv *Conversation) logCompactifySkipped(sessionID string, iteration int, needCompactify bool, toolCalls []ToolCall) {
+	if !needCompactify {
+		return
+	}
+	names := make([]string, len(toolCalls))
+	for j, tc := range toolCalls {
+		names[j] = tc.Name
+	}
+	conv.Config.Logger.Debug("tool-iteration compactify-needed-but-llm-called",
+		"iteration", iteration,
+		"session", sessionID,
+		"calledTools", names,
+	)
 }
 
 // sendEvent sends an event to the optional event channel (non-blocking).
@@ -620,8 +665,8 @@ func (conv *Conversation) autoRenameIfNeeded(ctx context.Context, session Sessio
 }
 
 // StripToolCalls filters a raw message list for human-readable consumption
-// by removing internal messages and replacing assistant messages that only
-// contain tool calls with a placeholder.
+// by removing context_compactify messages and replacing assistant messages
+// that only contain tool calls with a placeholder.
 //
 // When replaceToolsWithPlaceholder is true, tool-role messages are also
 // replaced with the placeholder (as buildNamingMessages does). When false,
@@ -629,9 +674,6 @@ func (conv *Conversation) autoRenameIfNeeded(ctx context.Context, session Sessio
 func StripToolCalls(messages []Message, replaceToolsWithPlaceholder bool) []Message {
 	msgs := make([]Message, 0, len(messages))
 	for _, m := range messages {
-		if m.Internal {
-			continue
-		}
 		// Skip context_compactify messages entirely — they are engine
 		// meta-tool artifacts that should never appear in human-readable
 		// contexts (naming, ask-question). Without this, compactify-only

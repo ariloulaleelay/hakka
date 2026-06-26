@@ -32,10 +32,7 @@ type Message struct {
 	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	Name       string         `json:"name,omitempty"`
-	// Internal marks messages that are persisted for debugging but never
-	// sent to the LLM. Used for compaction warnings and other engine-
-	// injected annotations that should not pollute the context window.
-	Internal bool `json:"internal,omitempty"`
+
 	// Usage holds the provider-reported token consumption for this
 	// message. Only assistant-role messages carry usage; user, system,
 	// and tool messages store nil here.

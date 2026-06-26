@@ -17,7 +17,7 @@ var htmlEscaper = strings.NewReplacer(
 
 var (
 	// fencedCodeBlock matches ```lang\ncode``` or ```\ncode```
-	fencedCodeBlockRe = regexp.MustCompile("(?s)```(\\w*)\n?(.*?)```")
+	fencedCodeBlockRe = regexp.MustCompile(`(?s)` + "```" + `(\w*)\n?(.*?)` + "```")
 
 	// tableRow matches a markdown table row: leading/trailing pipes with content
 	tableRowRe = regexp.MustCompile(`^\s*\|.*\|\s*$`)

@@ -72,12 +72,6 @@ func isCompactifyMessage(m Message) bool {
 	return false
 }
 
-// isInternalMessage returns true if the message is marked Internal.
-// Internal messages are persisted for debugging but never sent to the LLM.
-func isInternalMessage(m Message) bool {
-	return m.Internal
-}
-
 // stripCompactifyCalls removes context_compactify entries from a tool call
 // list, returning a new slice. Used to clean mixed assistant messages where
 // the LLM called compactify alongside regular tools.
@@ -116,7 +110,7 @@ func computeEffectiveInRange(rawMsgs []Message, merged []compactRange) []bool {
 		if m.Role != RoleAssistant || len(m.ToolCalls) == 0 {
 			continue
 		}
-		if isCompactifyMessage(m) || isInternalMessage(m) {
+		if isCompactifyMessage(m) {
 			continue
 		}
 
@@ -130,7 +124,7 @@ func computeEffectiveInRange(rawMsgs []Message, merged []compactRange) []bool {
 		}
 		roundEnd := i + 1
 		for roundEnd < len(rawMsgs) && rawMsgs[roundEnd].Role == RoleTool {
-			if isCompactifyMessage(rawMsgs[roundEnd]) || isInternalMessage(rawMsgs[roundEnd]) {
+			if isCompactifyMessage(rawMsgs[roundEnd]) {
 				roundEnd++
 				continue
 			}
@@ -145,7 +139,7 @@ func computeEffectiveInRange(rawMsgs []Message, merged []compactRange) []bool {
 		hasIn := false
 		hasOut := false
 		for j := i; j < roundEnd; j++ {
-			if isCompactifyMessage(rawMsgs[j]) || isInternalMessage(rawMsgs[j]) {
+			if isCompactifyMessage(rawMsgs[j]) {
 				continue
 			}
 			if inRange[j] {
@@ -183,7 +177,7 @@ func buildSummaryLookup(numMsgs int, ranges []compactRange) []string {
 }
 
 // buildCompactedView builds the compacted context view from raw messages.
-// It filters out compactify and internal messages, replaces compacted ranges
+// It filters out compactify messages, replaces compacted ranges
 // with [Compacted N messages: ...] markers, and strips compactify calls from
 // mixed assistant messages.
 // Returns the view messages and a parallel slice mapping each view message
@@ -194,7 +188,7 @@ func buildCompactedView(rawMsgs []Message, inRange []bool, summaryAt []string) (
 
 	i := 0
 	for i < len(rawMsgs) {
-		if isCompactifyMessage(rawMsgs[i]) || isInternalMessage(rawMsgs[i]) {
+		if isCompactifyMessage(rawMsgs[i]) {
 			i++
 			continue
 		}
@@ -204,7 +198,7 @@ func buildCompactedView(rawMsgs []Message, inRange []bool, summaryAt []string) (
 			toolSet := make(map[string]bool)
 			msgCount := 0
 			for i < len(rawMsgs) && inRange[i] {
-				if !isCompactifyMessage(rawMsgs[i]) && !isInternalMessage(rawMsgs[i]) {
+				if !isCompactifyMessage(rawMsgs[i]) {
 					msgCount++
 					for _, tc := range rawMsgs[i].ToolCalls {
 						if tc.Name != "context_compactify" {
@@ -248,6 +242,7 @@ func buildCompactedView(rawMsgs []Message, inRange []bool, summaryAt []string) (
 	}
 	return view, origIdx
 }
+// BuildCompactContext builds the compacted message list sent to the LLM.
 //
 // It scans ALL past context_compactify tool calls in the raw session,
 // extracts and merges their compaction ranges, then builds a view where:
@@ -264,67 +259,71 @@ func buildCompactedView(rawMsgs []Message, inRange []bool, summaryAt []string) (
 // context_compactify should be added to tool schemas for this turn.
 func BuildCompactContext(session SessionHistory, softLimit int) ([]Message, bool, int) {
 	rawMsgs := session.AllMessages()
-
-	// Extract and merge all past compactify ranges.
 	ranges := extractCompactifyRanges(rawMsgs)
-
-	// Compute effective in-range set, respecting atomic tool-call rounds.
 	inRange := computeEffectiveInRange(rawMsgs, ranges)
-
-	// Build a summary lookup from ranges.
 	summaryAt := buildSummaryLookup(len(rawMsgs), ranges)
-
-	// Build the compacted view with markers.
 	view, origIdx := buildCompactedView(rawMsgs, inRange, summaryAt)
 
-	// Estimate token usage.
 	estimatedTokens := estimateTokens(rawMsgs, inRange)
 	needCompactify := estimatedTokens > softLimit
 
 	if needCompactify {
-		// Add [N] ~Tt index prefixes with per-message token estimates.
-		for j := range view {
-			if origIdx[j] >= 0 {
-				tokens := messageTokens(view[j])
-				view[j].Content = fmt.Sprintf("[%d] ~%d tokens:\n%s", origIdx[j], tokens, view[j].Content)
-			}
-		}
-		// Append warning — persisted to session as a system message.
-		// Avoid accumulating duplicate warnings: only persist if the
-		// last raw message is not already a compaction warning.
-		warning := Message{
-			Role:     RoleUser,
-			Internal: true,
-			Content:  fmt.Sprintf("STOP! Context exceeded ~%dK tokens (soft limit: %dK)! You MUST compact old history NOW using `context_compactify` before responding to the user. Range indices refer to [N] prefixes of each message. Decide what info you do not need anymore, and those ranges will be replaced with your summarization. Thus you can keep only importang info and drop boilerplate.", estimatedTokens/1000, softLimit/1000),
-		}
-		view = append(view, warning)
+		annotateViewWithIndices(view, origIdx)
+		view = append(view, buildCompactionWarning(estimatedTokens, softLimit))
 	}
 
-	// Prepend system prompt, compactify notice, and CWD message.
-	history := session.History()
-	result := make([]Message, 0, len(view)+4)
-	if len(history) > 0 && history[0].Role == RoleSystem {
-		result = append(result, history[0])
-	}
-	if needCompactify {
-		compactNotice := Message{
-			Role:    RoleSystem,
-			Content: "You have access to `context_compactify` tool for compacting old conversation history when context gets too large. When warned about context quota, use it with range_start/range_end to compact unneeded tool-call rounds before continuing. Add meaningful summarization for compacted messages. You can call this tool multiple times to throw out obsolete and unneeded data.",
-		}
-		result = append(result, compactNotice)
-	}
-	if cwdMsg := session.CWDMessage(); cwdMsg != nil {
-		result = append(result, *cwdMsg)
-	}
+	result := buildContextPrefix(session, needCompactify)
 	result = append(result, view...)
 	return result, needCompactify, estimatedTokens
 }
 
-// Prefers the last available provider-reported Usage.PromptTokens
-// because each LLM response reports the total prompt size (not per-
-// message increments). Falls back to a chars/4 heuristic when no
-// message carries usage info (e.g. brand-new sessions).
+// annotateViewWithIndices prepends [N] ~T tokens: index prefixes to
+// each non-marker message in the view so the LLM can reference precise
+// raw-message positions when calling context_compactify.
+func annotateViewWithIndices(view []Message, origIdx []int) {
+	for j := range view {
+		if origIdx[j] >= 0 {
+			tokens := messageTokens(view[j])
+			view[j].Content = fmt.Sprintf("[%d] ~%d tokens:\n%s", origIdx[j], tokens, view[j].Content)
+		}
+	}
+}
+
+// buildCompactionWarning returns the system warning message that
+// prompts the LLM to call context_compactify, showing the current
+// estimated token usage vs the soft limit.
+func buildCompactionWarning(estimatedTokens, softLimit int) Message {
+	return Message{
+		Role:    RoleUser,
+		Content: fmt.Sprintf("STOP! Context exceeded ~%dK tokens (soft limit: %dK)! You MUST compact old history NOW using `context_compactify` before responding to the user. Range indices refer to [N] prefixes of each message. Decide what info you do not need anymore, and those ranges will be replaced with your summarization. Thus you can keep only importang info and drop boilerplate.", estimatedTokens/1000, softLimit/1000),
+	}
+}
+
+// buildContextPrefix assembles the opening messages for every turn:
+// system prompt (if present), optional compactify usage notice, and
+// the working-directory message (if set).
+func buildContextPrefix(session SessionHistory, needCompactify bool) []Message {
+	history := session.History()
+	result := make([]Message, 0, 4)
+
+	if len(history) > 0 && history[0].Role == RoleSystem {
+		result = append(result, history[0])
+	}
+	if needCompactify {
+		result = append(result, Message{
+			Role:    RoleSystem,
+			Content: "You have access to `context_compactify` tool for compacting old conversation history when context gets too large. When warned about context quota, use it with range_start/range_end to compact unneeded tool-call rounds before continuing. Add meaningful summarization for compacted messages. You can call this tool multiple times to throw out obsolete and unneeded data.",
+		})
+	}
+	if cwdMsg := session.CWDMessage(); cwdMsg != nil {
+		result = append(result, *cwdMsg)
+	}
+	return result
+}
+
 // heuristicTokens returns a chars/4 token estimate for the given messages.
+// Messages covered by any optional inRange mask are excluded (already
+// compacted and not counted toward the current context size).
 func heuristicTokens(msgs []Message, inRange ...[]bool) int {
 	total := 0
 	for i, m := range msgs {
@@ -335,7 +334,7 @@ func heuristicTokens(msgs []Message, inRange ...[]bool) int {
 				break
 			}
 		}
-		if (skip) {
+		if skip {
 			continue
 		}
 		total += messageTokens(m)
@@ -343,30 +342,12 @@ func heuristicTokens(msgs []Message, inRange ...[]bool) int {
 	return total
 }
 
-// latestAccurateUsage returns the most recent Usage.PromptTokens from rawMsgs
-// that is not stale. Staleness is detected by context_compactify tool results:
-// whenever a compaction is applied, prior usage values no longer reflect the
-// actual context. Returns -1 when no valid usage is found.
-func latestAccurateUsage(rawMsgs []Message) int {
-	llmUsage := -1
-	for _, m := range rawMsgs {
-		if m.Role == RoleTool && m.Name == "context_compactify" {
-			llmUsage = -1
-		} else if m.Usage != nil && m.Usage.PromptTokens > 0 {
-			llmUsage = m.Usage.PromptTokens
-		}
-	}
-	return llmUsage
-}
-
-// estimateTokens returns a token count for raw session messages.
-// Prefers the last available provider-reported Usage.PromptTokens
-// (accounting for compaction staleness) and falls back to a heuristic
-// count of all raw messages (conservative — overcounts compacted ranges).
+// estimateTokens returns a token count for raw session messages using a
+// text-based (chars/4) heuristic. Provider-reported Usage.PromptTokens
+// is deliberately NOT used — it varies unpredictably across LLM backends
+// and becomes stale after compaction, making the char-based heuristic
+// more stable and provider-agnostic.
 func estimateTokens(rawMsgs []Message, inRange ...[]bool) int {
-	if usage := latestAccurateUsage(rawMsgs); usage > 0 {
-		return usage
-	}
 	return heuristicTokens(rawMsgs, inRange...)
 }
 

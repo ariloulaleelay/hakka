@@ -303,7 +303,6 @@ func (ad *GeminiAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 
 		accum := newAppendAccumulator()
 		var pendingUsage *agent.Usage
-		var sigs []string
 
 		scanner := bufio.NewScanner(body)
 		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -333,7 +332,6 @@ func (ad *GeminiAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 							Name:      part.FunctionCall.Name,
 							Arguments: string(args),
 						})
-						sigs = append(sigs, part.ThoughtSignature)
 						continue
 					}
 					if part.Text != "" {

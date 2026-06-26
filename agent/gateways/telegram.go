@@ -72,7 +72,8 @@ func (gw *TelegramGateway) Start(ctx context.Context) error {
 		slog.Info("telegram: using SOCKS5 proxy",
 			"socks5_addr", gw.SOCKS5,
 		)
-		dialer, err := proxy.SOCKS5("tcp", gw.SOCKS5, nil, proxy.Direct)
+		var dialer proxy.Dialer
+		dialer, err = proxy.SOCKS5("tcp", gw.SOCKS5, nil, proxy.Direct)
 		if err != nil {
 			return fmt.Errorf("telegram: SOCKS5 dialer: %w", err)
 		}
@@ -207,11 +208,7 @@ func (gw *TelegramGateway) isBotMentioned(msg *tgbotapi.Message) bool {
 		"looking_for", lowerUsername,
 		"contains", contains,
 	)
-	if contains {
-		return true
-	}
-
-	return false
+	return contains
 }
 
 // formatAuthorInfo builds the author heading for group chat messages.
@@ -258,8 +255,50 @@ func (gw *TelegramGateway) dispatch(ctx context.Context, upd tgbotapi.Update) {
 
 	chatID := upd.Message.Chat.ID
 	chatType := upd.Message.Chat.Type
-	from := upd.Message.From
 
+	gw.logIncomingMessage(upd)
+
+	if !gw.isAuthorized(chatID) {
+		gw.replyUnauthorized(chatID)
+		return
+	}
+
+	namespace := fmt.Sprintf("tg:%d", chatID)
+	ctx = event.ContextWithNamespace(ctx, namespace)
+
+	isGroup := chatType == "group" || chatType == "supergroup"
+	inputText := gw.buildInputText(upd, isGroup)
+
+	sessionID := gw.getOrCreateSession(ctx, namespace, chatID)
+	session, err := gw.Conv.Sessions.GetOrCreate(ctx, namespace, sessionID)
+	if err != nil {
+		slog.Warn("telegram: failed to get session",
+			"chat_id", chatID, "session_id", sessionID, "error", err)
+		gw.reply(chatID, fmt.Sprintf("error: %v", err))
+		return
+	}
+
+	if isGroup && !gw.isBotMentioned(upd.Message) {
+		gw.appendUnmentioned(ctx, session, namespace, chatID, inputText)
+		return
+	}
+
+	if upd.Message.IsCommand() && upd.Message.Command() == "start" {
+		gw.resetSession(chatID)
+		return
+	}
+
+	if cmdRes := gw.Cmd.Execute(ctx, sessionID, inputText); cmdRes.Handled {
+		gw.handleCommandResult(chatID, sessionID, cmdRes)
+		return
+	}
+
+	gw.runConversation(ctx, namespace, sessionID, chatID, inputText)
+}
+
+// logIncomingMessage logs metadata about an incoming Telegram message.
+func (gw *TelegramGateway) logIncomingMessage(upd tgbotapi.Update) {
+	from := upd.Message.From
 	fromID := int64(0)
 	fromUsername := ""
 	fromFirstName := ""
@@ -270,10 +309,9 @@ func (gw *TelegramGateway) dispatch(ctx context.Context, upd tgbotapi.Update) {
 		fromFirstName = from.FirstName
 		fromLastName = from.LastName
 	}
-
 	slog.Debug("telegram: incoming message",
-		"chat_id", chatID,
-		"chat_type", chatType,
+		"chat_id", upd.Message.Chat.ID,
+		"chat_type", upd.Message.Chat.Type,
 		"from_id", fromID,
 		"from_username", fromUsername,
 		"from_first_name", fromFirstName,
@@ -281,159 +319,95 @@ func (gw *TelegramGateway) dispatch(ctx context.Context, upd tgbotapi.Update) {
 		"text", upd.Message.Text,
 		"entities_count", len(upd.Message.Entities),
 	)
+}
 
-	// Whitelist check: if whitelist is non-empty, only authorised chats
-	// may interact with the bot.
-	if !gw.isAuthorized(chatID) {
-		slog.Info("telegram: unauthorized chat blocked",
-			"chat_id", chatID,
-			"whitelist_len", len(gw.Whitelist),
-		)
-		gw.reply(chatID, fmt.Sprintf(
-			"⛔ This bot is restricted. Your chat ID is %d. Please ask the administrator to add it to the whitelist.",
-			chatID,
-		))
-		return
+// replyUnauthorized sends a restricted-bot message to an unauthorised chat.
+func (gw *TelegramGateway) replyUnauthorized(chatID int64) {
+	slog.Info("telegram: unauthorized chat blocked",
+		"chat_id", chatID, "whitelist_len", len(gw.Whitelist))
+	gw.reply(chatID, fmt.Sprintf(
+		"⛔ This bot is restricted. Your chat ID is %d. Please ask the administrator to add it to the whitelist.",
+		chatID,
+	))
+}
+
+// buildInputText produces the final input text for the LLM / command
+// processor. In group chats it prepends author info (e.g. "@user:"),
+// except for bot commands which need the raw command text.
+func (gw *TelegramGateway) buildInputText(upd tgbotapi.Update, isGroup bool) string {
+	text := upd.Message.Text
+	if !isGroup || upd.Message.From == nil || upd.Message.IsCommand() {
+		return text
 	}
+	heading := gw.formatAuthorInfo(upd.Message.From)
+	return heading + text
+}
 
-	namespace := fmt.Sprintf("tg:%d", chatID)
+// appendUnmentioned records an unmentioned group-chat message in the
+// session history without replying to the chat.
+func (gw *TelegramGateway) appendUnmentioned(
+	ctx context.Context,
+	session agent.SessionView,
+	namespace string,
+	chatID int64,
+	inputText string,
+) {
+	slog.Debug("telegram: appending unmentioned message to history",
+		"chat_id", chatID, "session_id", session.SessionID())
+	session.Append(agent.Message{Role: agent.RoleUser, Content: inputText})
+	_ = gw.Conv.Sessions.Save(ctx, namespace, session)
+}
 
-	// Set the per-chat namespace in the context early, before any
-	// operation (command processing, conversation execution) that reads
-	// it. Conversation, CommandProcessor, and all sub-handlers resolve
-	// namespace from context first, falling back to their configured
-	// field — this eliminates the need to mutate shared state and
-	// ensures thread safety across concurrent chat dispatches.
-	ctx = event.ContextWithNamespace(ctx, namespace)
-
-	// In group/supergroup chats, check whether the bot is mentioned.
-	isGroup := chatType == "group" || chatType == "supergroup"
-
-	// Build the input text with author info for group chats.
-	// Don't prepend author heading to bot commands — they are handled
-	// by the command processor which expects the raw command text
-	// (e.g. "/session@bot_username list" must not become "@user:\n/...").
-	inputText := upd.Message.Text
-	if isGroup && from != nil && !upd.Message.IsCommand() {
-		heading := gw.formatAuthorInfo(from)
-		inputText = heading + inputText
-		slog.Debug("telegram: prepended author heading",
-			"chat_id", chatID,
-			"heading", heading,
-			"full_input", inputText,
-		)
-	} else {
-		slog.Debug("telegram: using raw text as input",
-			"chat_id", chatID,
-			"isGroup", isGroup,
-			"has_from", from != nil,
-			"isCommand", upd.Message.IsCommand(),
-			"input_text", inputText,
-		)
+// resetSession clears the active session for a chat (used by /start).
+func (gw *TelegramGateway) resetSession(chatID int64) {
+	slog.Debug("telegram: /start command received", "chat_id", chatID)
+	gw.mu.Lock()
+	if gw.activeSessions != nil {
+		delete(gw.activeSessions, chatID)
 	}
+	gw.mu.Unlock()
+	gw.reply(chatID, "session reset")
+}
 
-	// Get or create the active session for this chat.
-	// We need the session early so we can append unmentioned messages.
-	sessionID := gw.getOrCreateSession(ctx, namespace, chatID)
-	session, err := gw.Conv.Sessions.GetOrCreate(ctx, namespace, sessionID)
-	if err != nil {
-		slog.Warn("telegram: failed to get session",
-			"chat_id", chatID,
-			"session_id", sessionID,
-			"error", err,
-		)
-		gw.reply(chatID, fmt.Sprintf("error: %v", err))
-		return
+// handleCommandResult sends the command reply and optionally updates
+// the active session mapping (e.g. when /session switch changes it).
+func (gw *TelegramGateway) handleCommandResult(chatID int64, sessionID string, cmdRes commands.CommandResult) {
+	slog.Debug("telegram: command handled",
+		"chat_id", chatID, "session_id", sessionID,
+		"reply_len", len(cmdRes.Reply))
+	if cmdRes.Error != nil {
+		gw.reply(chatID, fmt.Sprintf("error: %v", cmdRes.Error))
+	} else if cmdRes.Reply != "" {
+		gw.reply(chatID, cmdRes.Reply)
 	}
-
-	if isGroup {
-		botUsername := ""
-		if gw.bot != nil {
-			botUsername = gw.bot.Self.UserName
-		}
-		// A message is considered "mentioned" if it has a mention entity
-		// (@bot_username) OR a bot_command entity (/command@bot_username).
-		// Telegram uses bot_command entities for slash commands directed at
-		// the bot in group chats — the mention entity may not be present.
-		mentioned := gw.isBotMentioned(upd.Message)
-		slog.Debug("telegram: group chat mention check",
-			"chat_id", chatID,
-			"bot_username", botUsername,
-			"mentioned", mentioned,
-		)
-		if !mentioned {
-			// Append to history but don't reply.
-			slog.Debug("telegram: appending unmentioned message to history",
-				"chat_id", chatID,
-				"session_id", sessionID,
-				"input_text", inputText,
-			)
-			session.Append(agent.Message{Role: agent.RoleUser, Content: inputText})
-			_ = gw.Conv.Sessions.Save(ctx, namespace, session)
-			return
-		}
-	}
-
-	// Handle /start command: creates a fresh session for this chat.
-	if upd.Message.IsCommand() && upd.Message.Command() == "start" {
-		slog.Debug("telegram: /start command received",
-			"chat_id", chatID,
-		)
+	if cmdRes.Session != nil && cmdRes.Session.ID != sessionID {
 		gw.mu.Lock()
-		if gw.activeSessions != nil {
-			delete(gw.activeSessions, chatID)
-		}
+		gw.activeSessions[chatID] = cmdRes.Session.ID
 		gw.mu.Unlock()
-		gw.reply(chatID, "session reset")
-		return
 	}
+}
 
-	// Try slash commands first. The namespace is already in context,
-	// so CommandProcessor and its sub-handlers will resolve it via
-	// resolveNamespace(ctx) — no need to mutate any shared field.
-	cmdRes := gw.Cmd.Execute(ctx, sessionID, inputText)
-	if cmdRes.Handled {
-		slog.Debug("telegram: command handled",
-			"chat_id", chatID,
-			"session_id", sessionID,
-			"input_text", inputText,
-			"reply_len", len(cmdRes.Reply),
-		)
-		if cmdRes.Error != nil {
-			gw.reply(chatID, fmt.Sprintf("error: %v", cmdRes.Error))
-		} else if cmdRes.Reply != "" {
-			gw.reply(chatID, cmdRes.Reply)
-		}
-		if cmdRes.Session != nil && cmdRes.Session.ID != sessionID {
-			gw.mu.Lock()
-			gw.activeSessions[chatID] = cmdRes.Session.ID
-			gw.mu.Unlock()
-		}
-		return
-	}
-
+// runConversation executes the LLM turn for the given input and sends
+// the reply. It manages the typing indicator lifecycle around the call.
+func (gw *TelegramGateway) runConversation(
+	ctx context.Context,
+	namespace string,
+	sessionID string,
+	chatID int64,
+	inputText string,
+) {
 	slog.Debug("telegram: sending to conversation",
-		"chat_id", chatID,
-		"session_id", sessionID,
-		"input_len", len(inputText),
-	)
+		"chat_id", chatID, "session_id", sessionID, "input_len", len(inputText))
 
-	// Start typing indicator while processing the conversation.
-	// This signals to the user that the bot is working.
 	typingDone := make(chan struct{})
 	go gw.keepTyping(ctx, chatID, typingDone)
 
-	// Conversation.Execute reads namespace from context via
-	// resolveNamespace(ctx), so the per-chat namespace set above is
-	// picked up automatically — no field mutation needed.
 	reply, err := gw.convExecute(ctx, namespace, sessionID, inputText)
-	close(typingDone) // stop the typing indicator
+	close(typingDone)
 
 	if err != nil {
 		slog.Warn("telegram: conversation error",
-			"chat_id", chatID,
-			"error", err,
-		)
+			"chat_id", chatID, "error", err)
 		gw.reply(chatID, fmt.Sprintf("error: %v", err))
 		return
 	}
@@ -441,9 +415,7 @@ func (gw *TelegramGateway) dispatch(ctx context.Context, upd tgbotapi.Update) {
 		reply = "..."
 	}
 	slog.Debug("telegram: sending reply",
-		"chat_id", chatID,
-		"reply_len", len(reply),
-	)
+		"chat_id", chatID, "reply_len", len(reply))
 	gw.reply(chatID, reply)
 }
 
