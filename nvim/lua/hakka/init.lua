@@ -6,6 +6,7 @@ local M = {}
 
 local session_id = nil
 local pending = false
+local _cancelling = false
 
 function M.setup(opts)
   config.setup(opts)
@@ -101,6 +102,10 @@ local function send(text)
     end
   end, function(err)
     pending = false
+    if _cancelling then
+      _cancelling = false
+      return
+    end
     if err and not saw_error then
       ui.append_error(err)
       return
@@ -151,18 +156,30 @@ function M.reset()
 end
 
 --- Cancel the currently in-flight request.
+--- Resets the UI immediately (optimistic) and sends a cancel frame to the
+--- server. The main request's on_done callback skips its cleanup when
+--- _cancelling is set, preventing double prompt rendering.
 function M.cancel()
   if not pending then
+    vim.notify("hakka: no active request to cancel", vim.log.levels.INFO)
     return
   end
+  pending = false
+  _cancelling = true
+  ui.end_assistant_stream()
+  ui.append_assistant("_[cancelled]_")
+
   if not session_id then
+    _cancelling = false
     return
   end
+
   local payload = {
     type = "cancel",
     session_id = session_id,
   }
   client.send(config.values.addr, payload, function(err, resp)
+    _cancelling = false
     if err then
       vim.notify("hakka: cancel error: " .. err, vim.log.levels.ERROR)
       return

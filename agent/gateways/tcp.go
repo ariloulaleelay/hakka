@@ -156,6 +156,7 @@ func (gw *TCPGateway) handle(ctx context.Context, conn net.Conn) {
 			if flush.Write(FrameResponse{
 				Event:     "cancel",
 				SessionID: cancelReq.SessionID,
+				Done:      true,
 				Data:      map[string]any{"cancelled": cancelled},
 			}) != nil {
 				return

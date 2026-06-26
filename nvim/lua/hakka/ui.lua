@@ -358,112 +358,53 @@ local function ensure_new_line()
   end
 end
 
--- Define highlight groups for tool status symbols (once)
-local function ensure_highlights()
-  local ns = vim.api.nvim_create_namespace("hakka_tool_status")
-  if not vim.g.hakka_highlights_defined then
-    vim.cmd("highlight default HakkaPending guifg=#888888")
-    vim.cmd("highlight default HakkaOk      guifg=#66ff66")
-    vim.cmd("highlight default HakkaErr     guifg=#ff4444")
-    vim.g.hakka_highlights_defined = true
-  end
-  return ns
-end
-
--- Unicode status symbols for tool events
-local SYM = {
-  pending = "…",
-  ok      = "✓",
-  err     = "✗",
-}
-
-local HL = {
-  pending = "HakkaPending",
-  ok      = "HakkaOk",
-  err     = "HakkaErr",
-}
-
--- Apply highlight to the status symbol on the last line of the buffer.
-local function highlight_last_line(buf, hl_group)
-  local line_count = vim.api.nvim_buf_line_count(buf)
-  if line_count == 0 then return end
-  local line = vim.api.nvim_buf_get_lines(buf, line_count - 1, line_count, false)[1]
-  -- The symbol is the last non-space character on the line
-  local col = #line - 1  -- 0-indexed column of the last character
-  if col < 0 then return end
-  local ns = ensure_highlights()
-  vim.api.nvim_buf_add_highlight(buf, ns, hl_group, line_count - 1, col, col + 1)
-end
-
 local util = require("hakka.util")
-
--- Re-apply highlight on the given line after a buf_set_lines replacement
--- that might have cleared extmarks.
-local function rehighlight_line(buf, lnum, hl_group)
-  local line = vim.api.nvim_buf_get_lines(buf, lnum, lnum + 1, false)[1]
-  if not line then return end
-  local col = #line - 1
-  if col < 0 then return end
-  local ns = ensure_highlights()
-  vim.api.nvim_buf_add_highlight(buf, ns, hl_group, lnum, col, col + 1)
-end
 
 function M.append_tool_event(name, status, snippet)
   if not state.buf then return end
   vim.api.nvim_buf_set_option(state.buf, "modifiable", true)
 
   -- Compute dynamic max length for the snippet.
-  -- The line format is: [name(snippet)] sym
-  -- Overhead chars: [ ( ) ] + space + sym = 6 chars.
-  -- Available width caps at 80 cols or the buffer window width.
+  -- The line format is: `name(snippet)`
+  -- Overhead chars: ` ( ) ` = 4 chars (backtick, parens, backtick)
+  -- Available width caps at 100 cols or the buffer window width.
   local win_width = vim.o.columns
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     win_width = vim.api.nvim_win_get_width(state.win)
   end
-  local max_line = math.min(80, win_width)
-  local snippet_max = math.max(10, max_line - #name - 6)
+  local max_line = math.min(100, win_width)
+  local snippet_max = math.max(10, max_line - #name - 4)
 
   -- Escape then shorten, so truncation accounts for actual display length.
   local safe = util.shorten_snippet(util.escape_snippet(snippet), snippet_max)
 
   if status == "start" then
     ensure_new_line()
-    append(state.buf, "[" .. name .. "(" .. safe .. ")] " .. SYM.pending)
-    highlight_last_line(state.buf, HL.pending)
+    append(state.buf, "`" .. name .. "(" .. safe .. ")`")
     if streaming then
       ensure_new_line()
     end
   else
-    local sym = status == "ok" and SYM.ok or SYM.err
-    local hl = status == "ok" and HL.ok or HL.err
+    -- On completion, find the matching pending line and update its snippet
+    -- (the snippet may have been truncated differently if the window was
+    -- resized between "start" and "ok"/"err" events).
     local all = lines(state.buf)
-    local line_prefix = "[" .. name .. "("
+    local line_prefix = "`" .. name .. "("
     local found = false
-    local found_lnum
-    -- Search backwards for a pending line matching this tool name.
-    -- We match by prefix only (the snippet may have been truncated differently
-    -- if the window was resized between "start" and "ok"/"err" events).
     for i = #all, 1, -1 do
       if all[i]:sub(1, #line_prefix) == line_prefix then
-        -- Found it: replace the trailing status symbol.
-        -- Line suffix is ")" + "]" + " " + symbol (3 bytes) = 6 bytes.
-        -- We use sub(1, -7) because Lua's negative index j = len + j + 1,
-        -- so -7 gives end = len - 6, removing exactly the last 6 bytes.
-        all[i] = all[i]:sub(1, -7) .. ")] " .. sym
+        all[i] = "`" .. name .. "(" .. safe .. ")`"
         found = true
-        found_lnum = i - 1  -- 0-indexed
         break
       end
     end
 
     if found then
       vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, all)
-      rehighlight_line(state.buf, found_lnum, hl)
     else
       -- Fallback: append a new completed line (shouldn't normally happen)
       ensure_new_line()
-      append(state.buf, "[" .. name .. "(" .. safe .. ")] " .. sym)
-      highlight_last_line(state.buf, hl)
+      append(state.buf, "`" .. name .. "(" .. safe .. ")`")
       if streaming then
         ensure_new_line()
       end

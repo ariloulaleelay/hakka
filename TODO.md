@@ -22,7 +22,7 @@ This file is for humans only, agent should not modify it!
     - [x] In a group chat form message with author info in heading (@login + Name)
     - [x] Silently listen group chat (respond only on mentions)
 - [ ] Vim integraion improvement
-  - [ ] Ability to cancel request from vim.
+  - [x] Ability to cancel request from vim (now it seems not working)
   - [x] Disable vim_run_command (it's too buggy)
   - [x] Make vim_list_buffers, vim_read_buffer
   - [x] vim_list_buffers breaks with some json error on neovim side (hakka however still processing request)
@@ -48,6 +48,7 @@ This file is for humans only, agent should not modify it!
     - [ ] Session tags
 - [x] Add standalone agentic mode (batch run without human, for real autonomous tasks)
 - [ ] Advanced session manipulation — on the fly context compression, guided context compression, stashes, forks
+    - [x] Guided session compression
 - [x] Implement discovery tool.
 - [x] Revisit discovery tool and check if it works great
 - [ ] Show user balance for current provider (how much money left)

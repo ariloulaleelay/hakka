@@ -8,6 +8,7 @@ local DEFAULT_SHORTCUTS = {
   ["<CR>"]   = "submit",
   ["<C-s>"]  = "submit",
   ["q"]      = "close",
+  ["<C-c>"]  = "cancel",
 }
 
 local M = {}

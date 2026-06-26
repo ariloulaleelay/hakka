@@ -177,70 +177,95 @@ func buildSummaryLookup(numMsgs int, ranges []compactRange) []string {
 }
 
 // buildCompactedView builds the compacted context view from raw messages.
-// It filters out compactify messages, replaces compacted ranges
-// with [Compacted N messages: ...] markers, and strips compactify calls from
+// It filters out compactify messages, replaces compacted ranges with
+// [Compacted N messages: ...] markers, and strips compactify calls from
 // mixed assistant messages.
+//
 // Returns the view messages and a parallel slice mapping each view message
 // to its original raw index (-1 for marker messages).
+//
+// The three sub-operations — span collection, marker text, and message
+// pass-through — are extracted into their own functions so each can be
+// reasoned about and tested independently.
 func buildCompactedView(rawMsgs []Message, inRange []bool, summaryAt []string) ([]Message, []int) {
 	var view []Message
 	var origIdx []int
 
-	i := 0
-	for i < len(rawMsgs) {
+	for i := 0; i < len(rawMsgs); {
 		if isCompactifyMessage(rawMsgs[i]) {
 			i++
 			continue
 		}
 		if inRange[i] {
-			// Collect tool names and count messages in this compacted span.
-			compactStart := i
-			toolSet := make(map[string]bool)
-			msgCount := 0
-			for i < len(rawMsgs) && inRange[i] {
-				if !isCompactifyMessage(rawMsgs[i]) {
-					msgCount++
-					for _, tc := range rawMsgs[i].ToolCalls {
-						if tc.Name != "context_compactify" {
-							toolSet[tc.Name] = true
-						}
-					}
-					if rawMsgs[i].Role == RoleTool && rawMsgs[i].Name != "" && rawMsgs[i].Name != "context_compactify" {
-						toolSet[rawMsgs[i].Name] = true
-					}
-				}
-				i++
-			}
-			if msgCount > 0 {
-				lastSummary := summaryAt[compactStart]
-				markerText := ""
-				if lastSummary != "" {
-					markerText = fmt.Sprintf("[Compacted %d messages: %s]", msgCount, lastSummary)
-				} else {
-					toolList := sortedKeys(toolSet)
-					markerText = fmt.Sprintf("[Compacted %d messages: %s]", msgCount, strings.Join(toolList, ", "))
-				}
-				view = append(view, Message{Role: RoleSystem, Content: markerText})
+			marker, next := collectCompactedSpan(rawMsgs, inRange, summaryAt, i)
+			if marker.Role != "" {
+				view = append(view, marker)
 				origIdx = append(origIdx, -1)
 			}
+			i = next
 		} else {
-			m := rawMsgs[i]
-			// Strip context_compactify calls from mixed assistant messages.
-			// Pure compactify messages were already filtered above, but
-			// mixed messages (compactify + other tools) pass through and
-			// must be cleaned so the LLM never sees context_compactify.
-			if m.Role == RoleAssistant && !isCompactifyMessage(m) {
-				filtered := stripCompactifyCalls(m.ToolCalls)
-				if len(filtered) < len(m.ToolCalls) {
-					m.ToolCalls = filtered
-				}
-			}
-			view = append(view, m)
+			view = append(view, passThroughMessage(rawMsgs[i]))
 			origIdx = append(origIdx, i)
 			i++
 		}
 	}
 	return view, origIdx
+}
+
+// collectCompactedSpan reads consecutive inRange messages starting at i,
+// counts real messages and gathers distinct tool names, then returns a
+// compaction marker message and the index of the first message after the
+// span. Returns a zero-value marker when the span contains no real messages.
+//
+// Compactify messages inside the span are skipped — this is what prevents
+// separate compaction ranges (separated only by compactify call/results)
+// from merging into a single marker.
+func collectCompactedSpan(rawMsgs []Message, inRange []bool, summaryAt []string, i int) (Message, int) {
+	start := i
+	toolSet := make(map[string]bool)
+	msgCount := 0
+
+	for i < len(rawMsgs) && inRange[i] {
+		if isCompactifyMessage(rawMsgs[i]) {
+			i++
+			continue
+		}
+		msgCount++
+		for _, tc := range rawMsgs[i].ToolCalls {
+			if tc.Name != "context_compactify" {
+				toolSet[tc.Name] = true
+			}
+		}
+		if rawMsgs[i].Role == RoleTool && rawMsgs[i].Name != "" && rawMsgs[i].Name != "context_compactify" {
+			toolSet[rawMsgs[i].Name] = true
+		}
+		i++
+	}
+	if msgCount == 0 {
+		return Message{}, i
+	}
+	return Message{Role: RoleSystem, Content: markerText(msgCount, toolSet, summaryAt[start])}, i
+}
+
+// markerText formats a compaction marker. When summary is non-empty it is
+// used verbatim; otherwise tool names are listed alphabetically.
+func markerText(count int, toolSet map[string]bool, summary string) string {
+	if summary != "" {
+		return fmt.Sprintf("[Compacted %d messages: %s]", count, summary)
+	}
+	return fmt.Sprintf("[Compacted %d messages: %s]", count, strings.Join(sortedKeys(toolSet), ", "))
+}
+
+// passThroughMessage returns a copy of m suitable for the compacted view.
+// Mixed assistant messages (compactify + regular tool calls) have their
+// compactify calls stripped — the LLM must never see context_compactify.
+func passThroughMessage(m Message) Message {
+	if m.Role == RoleAssistant && !isCompactifyMessage(m) {
+		if filtered := stripCompactifyCalls(m.ToolCalls); len(filtered) < len(m.ToolCalls) {
+			m.ToolCalls = filtered
+		}
+	}
+	return m
 }
 // BuildCompactContext builds the compacted message list sent to the LLM.
 //

@@ -155,6 +155,12 @@ assert_eq(util.escape_snippet("a\tb\tc"),        "a\\tb\\tc",       "multiple ta
 assert_eq(util.escape_snippet("a\n\tb"),         "a\\n\\tb",        "newline + tab")
 assert_eq(util.escape_snippet("\t\n"),           "\\t\\n",          "tab then newline")
 
+-- Backtick escaping (needed for `name(args)` inline code format)
+assert_eq(util.escape_snippet("`code`"),       "\\`code\\`",      "backticks escaped")
+assert_eq(util.escape_snippet("a`b"),          "a\\`b",           "single backtick")
+assert_eq(util.escape_snippet("``double``"),   "\\`\\`double\\`\\`", "double backticks")
+assert_eq(util.escape_snippet("`[test]`"),     "\\`\\[test\\]\\`", "backticks + brackets")
+
 -- Ordering: escape_snippet should be applied BEFORE shorten_snippet so that
 -- the truncation accounts for the actual display length (escape adds chars).
 -- If a snippet has newlines, the raw length is shorter than the escaped length.
@@ -198,10 +204,10 @@ local sc = cfg_a.get_shortcuts()
 assert_eq(sc["<CR>"],  "submit", "default: <CR> -> submit")
 assert_eq(sc["<C-s>"], "submit", "default: <C-s> -> submit")
 assert_eq(sc["q"],     "close",  "default: q -> close")
--- All three defaults should be present
+-- All four defaults should be present
 local count = 0
 for _, _ in pairs(sc) do count = count + 1 end
-assert_eq(count, 3, "default: 3 shortcuts")
+assert_eq(count, 4, "default: 4 shortcuts")
 
 -- User-defined shortcuts override defaults
 local cfg_b = reload_config()
@@ -212,10 +218,10 @@ assert_eq(sc["<C-s>"], "submit", "override: <C-s> still submit")
 assert_eq(sc["q"],     "close",  "override: q still close")
 assert_eq(sc["<C-r>"], "submit", "override: <C-r> -> submit (user added)")
 assert_eq(sc["<C-e>"], "close",  "override: <C-e> -> close (user added)")
--- Should have 5 total (3 default + 2 user)
+-- Should have 6 total (4 default + 2 user)
 local count2 = 0
 for _, _ in pairs(sc) do count2 = count2 + 1 end
-assert_eq(count2, 5, "override: 5 shortcuts total")
+assert_eq(count2, 6, "override: 6 shortcuts total")
 
 -- is_user_shortcut / is_default_shortcut
 assert_eq(cfg_b.is_default_shortcut("<CR>"),  true,  "<CR> is default")
@@ -378,6 +384,7 @@ heading("ui.load_history")
 
 do
   local ui = fresh_ui()
+  -- Open to create the buffer, then close so state.win=nil and width
   pcall(ui.open, function() end)
 
   -- Sample messages to load as history
@@ -590,6 +597,193 @@ do
   end
   assert_eq(last_content, "What's up?", "trailing user: last content is the user message")
 end
+
+-- ──────────────────────────────────────────
+heading("ui.append_tool_event format — no brackets")
+
+do
+  local ui = fresh_ui()
+  pcall(ui.open, function() end)
+
+  -- Start a tool call — should produce "name(args)" (no symbols)
+  ui.append_tool_event("read_file", "start", "foo.txt")
+
+  -- Find the hakka buffer
+  local buf_lines = {}
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+    for _, l in ipairs(lines) do
+      if l:find("read_file") then
+        buf_lines = lines
+        break
+      end
+    end
+    if #buf_lines > 0 then break end
+  end
+
+  assert_eq(#buf_lines > 0, true, "buffer has tool event line")
+
+  local found_new = false
+  for _, l in ipairs(buf_lines) do
+    -- Format: `read_file(foo.txt)` (backticks, no symbol)
+    if l:find("^`read_file%(foo%.txt%)`$") then
+      found_new = true
+    end
+  end
+  assert_eq(found_new, true, "tool start line uses backtick format: `name(args)`")
+
+  -- Complete the tool call
+  ui.append_tool_event("read_file", "ok", "foo.txt")
+
+  -- Re-read buffer (fresh scan)
+  buf_lines = {}
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+    for _, l in ipairs(lines) do
+      if l:find("read_file") then
+        buf_lines = lines
+        break
+      end
+    end
+    if #buf_lines > 0 then break end
+  end
+
+  local found_ok = false
+  for _, l in ipairs(buf_lines) do
+    -- Same format: `read_file(foo.txt)` — no symbol
+    if l:find("^`read_file%(foo%.txt%)`$") then
+      found_ok = true
+    end
+  end
+  assert_eq(found_ok, true, "tool completed line still uses `name(args)` format (no symbol)")
+end
+
+-- ──────────────────────────────────────────
+heading("ui.append_tool_event truncation — cap increased to 100")
+
+do
+  local ui = fresh_ui()
+  -- Open to create the buffer, then close so state.win=nil and width
+  -- falls back to vim.o.columns (80 in headless).
+  pcall(ui.open, function() end)
+  -- Close window so state.win=nil → width falls back to vim.o.columns
+  ui.close()
+
+  -- In headless mode, vim.o.columns = 80. max_line = min(100, 80) = 80.
+  -- Overhead = backtick(1) + ( + ) + backtick = 4 chars.
+  -- snippet_max = max(10, 80 - 2 - 4) = 74.
+  -- Verify that a 74-char snippet fits.
+  local tname = "rd"
+  local snippet_74 = string.rep("x", 74)
+  ui.append_tool_event(tname, "start", snippet_74)
+
+  local buf_lines = {}
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+    for _, l in ipairs(lines) do
+      if l:find(tname) then
+        buf_lines = lines
+        break
+      end
+    end
+    if #buf_lines > 0 then break end
+  end
+
+  assert_eq(#buf_lines > 0, true, "buffer has tool event line")
+
+  local found = false
+  for _, l in ipairs(buf_lines) do
+    -- 74 x's should fit exactly (no symbol suffix)
+    if l:find("^`" .. tname .. "%(" .. string.rep("x", 74) .. "%)`$") then
+      found = true
+    end
+  end
+  assert_eq(found, true,
+    "74-char snippet fits (overhead 4, no symbol)")
+end
+
+-- ──────────────────────────────────────────
+heading("ui.append_tool_event fallback — no matching pending")
+
+do
+  local ui = fresh_ui()
+  pcall(ui.open, function() end)
+
+  -- Complete a tool without starting it first — should fallback to append
+  local tname = "zz_fallback"
+  ui.append_tool_event(tname, "ok", "no-start")
+
+  local buf_lines = {}
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+    for _, l in ipairs(lines) do
+      if l:find(tname) then
+        buf_lines = lines
+        break
+      end
+    end
+    if #buf_lines > 0 then break end
+  end
+
+  assert_eq(#buf_lines > 0, true, "buffer has fallback tool line")
+
+  local found = false
+  for _, l in ipairs(buf_lines) do
+    -- Fallback format: `zz_fallback(no-start)` (no symbol)
+    if l:find("^`" .. tname .. "%(no%-start%)`$") then
+      found = true
+    end
+  end
+  assert_eq(found, true, "fallback tool line uses backtick format (no symbol)")
+end
+
+-- ──────────────────────────────────────────
+heading("config.cancel shortcut")
+
+-- Verify that cancel shortcut is present in defaults
+local cfg_e = reload_config()
+cfg_e.setup({})
+sc = cfg_e.get_shortcuts()
+assert_eq(sc["<C-c>"], "cancel", "default: <C-c> -> cancel")
+-- Now 4 defaults: <CR>=submit, <C-s>=submit, q=close, <C-c>=cancel
+local count3 = 0
+for _, _ in pairs(sc) do count3 = count3 + 1 end
+assert_eq(count3, 4, "default: 4 shortcuts (submit x2, close, cancel)")
+
+-- User can override cancel shortcut
+local cfg_f = reload_config()
+cfg_f.setup({ shortcuts = { ["<C-x>"] = "cancel" } })
+sc = cfg_f.get_shortcuts()
+assert_eq(sc["<C-c>"], "cancel", "override: <C-c> still cancel (default)")
+assert_eq(sc["<C-x>"], "cancel", "override: <C-x> -> cancel (user added)")
+assert_eq(cfg_f.is_user_shortcut("<C-x>"), true, "<C-x> is user shortcut")
+assert_eq(cfg_f.is_default_shortcut("<C-c>"), true, "<C-c> still default")
+
+-- ──────────────────────────────────────────
+heading("init.cancel")
+
+-- Test the M.cancel function in isolation
+local init = require("hakka.init")
+
+-- Verify cancel function exists
+assert_eq(type(init.cancel), "function", "M.cancel is a function")
+
+-- ──────────────────────────────────────────
+heading("plugin.HakkaCancel command")
+
+-- Source the plugin file; first clear the loaded guard so it registers commands
+vim.g.loaded_hakka = nil
+dofile(root .. "plugin/hakka.lua")
+
+-- Verify the :HakkaCancel command exists
+local has_cancel_cmd = false
+for name, _ in pairs(vim.api.nvim_get_commands({})) do
+  if name == "HakkaCancel" then
+    has_cancel_cmd = true
+    break
+  end
+end
+assert_eq(has_cancel_cmd, true, ":HakkaCancel command exists")
 
 -- ──────────────────────────────────────────
 

@@ -19,6 +19,8 @@ function M.escape_snippet(s)
   -- Escape markdown special characters [ and ] to preserve the bracket
   -- structure of tool event lines.
   s = s:gsub("%[", "\\["):gsub("%]", "\\]")
+  -- Escape backticks so they don't break the `name(args)` inline code format.
+  s = s:gsub("`", "\\`")
   return s
 end
 

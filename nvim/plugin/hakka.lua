@@ -14,3 +14,7 @@ end, { nargs = "+" })
 vim.api.nvim_create_user_command("HakkaReset", function()
   require("hakka").reset()
 end, {})
+
+vim.api.nvim_create_user_command("HakkaCancel", function()
+  require("hakka").cancel()
+end, {})
