@@ -24,6 +24,18 @@ func RegisterMeta(r *agent.ToolRegistry) {
 	r.Register(Compactify())
 }
 
+// RegisterProcessTools registers process interaction tools on the given
+// registry. These tools let the LLM spawn, interact with, and kill
+// subprocesses (e.g. debuggers, REPLs, long-running commands).
+//
+// The pm parameter is the ProcessManager that holds the running processes.
+func RegisterProcessTools(r *agent.ToolRegistry, pm *ProcessManager) {
+	r.Register(SpawnProcess(pm))
+	r.Register(InteractProcess(pm))
+	r.Register(KillProcess(pm))
+	r.Register(ListProcesses(pm))
+}
+
 // RegisterSessionTools registers session-control tools on the given
 // registry. These tools read the current namespace from the Go context
 // (set by the gateway per-request) to enforce isolation — e.g. a TCP

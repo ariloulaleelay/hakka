@@ -111,8 +111,10 @@ func runBatch(logger *slog.Logger, configPath, task string, enableTools []string
 
 	// Connect MCP servers if configured.
 	tools := agent.NewToolRegistry()
+	pm := hakkatools.NewProcessManager()
 	hakkatools.RegisterAll(tools)
 	hakkatools.RegisterMeta(tools)
+	hakkatools.RegisterProcessTools(tools, pm)
 
 	mcpMgr := mcp.NewManager()
 	mcpMgr.Logger = logger
@@ -176,7 +178,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	}
 	defer closeStore()
 
-	sessions, router, tools, systemPrompt, engineCfg := setupComponents(store, registry, logger)
+	sessions, router, tools, _, systemPrompt, engineCfg := setupComponents(store, registry, logger)
 
 	mcpMgr := mcp.NewManager()
 	mcpMgr.Logger = logger
@@ -227,15 +229,17 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	return shutdownGateways(gws)
 }
 
-func setupComponents(store agent.SessionStore, registry *agent.Registry, logger *slog.Logger) (*agent.SessionManager, *agent.Router, *agent.ToolRegistry, string, agent.EngineConfig) {
+func setupComponents(store agent.SessionStore, registry *agent.Registry, logger *slog.Logger) (*agent.SessionManager, *agent.Router, *agent.ToolRegistry, *hakkatools.ProcessManager, string, agent.EngineConfig) {
 	const systemPrompt = "You are Hakka, a helpful assistant."
 
 	sessions := agent.NewSessionManager(store, systemPrompt)
 	router := agent.NewRouter(registry)
 
+	pm := hakkatools.NewProcessManager()
 	tools := agent.NewToolRegistry()
 	hakkatools.RegisterAll(tools)
 	hakkatools.RegisterMeta(tools)
+	hakkatools.RegisterProcessTools(tools, pm)
 
 	cfg := agent.DefaultEngineConfig()
 	cfg.Logger = logger
@@ -251,7 +255,7 @@ func setupComponents(store agent.SessionStore, registry *agent.Registry, logger 
 		},
 	}
 
-	return sessions, router, tools, systemPrompt, cfg
+	return sessions, router, tools, pm, systemPrompt, cfg
 }
 
 // gatewayParams holds shared dependencies passed to individual gateway

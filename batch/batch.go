@@ -118,8 +118,10 @@ func RunBatchWithOutput(ctx context.Context, p RunBatchParams, output io.Writer,
 	tools := p.Tools
 	if tools == nil {
 		tools = agent.NewToolRegistry()
+		pm := hakkatools.NewProcessManager()
 		hakkatools.RegisterAll(tools)
 		hakkatools.RegisterMeta(tools)
+		hakkatools.RegisterProcessTools(tools, pm)
 		hakkatools.RegisterSessionTools(tools, sessions, nil)
 	}
 

@@ -30,17 +30,21 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
                                     │
               ┌─────────────────────┼─────────────────────┐
               ▼                     ▼                     ▼
-   ┌──────────────────┐   ┌──────────────┐   ┌──────────────────────┐
-   │  ADAPTERS        │   │ SESSION      │   │  TOOLS               │
-   │  OpenAI          │   │ STORE        │   │  read_file           │
-   │  Anthropic       │   │  Memory      │   │  write_file          │
-   │  Gemini          │   │  SQLite      │   │  edit_file           │
-   └──────────────────┘   └──────────────┘   │  list_dir            │
-                                             │  shell               │
-                                             │  http_get            │  (HTML→Markdown)                       │
-                                             │  search (ripgrep)    │
-                                             │  vim_run_command     │
-                                             └──────────────────────┘
+   ┌──────────────────┐   ┌──────────────┐   ┌──────────────────────────┐
+   │  ADAPTERS        │   │ SESSION      │   │  TOOLS                   │
+   │  OpenAI          │   │ STORE        │   │  read_file               │
+   │  Anthropic       │   │  Memory      │   │  write_file              │
+   │  Gemini          │   │  SQLite      │   │  edit_file               │
+   └──────────────────┘   └──────────────┘   │  list_dir                │
+                                             │  shell                   │
+                                             │  http_get                │
+                                             │  search (ripgrep)        │
+                                             │  vim_run_command         │
+                                             │  spawn_process           │
+                                             │  interact_process        │
+                                             │  kill_process            │
+                                             │  list_processes          │
+                                             └──────────────────────────┘
 ```
 
 ### Core Components
@@ -58,6 +62,7 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | **Compact** | `agent/compact.go` | LLM-driven context compaction — when estimated context exceeds the soft limit, [N] message indices and a warning prompt the LLM to call `context_compactify` to compress unneeded ranges; controlled per-session via `Session.CompactSoftLimit` |
 | **StreamSession** | `agent/stream_session.go` | Cooperative streaming — streams text tokens, but if the model requests tools, aborts the stream and falls back to the tool loop |
 | **CommandProcessor** | `agent/command_processor.go` | Slash-commands (`/help`, `/model`, `/session`, `/models`) without any LLM dependency |
+| **ProcessManager** | `agent/tools/process.go` | Goroutine-safe subprocess registry; manages spawn, interact, kill, and lifecycle of child processes with ring-buffered stdout+stderr output |
 | **Gateway** | `agent/gateways/` | Transport layer — TCP (newline-JSON), WebSocket, Telegram. Each wraps `Conversation` + `StreamSession` + `CommandProcessor` |
 | **Hooks** | `agent/engine.go` | Lifecycle callbacks: `OnToolCall`, `OnToolResult`, `OnLLMResponse`, `OnError` — serialised under a mutex for safe transport use |
 
@@ -74,6 +79,12 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | `random` | Generate a random integer between min_value and max_value (inclusive). |
 | `search` | ripgrep recursive search with file:line:col output |
 | `vim_run_command` | Execute Lua in the user's Neovim instance (requires Neovim client) |
+| `vim_list_buffers` | List open Neovim buffers with numbers, names, and filetypes |
+| `vim_read_buffer` | Read a Neovim buffer by number as numbered lines |
+| `spawn_process` | Start a subprocess and return its unique ID for subsequent interaction |
+| `interact_process` | Send input to a running process and/or read its pending stdout+stderr output |
+| `kill_process` | Terminate a running process (SIGTERM by default, SIGKILL available) |
+| `list_processes` | List all spawned processes with ID, PID, state, uptime, and command |
 | `session_list` | List all sessions with metadata (name, messages, model, created) |
 | `session_rename` | Rename a session by ID or unique prefix |
 | `session_info` | Show detailed session info (messages, tokens, model, first/last messages) |
