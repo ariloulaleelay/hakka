@@ -136,21 +136,23 @@ func TestList_returns_empty_when_namespace_has_no_sessions(t *testing.T) {
 	}
 }
 
-func TestList_returns_sessions_in_creation_order(t *testing.T) {
+func TestList_returns_sessions_in_update_order(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
 	ns := "ordered-ns"
 
-	s1 := agent.NewSession(ns, "first")
-	s2 := agent.NewSession(ns, "second")
+	t1 := agent.NewSession(ns, "first")
+	t2 := agent.NewSession(ns, "second")
 
-	if err := s.Put(ctx, ns, s1); err != nil {
+	if err := s.Put(ctx, ns, t1); err != nil {
 		t.Fatalf("Put first: %v", err)
 	}
-	if err := s.Put(ctx, ns, s2); err != nil {
+	if err := s.Put(ctx, ns, t2); err != nil {
 		t.Fatalf("Put second: %v", err)
 	}
 
+	// Both sessions were inserted at different times (now), so the most
+	// recently inserted (t2) should be first when ordering by updated_at DESC.
 	sessions, err := s.List(ctx, ns)
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -158,11 +160,24 @@ func TestList_returns_sessions_in_creation_order(t *testing.T) {
 	if len(sessions) != 2 {
 		t.Fatalf("expected 2 sessions, got %d", len(sessions))
 	}
-	if sessions[0].ID != s1.ID {
-		t.Fatalf("expected first session to be %q, got %q", s1.ID, sessions[0].ID)
+	if sessions[0].ID != t2.ID {
+		t.Fatalf("expected first session to be %q (most recently updated), got %q", t2.ID, sessions[0].ID)
 	}
-	if sessions[1].ID != s2.ID {
-		t.Fatalf("expected second session to be %q, got %q", s2.ID, sessions[1].ID)
+	if sessions[1].ID != t1.ID {
+		t.Fatalf("expected second session to be %q, got %q", t1.ID, sessions[1].ID)
+	}
+
+	// Update t1 (re-put) — it should now be first
+	t1.Append(agent.Message{Role: agent.RoleUser, Content: "new"})
+	if err := s.Put(ctx, ns, t1); err != nil {
+		t.Fatalf("Put first updated: %v", err)
+	}
+	sessions, err = s.List(ctx, ns)
+	if err != nil {
+		t.Fatalf("List after update: %v", err)
+	}
+	if sessions[0].ID != t1.ID {
+		t.Fatalf("expected first session to be %q (most recently updated), got %q", t1.ID, sessions[0].ID)
 	}
 }
 

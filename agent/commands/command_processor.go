@@ -2,8 +2,10 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ariloulaleelay/hakka/agent"
 	"github.com/ariloulaleelay/hakka/agent/event"
@@ -13,7 +15,9 @@ import (
 type CommandResult struct {
 	Handled bool
 	Action  CommandAction
-	Reply   string
+	Reply   string          // human-readable text (for non-JSON clients)
+	Data    json.RawMessage // structured data (for JSON-capable clients), optional
+	Cmd     string          // command name that produced this result
 	Session *agent.Session
 	Error   error
 }
@@ -32,28 +36,18 @@ const (
 
 // CommandProcessor handles slash-commands (/help, /model, /session, /tool, ...).
 // It is a thin dispatcher that delegates to domain-specific handlers.
-// It has no dependency on the LLM or tools — just session storage and a model router.
-//
-// Namespace is resolved with the following precedence:
-//  1. From context (via event.NamespaceFromContext) — used by gateways that
-//     serve multiple isolated namespaces (e.g. Telegram per-chat)
-//  2. The configured Namespace field (set at construction time)
-//
-// Gateways serving multiple namespaces should set the namespace in the
-// context rather than mutating the field, ensuring thread safety.
 type CommandProcessor struct {
 	Sessions     *agent.SessionManager
-	Conv         *agent.Conversation // used for model binding; can be nil
+	Conv         *agent.Conversation
 	SystemPrompt string
 	Namespace    string
-	Tools        *agent.ToolRegistry // gateway's tool registry; used by /tool commands
+	Tools        *agent.ToolRegistry
 
 	modelHandler   *ModelCommands
 	sessionHandler *SessionCommands
 	toolHandler    *ToolCommands
 }
 
-// New builds a CommandProcessor and its sub-handlers.
 func New(sm *agent.SessionManager, conv *agent.Conversation, systemPrompt, namespace string) *CommandProcessor {
 	cp := &CommandProcessor{
 		Sessions:     sm,
@@ -66,15 +60,11 @@ func New(sm *agent.SessionManager, conv *agent.Conversation, systemPrompt, names
 	return cp
 }
 
-// SetTools attaches a tool registry, enabling /tool commands.
 func (cp *CommandProcessor) SetTools(tools *agent.ToolRegistry) {
 	cp.Tools = tools
 	cp.toolHandler = NewToolCommands(cp.Sessions, tools, cp.Namespace)
 }
 
-// inheritCWD copies the ClientCWD from an existing session (if any) to a
-// newly created session, so the new session doesn't default to the server's
-// working directory. It is shared by handleStart and handleSessionCreate.
 func inheritCWD(ctx context.Context, sm *agent.SessionManager, ns, prevSessionID string, session *agent.Session) {
 	if prevSessionID == "" {
 		return
@@ -86,15 +76,88 @@ func inheritCWD(ctx context.Context, sm *agent.SessionManager, ns, prevSessionID
 	session.ClientCWD = prev.ClientCWD
 }
 
-// Execute attempts to interpret input as a slash-command. If it is one,
-// the command is executed and a CommandResult is returned. If the input
-// is not a command, Handled is false.
+// ExecuteJSON handles a structured JSON command from a JSON-capable
+// client (web frontend). Returns structured data in CommandResult.Data.
+func (cp *CommandProcessor) ExecuteJSON(ctx context.Context, sessionID, cmd string, params json.RawMessage) CommandResult {
+	if event.NamespaceFromContext(ctx) == "" {
+		ctx = event.ContextWithNamespace(ctx, cp.Namespace)
+	}
+
+	switch cmd {
+	case "help":
+		return cp.execHelp(ctx, sessionID)
+	case "continue":
+		return CommandResult{Handled: true, Action: ActionContinue, Cmd: cmd}
+	case "start":
+		return cp.execStart(ctx, sessionID)
+	case "compact":
+		return cp.execCompact(ctx, sessionID, params)
+
+	// Session commands
+	case "session_list":
+		if cp.sessionHandler != nil {
+			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
+		}
+	case "session_create":
+		if cp.sessionHandler != nil {
+			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
+		}
+	case "session_switch":
+		if cp.sessionHandler != nil {
+			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
+		}
+	case "session_delete":
+		if cp.sessionHandler != nil {
+			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
+		}
+	case "session_info":
+		if cp.sessionHandler != nil {
+			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
+		}
+	case "session_rename":
+		if cp.sessionHandler != nil {
+			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
+		}
+	case "session_autorename":
+		if cp.sessionHandler != nil {
+			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
+		}
+
+	// Model commands
+	case "model_list":
+		if cp.modelHandler != nil {
+			return cp.modelHandler.HandleJSON(ctx, sessionID, cmd, params)
+		}
+	case "model_switch":
+		if cp.modelHandler != nil {
+			return cp.modelHandler.HandleJSON(ctx, sessionID, cmd, params)
+		}
+
+	// Tool commands
+	case "tool_list":
+		if cp.toolHandler != nil {
+			return cp.toolHandler.HandleJSON(ctx, sessionID, cmd, params)
+		}
+	case "tool_enable":
+		if cp.toolHandler != nil {
+			return cp.toolHandler.HandleJSON(ctx, sessionID, cmd, params)
+		}
+	case "tool_disable":
+		if cp.toolHandler != nil {
+			return cp.toolHandler.HandleJSON(ctx, sessionID, cmd, params)
+		}
+	}
+
+	return CommandResult{
+		Handled: true,
+		Action:  ActionReply,
+		Cmd:     cmd,
+		Reply:   fmt.Sprintf("unknown command: %s", cmd),
+	}
+}
+
+// Execute attempts to interpret input as a slash-command (text-based).
 func (cp *CommandProcessor) Execute(ctx context.Context, sessionID, input string) CommandResult {
-	// Promote the configured namespace into the context so that all
-	// sub-handlers (SessionCommands, ToolCommands, ModelCommands) find
-	// it via resolveNamespace(ctx) — context is the single source of
-	// truth for namespace. Only promote if the context doesn't already
-	// have a namespace (e.g. Telegram sets per-chat namespace earlier).
 	if event.NamespaceFromContext(ctx) == "" {
 		ctx = event.ContextWithNamespace(ctx, cp.Namespace)
 	}
@@ -104,17 +167,14 @@ func (cp *CommandProcessor) Execute(ctx context.Context, sessionID, input string
 	}
 	parts := strings.Fields(trimmed)
 	cmd := parts[0]
-	// Strip @bot_username suffix so /help@my_bot is treated as /help.
 	if idx := strings.Index(cmd, "@"); idx >= 0 {
 		cmd = cmd[:idx]
 	}
 
-	// Try sub-handlers first
 	if res := cp.trySubHandlers(ctx, sessionID, parts, cmd); res.Handled {
 		return res
 	}
 
-	// Known built-in commands that don't belong to sub-handlers
 	switch cmd {
 	case "/help":
 		return cp.handleHelp(ctx, sessionID, parts)
@@ -148,10 +208,12 @@ func (cp *CommandProcessor) trySubHandlers(ctx context.Context, sessionID string
 	return CommandResult{Handled: false}
 }
 
+// --- Text-based handlers (keep for non-JSON clients) ---
+
 func (cp *CommandProcessor) handleHelp(_ context.Context, _ string, _ []string) CommandResult {
 	helpText := `available commands:
   /help                         - Show this help menu
-  /continue                     - Continue the conversation (LLM responds without new user input)
+  /continue                     - Continue the conversation
   /start                        - Start a fresh session with all tools enabled
   /model list                   - List available models
   /model show                   - Show current model
@@ -170,23 +232,14 @@ func (cp *CommandProcessor) handleHelp(_ context.Context, _ string, _ []string) 
 	return CommandResult{Handled: true, Action: ActionReply, Reply: helpText}
 }
 
-// handleContinue triggers an LLM request without adding a new user message.
-// This is useful after network crashes — the LLM picks up from the existing
-// conversation context and continues.
 func (cp *CommandProcessor) handleContinue(_ context.Context, _ string, _ []string) CommandResult {
-	return CommandResult{
-		Handled: true,
-		Action:  ActionContinue,
-	}
+	return CommandResult{Handled: true, Action: ActionContinue}
 }
 
-// handleCompact sets the compact soft limit on the current session.
-// /compact 150000 — set soft limit; /compact 0 — disable compaction prompts.
 func (cp *CommandProcessor) handleCompact(ctx context.Context, sessionID string, parts []string) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 
 	if len(parts) < 2 {
-		// Show current value
 		session, err := cp.Sessions.GetOrCreate(ctx, ns, sessionID)
 		if err != nil {
 			return CommandResult{Handled: true, Error: err}
@@ -219,8 +272,6 @@ func (cp *CommandProcessor) handleCompact(ctx context.Context, sessionID string,
 	return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("compact soft limit set to %d (%s)", n, desc)}
 }
 
-// handleStart creates a fresh session and enables all registered tools.
-// The new session inherits the ClientCWD from the current session (if any).
 func (cp *CommandProcessor) handleStart(ctx context.Context, sessionID string, parts []string) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 	session, err := cp.Sessions.GetOrCreate(ctx, ns, "")
@@ -230,7 +281,6 @@ func (cp *CommandProcessor) handleStart(ctx context.Context, sessionID string, p
 
 	inheritCWD(ctx, cp.Sessions, ns, sessionID, session)
 
-	// Enable all tools registered in the tool registry.
 	if cp.Tools != nil {
 		for _, schema := range cp.Tools.Schemas() {
 			session.EnableTool(schema.Name)
@@ -247,4 +297,128 @@ func (cp *CommandProcessor) handleStart(ctx context.Context, sessionID string, p
 		Reply:   "started fresh session: " + session.ID + " with all tools enabled",
 		Session: session,
 	}
+}
+
+// --- JSON handlers ---
+
+func (cp *CommandProcessor) execHelp(ctx context.Context, sessionID string) CommandResult {
+	type cmdEntry struct {
+		Cmd    string `json:"cmd"`
+		Desc   string `json:"desc"`
+		Params any    `json:"params,omitempty"`
+	}
+	helpJSON, _ := json.Marshal(map[string]any{
+		"commands": []cmdEntry{
+			{Cmd: "help", Desc: "Show this help menu"},
+			{Cmd: "continue", Desc: "Continue the conversation (LLM responds without new input)"},
+			{Cmd: "start", Desc: "Start a fresh session with all tools enabled"},
+			{Cmd: "compact", Desc: "Set context soft limit in tokens", Params: map[string]string{"n": "int (0=off)"}},
+			{Cmd: "session_list", Desc: "List all sessions"},
+			{Cmd: "session_create", Desc: "Create a new session"},
+			{Cmd: "session_switch", Desc: "Switch to a session", Params: map[string]string{"id": "session ID or prefix"}},
+			{Cmd: "session_delete", Desc: "Delete a session", Params: map[string]string{"id": "session ID or 'this'"}},
+			{Cmd: "session_info", Desc: "Show current session details"},
+			{Cmd: "session_rename", Desc: "Rename current session", Params: map[string]string{"name": "new name"}},
+			{Cmd: "session_autorename", Desc: "Auto-generate name using LLM"},
+			{Cmd: "model_list", Desc: "List available models"},
+			{Cmd: "model_switch", Desc: "Switch to a different model", Params: map[string]string{"name": "model name"}},
+			{Cmd: "tool_list", Desc: "List available tools with status"},
+			{Cmd: "tool_enable", Desc: "Enable a tool or tag", Params: map[string]string{"name": "tool name or #tag"}},
+			{Cmd: "tool_disable", Desc: "Disable a tool or tag", Params: map[string]string{"name": "tool name or #tag"}},
+		},
+	})
+	return CommandResult{Handled: true, Action: ActionReply, Cmd: "help", Data: helpJSON}
+}
+
+func (cp *CommandProcessor) execStart(ctx context.Context, sessionID string) CommandResult {
+	ns := event.NamespaceFromContext(ctx)
+	session, err := cp.Sessions.GetOrCreate(ctx, ns, "")
+	if err != nil {
+		return CommandResult{Handled: true, Error: err}
+	}
+	inheritCWD(ctx, cp.Sessions, ns, sessionID, session)
+	if cp.Tools != nil {
+		for _, schema := range cp.Tools.Schemas() {
+			session.EnableTool(schema.Name)
+		}
+	}
+	if err := cp.Sessions.Save(ctx, ns, session); err != nil {
+		return CommandResult{Handled: true, Error: err}
+	}
+	data, _ := json.Marshal(map[string]any{
+		"session": sessionToMap(session),
+	})
+	return CommandResult{
+		Handled: true,
+		Action:  ActionSessionCreate,
+		Cmd:     "start",
+		Data:    data,
+		Session: session,
+	}
+}
+
+func (cp *CommandProcessor) execCompact(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
+	ns := event.NamespaceFromContext(ctx)
+
+	var p struct {
+		N int `json:"n"`
+	}
+	if params != nil {
+		json.Unmarshal(params, &p)
+	}
+
+	session, err := cp.Sessions.GetOrCreate(ctx, ns, sessionID)
+	if err != nil {
+		return CommandResult{Handled: true, Error: err}
+	}
+
+	if params == nil || len(params) == 0 || string(params) == "null" || string(params) == "{}" {
+		// Show current value
+		data, _ := json.Marshal(map[string]any{
+			"compact_soft_limit": session.GetCompactSoftLimit(),
+		})
+		return CommandResult{Handled: true, Cmd: "compact", Data: data}
+	}
+
+	session.SetCompactSoftLimit(p.N)
+	if err := cp.Sessions.Save(ctx, ns, session); err != nil {
+		return CommandResult{Handled: true, Error: err}
+	}
+
+	data, _ := json.Marshal(map[string]any{
+		"compact_soft_limit": p.N,
+	})
+	return CommandResult{Handled: true, Cmd: "compact", Data: data}
+}
+
+// sessionToMap helper.
+func sessionToMap(s *agent.Session) map[string]any {
+	if s == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":            s.ID,
+		"name":          s.Name,
+		"short_id":      shortID(s.ID),
+		"message_count": len(s.Messages),
+		"model":         s.GetModel(),
+		"total_tokens":  s.TotalTokenUsage(),
+		"client_cwd":    s.ClientCWD,
+		"created_at":    s.CreatedAt.Format(time.RFC3339),
+		"updated_at":    formatTime(s.UpdatedAt, s.CreatedAt),
+	}
+}
+
+func formatTime(t, fallback time.Time) string {
+	if t.IsZero() {
+		return fallback.Format(time.RFC3339)
+	}
+	return t.Format(time.RFC3339)
+}
+
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }

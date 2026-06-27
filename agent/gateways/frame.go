@@ -6,16 +6,22 @@ import (
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
+// CommandRequest is a structured command sent by a JSON-capable client.
+// It replaces the old text-based slash commands (/session list, etc.).
+type CommandRequest struct {
+	Cmd    string          `json:"cmd"`
+	Params json.RawMessage `json:"params,omitempty"`
+}
+
 // FrameRequest is the inbound envelope shared by all gateways.
 type FrameRequest struct {
-	Type      string          `json:"type,omitempty"`      // "request" (default) or "response"
+	Type      string          `json:"type,omitempty"` // "request" (default), "response", "cancel", "init"
 	SessionID string          `json:"session_id,omitempty"`
 	Input     string          `json:"input,omitempty"`
 	Stream    bool            `json:"stream,omitempty"`
+	Command   *CommandRequest `json:"command,omitempty"` // structured command (JSON-capable clients)
 	// Cwd is the client's current working directory. The client should
 	// send this once (e.g. on the first request) or whenever it changes.
-	// When set, it is stored on the session and injected into the
-	// conversation history as a system message.
 	Cwd string `json:"cwd,omitempty"`
 	// Response fields (for tool→client communication)
 	RequestID string          `json:"request_id,omitempty"`
@@ -30,15 +36,17 @@ type FrameResponse struct {
 	Delta     string `json:"delta,omitempty"`
 	Done      bool   `json:"done,omitempty"`
 	Error     string `json:"error,omitempty"`
-	// Event frames for non-text gateway signals (e.g. tool calls).
-	Event  string         `json:"event,omitempty"`  // "tool" | "meta" | "client_request"
+	// Event frames for non-text gateway signals.
+	Event  string         `json:"event,omitempty"`  // "tool" | "meta" | "command_result" | "init"
 	Tool   string         `json:"tool,omitempty"`   // tool name
 	Status string         `json:"status,omitempty"` // "start" | "ok" | "err"
-	Data   map[string]any `json:"data,omitempty"`   // for meta events
-	// ExecSnippet is a short human-readable summary of the tool arguments
-	// shown to the user while the tool is executing.
+	Data   map[string]any `json:"data,omitempty"`   // for meta/command_result events
+	// Args carries structured tool arguments (JSON object).
+	Args json.RawMessage `json:"args,omitempty"`
+	// Cmd is set when Event == "command_result" — the command that produced it.
+	Cmd string `json:"cmd,omitempty"`
+	// ExecSnippet is a short human-readable summary of the tool arguments.
 	ExecSnippet string `json:"exec_snippet,omitempty"`
-	// ClientReq is set when Event == "client_request" — the agent is asking the
-	// client to execute a Vim command.
+	// ClientReq is set when Event == "vim_request" / "client_request".
 	ClientReq *event.ClientRequest `json:"vim_request,omitempty"`
 }

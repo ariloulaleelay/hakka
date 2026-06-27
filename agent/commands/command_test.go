@@ -423,38 +423,39 @@ func TestSessionList_ShowsCreationDate(t *testing.T) {
 	}
 }
 
-func TestSessionList_OrderedByCreationTimeOldestFirst(t *testing.T) {
+func TestSessionList_OrderedByUpdateTimeNewestFirst(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
 
 	now := time.Now().Truncate(time.Second)
 
 	// Create sessions with IDs that would NOT sort alphabetically by time,
-	// so we can prove ordering is by CreatedAt, not by ID.
-	// Alphabetical order: "session-b", "session-c", "session-a"
-	// But we want CreatedAt order: oldest first (session-c, session-a, session-b)
+	// so we can prove ordering is by UpdatedAt, not by ID.
+	// Sessions are saved in order: session-c, session-a, session-b.
+	// Since List returns most recently updated first, the order should be:
+	// session-b (last saved), session-a, session-c (first saved).
 
-	// oldest: created 2 hours ago
+	// oldest: created 2 hours ago — saved first
 	s1, _ := sm.GetOrCreate(context.Background(), "testns", "session-c")
 	s1.CreatedAt = now.Add(-2 * time.Hour)
 	s1.Name = "Oldest Session"
 	s1.Append(agent.Message{Role: agent.RoleUser, Content: "old"})
 
-	// middle: created 1 hour ago
+	// middle: created 1 hour ago — saved second
 	s2, _ := sm.GetOrCreate(context.Background(), "testns", "session-a")
 	s2.CreatedAt = now.Add(-1 * time.Hour)
 	s2.Name = "Middle Session"
 	s2.Append(agent.Message{Role: agent.RoleUser, Content: "middle"})
 
-	// newest: created now
+	// newest: created now — saved third (most recently updated)
 	s3, _ := sm.GetOrCreate(context.Background(), "testns", "session-b")
 	s3.CreatedAt = now
 	s3.Name = "Newest Session"
 	s3.Append(agent.Message{Role: agent.RoleUser, Content: "new"})
 
-	// Save sessions with modified CreatedAt
-	sm.Store.Put(context.Background(), "testns", s1)
-	sm.Store.Put(context.Background(), "testns", s2)
-	sm.Store.Put(context.Background(), "testns", s3)
+	// Save sessions in this order. UpdatedAt will be set by Put.
+	sm.Store.Put(context.Background(), "testns", s1) // updated first
+	sm.Store.Put(context.Background(), "testns", s2) // updated second
+	sm.Store.Put(context.Background(), "testns", s3) // updated third (most recent)
 
 	res := cmd.Execute(context.Background(), "session-b", "/session list")
 
@@ -468,18 +469,18 @@ func TestSessionList_OrderedByCreationTimeOldestFirst(t *testing.T) {
 		t.Fatalf("expected at least 4 lines, got %d: %q", len(lines), res.Reply)
 	}
 
-	// Check order by CreatedAt: Oldest first (session-c), Middle (session-a), Newest (session-b)
-	if !strings.Contains(lines[1], "Oldest Session") {
-		t.Fatalf("expected first session to be 'Oldest Session' (session-c, oldest), got: %q", lines[1])
+	// Check order by UpdatedAt: newest first (session-b), middle (session-a), oldest (session-c)
+	if !strings.Contains(lines[1], "Newest Session") {
+		t.Fatalf("expected first session to be 'Newest Session' (session-b, most recently updated), got: %q", lines[1])
 	}
 	if !strings.Contains(lines[2], "Middle Session") {
-		t.Fatalf("expected second session to be 'Middle Session' (session-a, middle), got: %q", lines[2])
+		t.Fatalf("expected second session to be 'Middle Session' (session-a), got: %q", lines[2])
 	}
-	if !strings.Contains(lines[3], "Newest Session") {
-		t.Fatalf("expected third session to be 'Newest Session' (session-b, newest), got: %q", lines[3])
+	if !strings.Contains(lines[3], "Oldest Session") {
+		t.Fatalf("expected third session to be 'Oldest Session' (session-c, least recently updated), got: %q", lines[3])
 	}
-	if !strings.Contains(lines[3], "*") {
-		t.Fatalf("expected current session to be marked with '*', got: %q", lines[3])
+	if !strings.Contains(lines[1], "*") {
+		t.Fatalf("expected current session to be marked with '*', got: %q", lines[1])
 	}
 }
 

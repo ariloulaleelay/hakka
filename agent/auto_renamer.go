@@ -104,7 +104,7 @@ func buildNamingMessages(session SessionHistory) []Message {
 	// the last thing the model sees.
 	filtered = append(filtered, Message{
 		Role:    RoleUser,
-		Content: "Suggest name for this chat. One sentence.",
+		Content: "Suggest name for this chat. One sentence. No quotes, no 'How about', just the name.",
 	})
 	return filtered
 }

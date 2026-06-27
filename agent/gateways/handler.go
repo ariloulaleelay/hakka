@@ -67,28 +67,28 @@ func (h *TurnHandler) executor(stream bool) agent.TurnExecutor {
 	return h.Conv
 }
 
-// HandleRequest processes a single user request: tries it as a slash
-// command first, resolves the session and CWD, enriches the context with
-// client communication channels, then dispatches to the streaming or
-// non-streaming turn handler via the TurnExecutor interface.
+// HandleRequest processes a single user request.
 //
-// The request runs under a cancellable context derived from ctx, keyed by
-// session ID. Another connection can call CancelSession(sessionID) to
-// abort this request.
-//
-// Special case: /continue (ActionContinue) is handled by passing empty
-// input to the executor — Execute skips appending a user message when
-// input is empty, allowing the LLM to continue from existing context.
+// If the request has a Command field, it is handled as a structured JSON
+// command (no LLM invocation). Otherwise, it is treated as a chat/stream
+// request (with optional text-based slash command interception for
+// non-JSON clients like Telegram).
 func (h *TurnHandler) HandleRequest(ctx context.Context, req FrameRequest, w frameWriter, responseReader *InProcessResponseReader) {
+	// JSON command: structured command from a JSON-capable client.
+	if req.Command != nil && h.Cmd != nil {
+		h.handleJSONCommand(ctx, req, w, responseReader)
+		return
+	}
+
+	// Text-based input: try slash command interception (for non-JSON clients).
 	input := req.Input
 	if h.Cmd != nil {
 		cmdRes := h.Cmd.Execute(ctx, req.SessionID, req.Input)
 		if cmdRes.Handled {
 			if cmdRes.Action == commands.ActionContinue {
-				// /continue: trigger LLM without adding a user message.
 				input = ""
 			} else {
-				if handled, ok := writeCommandResult(w, cmdRes, req.Stream); handled {
+				if handled, ok := writeCommandResult(w, cmdRes, req.Stream, false); handled {
 					if !ok {
 						// Write failed — client disconnected, nothing more to do.
 					}
@@ -115,6 +115,28 @@ func (h *TurnHandler) HandleRequest(ctx context.Context, req FrameRequest, w fra
 	reqCtx = enrichCtxWithCWD(reqCtx, h.Conv, req)
 
 	h.handleWithEngine(reqCtx, w, sessionID, input, h.executor(req.Stream), reqCancel)
+}
+
+// handleJSONCommand processes a structured JSON command request.
+// Does NOT create a session — if no session_id is provided, the command
+// runs without a session context (appropriate for session_list, help, etc.).
+func (h *TurnHandler) handleJSONCommand(ctx context.Context, req FrameRequest, w frameWriter, responseReader *InProcessResponseReader) {
+	cmdReq := req.Command
+
+	// Resolve session for commands that have an explicit session_id
+	// (e.g. session_switch, session_info). When session_id is empty,
+	// skip resolution — commands like session_list must never create one.
+	sessionID := req.SessionID
+	if sessionID != "" {
+		sessionID = h.resolveSessionAndCWD(ctx, req)
+	}
+
+	reqCtx := event.ContextWithNamespace(ctx, h.Namespace)
+	reqCtx = clientCtx(reqCtx, w, responseReader, sessionID)
+	reqCtx = enrichCtxWithCWD(reqCtx, h.Conv, req)
+
+	cmdRes := h.Cmd.ExecuteJSON(reqCtx, sessionID, cmdReq.Cmd, cmdReq.Params)
+	writeCommandResult(w, cmdRes, false, true)
 }
 
 // handleWithEngine runs a turn using the given executor and processes

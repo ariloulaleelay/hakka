@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // SessionStore persists sessions, keyed by (namespace, id). The namespace
@@ -41,6 +42,7 @@ func (ms *MemoryStore) Put(_ context.Context, namespace string, s *Session) erro
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 	s.Namespace = namespace
+	s.UpdatedAt = time.Now()
 	ms.data[storeKey(namespace, s.ID)] = s
 	return nil
 }
@@ -63,7 +65,7 @@ func (ms *MemoryStore) List(_ context.Context, namespace string) ([]*Session, er
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].CreatedAt.Before(out[j].CreatedAt)
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
 	})
 	return out, nil
 }

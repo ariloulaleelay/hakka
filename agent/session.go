@@ -69,6 +69,7 @@ type Session struct {
 	SystemPrompt string    `json:"system_prompt"`
 	Messages     []Message `json:"messages"`
 	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at,omitempty"`
 	// ClientCWD is the working directory of the client (e.g. Neovim).
 	// Defaults to the server's working directory at session creation time.
 	// Injected into the LLM context by Conversation.BuildContext().
@@ -126,13 +127,15 @@ func (sess *Session) DisplayName() string {
 
 func NewSession(namespace, systemPrompt string) *Session {
 	cwd, _ := os.Getwd()
+	now := time.Now()
 	return &Session{
-		Namespace:     namespace,
-		ID:            uuid.NewString(),
-		SystemPrompt:  systemPrompt,
-		CreatedAt:     time.Now(),
-		ClientCWD:     cwd,
-		CompactSoftLimit: 0, // 0 means "use engine config default"; see DefaultEngineConfig()
+		Namespace:         namespace,
+		ID:                uuid.NewString(),
+		SystemPrompt:      systemPrompt,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		ClientCWD:         cwd,
+		CompactSoftLimit:  0, // 0 means "use engine config default"; see DefaultEngineConfig()
 	}
 }
 

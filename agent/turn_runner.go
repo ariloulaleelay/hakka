@@ -176,6 +176,16 @@ func (r *turnRunner) runOneIteration(
 		return nil, needCompactify, notifyError(session.SessionID(), err, hooks, r.logger)
 	}
 
+	// Enrich tool calls with exec snippets before recording into session
+	// history, so that clients (web, nvim) can display human-readable
+	// summaries when loading previously executed turns.
+	for i := range resp.toolCalls {
+		resp.toolCalls[i].ExecSnippet = r.tools.ExecSnippet(
+			resp.toolCalls[i].Name,
+			resp.toolCalls[i].Arguments,
+		)
+	}
+
 	recordLLMResponse(session, resp, hooks, events)
 
 	// If the LLM only called context_compactify (no real tool calls),

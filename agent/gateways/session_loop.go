@@ -2,6 +2,7 @@ package gateways
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/ariloulaleelay/hakka/agent"
@@ -34,7 +35,11 @@ func (g *gwClientWriter) WriteFrame(f event.Frame) error {
 	return g.writer.Write(resp)
 }
 
-func writeCommandResult(w frameWriter, res commands.CommandResult, stream bool) (handled, ok bool) {
+// writeCommandResult writes a CommandResult as a frame.
+// For JSON-capable clients (when the result has Data), it emits
+// event: "command_result" with structured payload.
+// For text-only clients (Telegram, TCP nc), it falls back to Reply text.
+func writeCommandResult(w frameWriter, res commands.CommandResult, stream bool, isJSON bool) (handled, ok bool) {
 	if !res.Handled {
 		return false, true
 	}
@@ -42,25 +47,52 @@ func writeCommandResult(w frameWriter, res commands.CommandResult, stream bool) 
 	if res.Session != nil {
 		resp.SessionID = res.Session.ID
 	}
+
 	if res.Error != nil {
 		resp.Error = res.Error.Error()
 		return true, w.Write(resp) == nil
 	}
+
+	// Continue action: no response frame, caller proceeds to LLM.
+	if res.Action == commands.ActionContinue {
+		return true, true
+	}
+
+	// JSON-capable clients get structured data.
+	if isJSON && res.Data != nil {
+		resp.Event = "command_result"
+		resp.Cmd = res.Cmd
+		json.Unmarshal(res.Data, &resp.Data)
+		resp.Done = true
+		return true, w.Write(resp) == nil
+	}
+
+	// For session switch/create, emit event frame.
 	if res.Action == commands.ActionSessionSwitch || res.Action == commands.ActionSessionCreate {
 		eventType := "session_switch"
 		if res.Action == commands.ActionSessionCreate {
 			eventType = "session_create"
 		}
-		// Include session messages in the event data so the client can
-		// load full conversation history when switching sessions.
 		data := map[string]any{}
 		if res.Action == commands.ActionSessionSwitch && res.Session != nil {
 			data["messages"] = res.Session.AllMessages()
 		}
+		data["session"] = sessionToMap(res.Session)
 		if err := w.Write(FrameResponse{SessionID: resp.SessionID, Event: eventType, Data: data}); err != nil {
 			return true, false
 		}
+		// For JSON clients, also send command_result with the same data (no text reply).
+		if isJSON && res.Data != nil {
+			resp.Event = "command_result"
+			resp.Cmd = res.Cmd
+			json.Unmarshal(res.Data, &resp.Data)
+			resp.Done = true
+			return true, w.Write(resp) == nil
+		}
+		// For non-JSON clients, fall through to send the text reply.
 	}
+
+	// Text fallback for non-JSON clients (Telegram, TCP).
 	if stream {
 		if res.Reply != "" {
 			if err := w.Write(FrameResponse{SessionID: resp.SessionID, Delta: res.Reply}); err != nil {
@@ -73,14 +105,65 @@ func writeCommandResult(w frameWriter, res commands.CommandResult, stream bool) 
 	return true, w.Write(resp) == nil
 }
 
+// sessionToMap converts a session to a map for JSON serialization.
+func sessionToMap(s *agent.Session) map[string]any {
+	if s == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":             s.ID,
+		"name":           s.Name,
+		"short_id":       shortID(s.ID),
+		"message_count":  len(s.Messages),
+		"model":          s.GetModel(),
+		"total_tokens":   s.TotalTokenUsage(),
+	}
+}
+
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// sessionListToMap converts a list of sessions for JSON serialization.
+func sessionListToMap(sessions []*agent.Session, currentID string, allSessions []*agent.Session) []map[string]any {
+	shortIDs := make(map[string]string)
+	if len(allSessions) == 0 {
+		allSessions = sessions
+	}
+	for _, s := range allSessions {
+		shortIDs[s.ID] = shortID(s.ID)
+	}
+
+	result := make([]map[string]any, 0, len(sessions))
+	for _, s := range sessions {
+		m := sessionToMap(s)
+		if s.Name == "" {
+			m["name"] = ""
+		}
+		m["short_id"] = shortIDs[s.ID]
+		m["current"] = s.ID == currentID
+		result = append(result, m)
+	}
+	return result
+}
+
 func processEvent(w frameWriter, evt event.EngineEvent) bool {
 	switch e := evt.(type) {
 	case event.ToolCallStarted:
+		// Parse Arguments (JSON string) into structured args.
+		var args json.RawMessage
+		if e.Arguments != "" {
+			args = json.RawMessage(e.Arguments)
+		}
 		return writeFrame(w, FrameResponse{
 			SessionID:   e.SessionID,
 			Event:       "tool",
 			Tool:        e.Name,
 			Status:      "start",
+			Args:        args,
 			ExecSnippet: e.ExecSnippet,
 		})
 	case event.ToolCallFinished:
@@ -90,11 +173,16 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 		} else if e.Result.IsError() {
 			status = "err"
 		}
+		var args json.RawMessage
+		if e.Arguments != "" {
+			args = json.RawMessage(e.Arguments)
+		}
 		return writeFrame(w, FrameResponse{
 			SessionID:   e.SessionID,
 			Event:       "tool",
 			Tool:        e.Name,
 			Status:      status,
+			Args:        args,
 			ExecSnippet: e.ExecSnippet,
 		})
 	case event.UsageReported:

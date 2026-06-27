@@ -42,12 +42,13 @@ func TestMemoryStoreMissing(t *testing.T) {
 	}
 }
 
-func TestMemoryStoreList_OrderedByCreatedAt(t *testing.T) {
+func TestMemoryStoreList_OrderedByUpdatedAt(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
 	now := time.Now().Truncate(time.Second)
 
 	// Create sessions with different creation times
+	// List returns most recently updated first.
 	s1 := NewSession("testns", "")
 	s1.CreatedAt = now.Add(-2 * time.Hour) // oldest
 	if err := store.Put(ctx, "testns", s1); err != nil {
@@ -66,6 +67,8 @@ func TestMemoryStoreList_OrderedByCreatedAt(t *testing.T) {
 		t.Fatalf("put s3: %v", err)
 	}
 
+	// All three were Put in order (s1, s2, s3), so UpdatedAt for
+	// s3 is the most recent — it should appear first.
 	sessions, err := store.List(ctx, "testns")
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -74,22 +77,26 @@ func TestMemoryStoreList_OrderedByCreatedAt(t *testing.T) {
 		t.Fatalf("expected 3 sessions, got %d", len(sessions))
 	}
 
-	// oldest first
-	if sessions[0].ID != s1.ID {
-		t.Fatalf("expected first session to be oldest (s1), got ID=%q", sessions[0].ID)
+	if sessions[0].ID != s3.ID {
+		t.Fatalf("expected first session to be s3 (most recently updated), got ID=%q", sessions[0].ID)
 	}
 	if sessions[1].ID != s2.ID {
-		t.Fatalf("expected second session to be middle (s2), got ID=%q", sessions[1].ID)
+		t.Fatalf("expected second session to be s2, got ID=%q", sessions[1].ID)
 	}
-	if sessions[2].ID != s3.ID {
-		t.Fatalf("expected third session to be newest (s3), got ID=%q", sessions[2].ID)
+	if sessions[2].ID != s1.ID {
+		t.Fatalf("expected third session to be s1, got ID=%q", sessions[2].ID)
 	}
 
-	// Verify CreatedAt ordering
-	if !sessions[0].CreatedAt.Before(sessions[1].CreatedAt) {
-		t.Fatal("sessions[0].CreatedAt should be before sessions[1].CreatedAt")
+	// Now update s1 (re-Put with a new message) — it should move to the front
+	s1.Append(Message{Role: RoleUser, Content: "new message"})
+	if err := store.Put(ctx, "testns", s1); err != nil {
+		t.Fatalf("put s1 again: %v", err)
 	}
-	if !sessions[1].CreatedAt.Before(sessions[2].CreatedAt) {
-		t.Fatal("sessions[1].CreatedAt should be before sessions[2].CreatedAt")
+	sessions, err = store.List(ctx, "testns")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if sessions[0].ID != s1.ID {
+		t.Fatalf("expected first session to be s1 (most recently updated), got ID=%q", sessions[0].ID)
 	}
 }
