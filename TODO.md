@@ -43,6 +43,7 @@ This file is for humans only, agent should not modify it!
   - [x] Session manual rename
   - [x] Tools to access to sessions
   - [ ] Tools for session manipulation (search, summarize, tags) — requires further research and decomposition
+    - [ ] Better session compactification prompt
     - [x] Session search
     - [x] Session summarize
     - [ ] Session tags

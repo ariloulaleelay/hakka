@@ -203,7 +203,13 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	gws, err := buildGateways(sessions, router, tools, systemPrompt, engineCfg, cfg.tcpAddr, cfg.wsAddr, cfg.telegramToken, cfg.telegramWhitelist, cfg.telegramSOCKS5)
+	gws, err := buildGateways(gatewayParams{
+		Sessions:     sessions,
+		Router:       router,
+		Tools:        tools,
+		SystemPrompt: systemPrompt,
+		EngineCfg:    engineCfg,
+	}, cfg.tcpAddr, cfg.wsAddr, cfg.telegramToken, cfg.telegramWhitelist, cfg.telegramSOCKS5)
 	if err != nil {
 		return fmt.Errorf("build gateways: %w", err)
 	}
@@ -248,7 +254,19 @@ func setupComponents(store agent.SessionStore, registry *agent.Registry, logger 
 	return sessions, router, tools, systemPrompt, cfg
 }
 
-func buildGateways(sessions *agent.SessionManager, router *agent.Router, tools *agent.ToolRegistry, systemPrompt string, cfg agent.EngineConfig, tcpAddr, wsAddr, telegramToken, telegramWhitelist, telegramSOCKS5 string) ([]gateways.Gateway, error) {
+// gatewayParams holds shared dependencies passed to individual gateway
+// builders. Each builder picks the fields it needs; the assembler
+// passes the same struct to all of them.
+type gatewayParams struct {
+	Sessions     *agent.SessionManager
+	Router       *agent.Router
+	Tools        *agent.ToolRegistry
+	SystemPrompt string
+	EngineCfg    agent.EngineConfig
+}
+
+func buildGateways(p gatewayParams, tcpAddr, wsAddr, telegramToken, telegramWhitelist, telegramSOCKS5 string) ([]gateways.Gateway, error) {
+	tools := p.Tools
 	if tools == nil {
 		tools = agent.NewToolRegistry()
 		hakkatools.RegisterAll(tools)
@@ -257,7 +275,7 @@ func buildGateways(sessions *agent.SessionManager, router *agent.Router, tools *
 
 	// Register session-control tools on the main (TCP/WS) tool registry.
 	// These tools let the LLM manage sessions within its own namespace.
-	hakkatools.RegisterSessionTools(tools, sessions, nil)
+	hakkatools.RegisterSessionTools(tools, p.Sessions, nil)
 
 	// TCP and WebSocket gateways serve clients (e.g. Neovim) that can
 	// receive client-bound requests from tools. Install a decorator so
@@ -265,32 +283,48 @@ func buildGateways(sessions *agent.SessionManager, router *agent.Router, tools *
 	// serialised on a single writer goroutine.
 	clientDecorator := agent.EngineChannelClientDecorator()
 
-	tcpConv := agent.NewConversation(sessions, router, tools, "tcp", cfg)
-	tcpConv.ToolContext = clientDecorator
-	tcpStreamer := agent.NewStreamSession(tcpConv, "tcp")
-	tcpCmd := commands.New(sessions, tcpConv, systemPrompt, "tcp")
-	tcpCmd.SetTools(tools)
+	tcpGw := buildTCPGateway(p, tools, clientDecorator, tcpAddr)
+	wsGw := buildWebSocketGateway(p, tools, clientDecorator, wsAddr)
 
-	wsConv := agent.NewConversation(sessions, router, tools, "ws", cfg)
-	wsConv.ToolContext = clientDecorator
-	wsStreamer := agent.NewStreamSession(wsConv, "ws")
-	wsCmd := commands.New(sessions, wsConv, systemPrompt, "ws")
-	wsCmd.SetTools(tools)
-
-	// Telegram gets a restricted toolset — no file, shell, or Neovim tools.
-	// Session tools are safe (no filesystem/shell access) and are scoped
-	// to the per-chat namespace, so we include them for Telegram users too.
-	tgTools := agent.NewToolRegistry()
-	hakkatools.RegisterTelegramTools(tgTools)
-	hakkatools.RegisterSessionTools(tgTools, sessions, nil)
-	tgConv := agent.NewConversation(sessions, router, tgTools, "tg", cfg)
-	tgCmd := commands.New(sessions, tgConv, systemPrompt, "tg")
-	tgCmd.SetTools(tgTools)
-
-	gatewaysList := []gateways.Gateway{
-		gateways.NewTCPGateway(tcpConv, tcpStreamer, tcpCmd, tcpAddr),
-		gateways.NewWebSocketGateway(wsConv, wsStreamer, wsCmd, wsAddr),
+	tgGw, err := buildTelegramGateway(p, telegramToken, telegramWhitelist, telegramSOCKS5)
+	if err != nil {
+		return nil, err
 	}
+
+	gws := []gateways.Gateway{tcpGw, wsGw}
+	if tgGw != nil {
+		gws = append(gws, tgGw)
+	}
+	return gws, nil
+}
+
+// buildTCPGateway wires the TCP gateway with full tool access and
+// a client communication decorator for Neovim integration.
+func buildTCPGateway(p gatewayParams, tools *agent.ToolRegistry, clientDecorator agent.ToolContextDecorator, addr string) *gateways.TCPGateway {
+	conv := agent.NewConversation(p.Sessions, p.Router, tools, "tcp", p.EngineCfg)
+	conv.ToolContext = clientDecorator
+	streamer := agent.NewStreamSession(conv, "tcp")
+	cmd := commands.New(p.Sessions, conv, p.SystemPrompt, "tcp")
+	cmd.SetTools(tools)
+	return gateways.NewTCPGateway(conv, streamer, cmd, addr)
+}
+
+// buildWebSocketGateway wires the WebSocket gateway, sharing the same
+// tool registry as TCP but with its own conversation namespace.
+func buildWebSocketGateway(p gatewayParams, tools *agent.ToolRegistry, clientDecorator agent.ToolContextDecorator, addr string) *gateways.WebSocketGateway {
+	conv := agent.NewConversation(p.Sessions, p.Router, tools, "ws", p.EngineCfg)
+	conv.ToolContext = clientDecorator
+	streamer := agent.NewStreamSession(conv, "ws")
+	cmd := commands.New(p.Sessions, conv, p.SystemPrompt, "ws")
+	cmd.SetTools(tools)
+	return gateways.NewWebSocketGateway(conv, streamer, cmd, addr)
+}
+
+// buildTelegramGateway wires the Telegram gateway with a restricted
+// toolset (no filesystem, shell, or Neovim tools). Returns (nil, nil)
+// when no Telegram token is configured. Token, whitelist, and SOCKS5
+// proxy fall back to environment variables when the flags are empty.
+func buildTelegramGateway(p gatewayParams, telegramToken, telegramWhitelist, telegramSOCKS5 string) (*gateways.TelegramGateway, error) {
 	if telegramToken == "" {
 		telegramToken = os.Getenv("TELEGRAM_BOT_TOKEN")
 	}
@@ -300,17 +334,30 @@ func buildGateways(sessions *agent.SessionManager, router *agent.Router, tools *
 	if telegramSOCKS5 == "" {
 		telegramSOCKS5 = os.Getenv("TELEGRAM_SOCKS5")
 	}
-	if telegramToken != "" {
-		tgGw := gateways.NewTelegramGateway(tgConv, tgCmd, telegramToken)
-		tgGw.SOCKS5 = telegramSOCKS5
-		whitelist, err := parseWhitelist(telegramWhitelist)
-		if err != nil {
-			return nil, fmt.Errorf("telegram whitelist: %w", err)
-		}
-		tgGw.Whitelist = whitelist
-		gatewaysList = append(gatewaysList, tgGw)
+	if telegramToken == "" {
+		return nil, nil
 	}
-	return gatewaysList, nil
+
+	// Telegram gets a restricted toolset — no file, shell, or Neovim tools.
+	// Session tools are safe (no filesystem/shell access) and are scoped
+	// to the per-chat namespace, so we include them for Telegram users too.
+	tgTools := agent.NewToolRegistry()
+	hakkatools.RegisterTelegramTools(tgTools)
+	hakkatools.RegisterSessionTools(tgTools, p.Sessions, nil)
+
+	conv := agent.NewConversation(p.Sessions, p.Router, tgTools, "tg", p.EngineCfg)
+	cmd := commands.New(p.Sessions, conv, p.SystemPrompt, "tg")
+	cmd.SetTools(tgTools)
+
+	gw := gateways.NewTelegramGateway(conv, cmd, telegramToken)
+	gw.SOCKS5 = telegramSOCKS5
+
+	whitelist, err := parseWhitelist(telegramWhitelist)
+	if err != nil {
+		return nil, fmt.Errorf("telegram whitelist: %w", err)
+	}
+	gw.Whitelist = whitelist
+	return gw, nil
 }
 
 // parseWhitelist converts a comma-separated string of chat IDs into a set.
