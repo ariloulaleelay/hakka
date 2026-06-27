@@ -21,6 +21,7 @@ func makeCompactifyCall(sess *Session, ranges []compactRange) {
 		}{
 			RangeStart: r.from,
 			RangeEnd:   r.to,
+			Summary:    r.summary,
 		})
 
 		sess.Append(Message{
@@ -41,8 +42,205 @@ func makeCompactifyCall(sess *Session, ranges []compactRange) {
 }
 
 // ---------------------------------------------------------------------------
-// extractCompactifyRanges tests
+// isMessageCompressible tests
 // ---------------------------------------------------------------------------
+
+func TestIsMessageCompressible_ShortUser(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleUser, Content: "continue"},
+		{Role: RoleUser, Content: "proceed"},
+		{Role: RoleUser, Content: "ok"},
+		{Role: RoleUser, Content: "go with B"},
+		{Role: RoleUser, Content: "Ok whats next?\nProceed with the mock"},
+		{Role: RoleUser, Content: "I want A"},
+		{Role: RoleUser, Content: strings.Repeat("a", 60)}, // exactly at boundary
+	}
+	for _, m := range msgs {
+		if !isMessageCompressible(m) {
+			t.Fatalf("short user message %q should be compressible", m.Content)
+		}
+	}
+}
+
+func TestIsMessageCompressible_LongUser(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleUser, Content: strings.Repeat("a", 61)}, // one past boundary
+		{Role: RoleUser, Content: "Read the configuration file /tmp/foo.txt and then run" +
+			" the build script please"},
+		{Role: RoleUser, Content: "This is a fairly long user message that exceeds the sixty character limit by quite a bit"},
+	}
+	for _, m := range msgs {
+		if isMessageCompressible(m) {
+			t.Fatalf("long user message %q should NOT be compressible", m.Content)
+		}
+	}
+}
+
+func TestIsMessageCompressible_UserEdgeCases(t *testing.T) {
+	tests := []struct {
+		content string
+		want    bool
+		desc    string
+	}{
+		{"", true, "empty string"},
+		{"   ", true, "whitespace only"},
+		{"\n\n\t\n", true, "newlines only"},
+		{"x", true, "single char"},
+		{strings.Repeat("a", 60), true, "exactly 60 chars"},
+		{strings.Repeat("a", 61), false, "61 chars (over limit)"},
+	}
+	for _, tc := range tests {
+		m := Message{Role: RoleUser, Content: tc.content}
+		got := isMessageCompressible(m)
+		if got != tc.want {
+			t.Errorf("isMessageCompressible(user, %q) = %v, want %v (%s)", tc.content, got, tc.want, tc.desc)
+		}
+	}
+}
+
+func TestIsMessageCompressible_NonUser(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleAssistant, Content: "any content"},
+		{Role: RoleTool, Content: "any content", ToolCallID: "c1"},
+		{Role: RoleSystem, Content: "any content"},
+		{Role: RoleAssistant, Content: strings.Repeat("x", 10000)}, // very long
+	}
+	for _, m := range msgs {
+		if !isMessageCompressible(m) {
+			t.Fatalf("non-user message should always be compressible, got false for %s", m.Role)
+		}
+	}
+}
+
+func TestIsMessageCompressible_UserMultilineShort(t *testing.T) {
+	// Multi-line but overall short — should be compressible
+	m := Message{Role: RoleUser, Content: "continue\nProceed with the mock"}
+	if !isMessageCompressible(m) {
+		t.Fatal("short multi-line user message should be compressible")
+	}
+}
+
+func TestIsMessageCompressible_UserMultilineLong(t *testing.T) {
+	// Multi-line and long — should NOT be compressible
+	m := Message{Role: RoleUser, Content: "Read the file /tmp/config.yaml\nThen run the tests\nReport any failures\nAlso check logs"}
+	if isMessageCompressible(m) {
+		t.Fatal("long multi-line user message should NOT be compressible")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Integration: short user messages don't split compaction spans
+// ---------------------------------------------------------------------------
+
+func TestBuildCompactedView_ShortUserInMiddleDoesNotSplitSpan(t *testing.T) {
+	// A short user message between two tool rounds should NOT split
+	// a contiguous compaction range into multiple markers.
+	// Instead, the short user message gets compacted along with
+	// the surrounding tool messages, producing ONE marker.
+	rawMsgs := []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "data", ToolCallID: "c1", Name: "read_file"},
+		{Role: RoleUser, Content: "continue"}, // short user, ≤ 60 chars
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "shell", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "out", ToolCallID: "c2", Name: "shell"},
+	}
+	inRange := []bool{true, true, true, true, true} // all in range
+	summaryAt := []string{"", "", "", "", ""}
+
+	view, origIdx := buildCompactedView(rawMsgs, inRange, summaryAt)
+
+	// Should produce exactly 1 marker (no split)
+	if len(view) != 1 {
+		t.Fatalf("expected 1 marker (no split), got %d messages: %+v", len(view), view)
+	}
+	if !strings.Contains(view[0].Content, "Compacted") {
+		t.Fatalf("expected compaction marker, got %q", view[0].Content)
+	}
+	if origIdx[0] != -1 {
+		t.Fatalf("marker should have origIdx=-1, got %d", origIdx[0])
+	}
+}
+
+func TestBuildCompactedView_LongUserInMiddleSplitsSpan(t *testing.T) {
+	// A long user message between two tool rounds SHOULD split
+	// a compaction range into two separate markers, with the
+	// long user message preserved in between.
+	rawMsgs := []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "data", ToolCallID: "c1", Name: "read_file"},
+		{Role: RoleUser, Content: "Read the file and run the tests and report the output please"}, // long, > 60 chars
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "shell", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "out", ToolCallID: "c2", Name: "shell"},
+	}
+	inRange := []bool{true, true, false, true, true} // user (idx 2) NOT in range
+	summaryAt := []string{"summary1", "summary1", "", "summary2", "summary2"}
+
+	view, origIdx := buildCompactedView(rawMsgs, inRange, summaryAt)
+
+	// Should produce 3 messages: marker1, user, marker2
+	if len(view) != 3 {
+		t.Fatalf("expected 3 messages (marker1 + user + marker2), got %d: %+v", len(view), view)
+	}
+	// First is marker
+	if !strings.Contains(view[0].Content, "Compacted") {
+		t.Fatalf("view[0] should be compaction marker, got %q", view[0].Content)
+	}
+	if origIdx[0] != -1 {
+		t.Fatalf("marker should have origIdx=-1, got %d", origIdx[0])
+	}
+	// Second is user message
+	if view[1].Content != rawMsgs[2].Content {
+		t.Fatalf("view[1] should be long user message preserved, got %q", view[1].Content)
+	}
+	if origIdx[1] != 2 {
+		t.Fatalf("user should map to origIdx=2, got %d", origIdx[1])
+	}
+	// Third is marker
+	if !strings.Contains(view[2].Content, "Compacted") {
+		t.Fatalf("view[2] should be compaction marker, got %q", view[2].Content)
+	}
+	if origIdx[2] != -1 {
+		t.Fatalf("marker should have origIdx=-1, got %d", origIdx[2])
+	}
+}
+
+func TestBuildCompactedView_ShortUserBetweenRangesWithinSameCompactCall(t *testing.T) {
+	// LLM calls compactify on range [0, 4] which covers:
+	//   idx 0: assistant (read_file)
+	//   idx 1: tool result
+	//   idx 2: user "continue" (short)
+	//   idx 3: assistant (shell)
+	//   idx 4: tool result
+	//
+	// Because the user message at idx 2 is short (≤ 60 chars), it should
+	// be compressible, and the ENTIRE range [0,4] should become one
+	// contiguous span producing one marker.
+	rawMsgs := []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "data", ToolCallID: "c1", Name: "read_file"},
+		{Role: RoleUser, Content: "continue"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "shell", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "out", ToolCallID: "c2", Name: "shell"},
+	}
+	merged := []compactRange{{from: 0, to: 4}}
+	inRange := computeEffectiveInRange(rawMsgs, merged)
+	summaryAt := buildSummaryLookup(len(rawMsgs), merged)
+
+	view, origIdx := buildCompactedView(rawMsgs, inRange, summaryAt)
+
+	// Because the short user at idx 2 is compressible, we get ONE marker
+	// (3 tool messages + 1 short user = 4 real messages → all compacted)
+	// Only 1 marker in the view.
+	if len(view) != 1 {
+		t.Fatalf("expected 1 marker (short user merged into span), got %d: %+v", len(view), view)
+	}
+	if !strings.Contains(view[0].Content, "Compacted") {
+		t.Fatalf("view[0] should be compaction marker, got %q", view[0].Content)
+	}
+	if origIdx[0] != -1 {
+		t.Fatalf("marker should have origIdx=-1, got %d", origIdx[0])
+	}
+}
 
 func TestExtractCompactifyRanges_NoCalls(t *testing.T) {
 	msgs := []Message{
@@ -135,6 +333,190 @@ func TestExtractCompactifyRanges_MultipleCalls(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Summary deduplication: when a compaction range is split by a
+// non-compressible message, the summary should only appear on the
+// first marker. Subsequent markers fall back to listing tool names.
+// ---------------------------------------------------------------------------
+
+func TestBuildCompactedView_SplitRangeDeduplicatesSummary(t *testing.T) {
+	// A single compaction range with a long user message in the middle.
+	// The range [0,4] has summary "Reading project files", but idx 2
+	// is a long user message that is not compressible.
+	// Result: TWO markers, but only the FIRST has the summary.
+	rawMsgs := []Message{
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "data", ToolCallID: "c1", Name: "read_file"},
+		{Role: RoleUser, Content: "Read the file and run the tests please"}, // long, > 60 chars
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "shell", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "out", ToolCallID: "c2", Name: "shell"},
+	}
+	// Range [0,4] with same summary — idx 2 is the long user (not compressible)
+	inRange := []bool{true, true, false, true, true}
+	summaryAt := []string{"Reading project files", "Reading project files", "", "Reading project files", "Reading project files"}
+
+	view, origIdx := buildCompactedView(rawMsgs, inRange, summaryAt)
+
+	// Should produce 3 messages: marker1, user, marker2
+	if len(view) != 3 {
+		t.Fatalf("expected 3 messages (marker1 + user + marker2), got %d: %+v", len(view), view)
+	}
+
+	// First marker SHOULD have the summary
+	if !strings.Contains(view[0].Content, "Reading project files") {
+		t.Fatalf("view[0] (first marker) should contain summary 'Reading project files', got %q", view[0].Content)
+	}
+	if origIdx[0] != -1 {
+		t.Fatalf("marker should have origIdx=-1, got %d", origIdx[0])
+	}
+
+	// Second message is the long user
+	if view[1].Content != rawMsgs[2].Content {
+		t.Fatalf("view[1] should be the long user message, got %q", view[1].Content)
+	}
+	if origIdx[1] != 2 {
+		t.Fatalf("user should map to origIdx=2, got %d", origIdx[1])
+	}
+
+	// Second marker must NOT repeat the summary — it should use tool names instead
+	if strings.Contains(view[2].Content, "Reading project files") {
+		t.Fatalf("view[2] (second marker) should NOT repeat summary 'Reading project files', got %q", view[2].Content)
+	}
+	// It should still be a compaction marker though, and list tool names
+	if !strings.Contains(view[2].Content, "Compacted") {
+		t.Fatalf("view[2] should be a compaction marker, got %q", view[2].Content)
+	}
+	if !strings.Contains(view[2].Content, "shell") {
+		t.Fatalf("view[2] should list tool names (shell) as fallback, got %q", view[2].Content)
+	}
+	if origIdx[2] != -1 {
+		t.Fatalf("marker should have origIdx=-1, got %d", origIdx[2])
+	}
+}
+
+func TestBuildCompactedView_SplitRangeFirstMarkerHasSummary(t *testing.T) {
+	// Verify that the FIRST marker gets the summary, even when the
+	// inRange spans appear in reverse order of which has the summary.
+	// The summary belongs to the first contiguous block.
+	rawMsgs := []Message{
+		{Role: RoleUser, Content: "A very long user message that should not be compressed at all"}, // idx 0, long
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "data", ToolCallID: "c1", Name: "read_file"},
+		{Role: RoleUser, Content: "another long user message to split the range"}, // idx 3, long
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "shell", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "out", ToolCallID: "c2", Name: "shell"},
+	}
+	// Range [0,5] — idx 0 and 3 are long users (not compressible)
+	// So we get: user, [1,2] span, user, [4,5] span
+	inRange := []bool{false, true, true, false, true, true}
+	summaryAt := []string{"", "Reading files", "Reading files", "", "Reading files", "Reading files"}
+
+	view, _ := buildCompactedView(rawMsgs, inRange, summaryAt)
+
+	// Expected: user, marker1 (with summary), user, marker2 (no summary, tool names)
+	if len(view) != 4 {
+		t.Fatalf("expected 4 messages (user + marker1 + user + marker2), got %d: %+v", len(view), view)
+	}
+
+	// Marker at view[1] should have the summary
+	if !strings.Contains(view[1].Content, "Reading files") {
+		t.Fatalf("view[1] (first marker) should contain summary 'Reading files', got %q", view[1].Content)
+	}
+
+	// Marker at view[3] should NOT have the summary — should show tool names
+	if strings.Contains(view[3].Content, "Reading files") {
+		t.Fatalf("view[3] (second marker) should NOT repeat summary 'Reading files', got %q", view[3].Content)
+	}
+	if !strings.Contains(view[3].Content, "shell") {
+		t.Fatalf("view[3] should list tool names (shell) as fallback, got %q", view[3].Content)
+	}
+}
+
+func TestBuildCompactedView_DifferentSummariesNotDeduplicated(t *testing.T) {
+	// Two ranges with DIFFERENT summaries should keep both summaries.
+	rawMsgs := []Message{
+		{Role: RoleUser, Content: "A very long user message that splits the ranges"}, // idx 0, long
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "data", ToolCallID: "c1", Name: "read_file"},
+		{Role: RoleUser, Content: "another long user message that splits ranges"}, // idx 3, long
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "shell", Arguments: `{}`}}},
+		{Role: RoleTool, Content: "out", ToolCallID: "c2", Name: "shell"},
+	}
+	// Two different ranges with DIFFERENT summaries
+	inRange := []bool{false, true, true, false, true, true}
+	// First range summary: "Reading files", second range summary: "Shell commands"
+	summaryAt := []string{"", "Reading files", "Reading files", "", "Shell commands", "Shell commands"}
+
+	view, _ := buildCompactedView(rawMsgs, inRange, summaryAt)
+
+	// Expected: user, marker1 (Reading files), user, marker2 (Shell commands)
+	if len(view) != 4 {
+		t.Fatalf("expected 4 messages, got %d: %+v", len(view), view)
+	}
+
+	// Both markers should keep their distinct summaries
+	if !strings.Contains(view[1].Content, "Reading files") {
+		t.Fatalf("view[1] should contain 'Reading files', got %q", view[1].Content)
+	}
+	if !strings.Contains(view[3].Content, "Shell commands") {
+		t.Fatalf("view[3] should contain 'Shell commands', got %q", view[3].Content)
+	}
+}
+
+func TestBuildCompactContext_NoSummaryRepeatedOnSplitRange(t *testing.T) {
+	// Integration test: a compaction range covering multiple tool rounds
+	// with a long user message in between. The summary should only appear
+	// on the first marker.
+	s := NewSession("testns", "")
+
+	// Round 1
+	s.Append(Message{Role: RoleUser, Content: "Read the main configuration file and report the database connection details"}) // 74 chars, > 60
+	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{}`}}})
+	s.Append(Message{Role: RoleTool, Content: "config data", ToolCallID: "c1", Name: "read_file"})
+	s.Append(Message{Role: RoleAssistant, Content: "Here is the config"})
+
+	// Round 2
+	s.Append(Message{Role: RoleUser, Content: "Now run all the integration tests and let me know which ones failed"}) // 73 chars, > 60
+	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "shell", Arguments: `{}`}}})
+	s.Append(Message{Role: RoleTool, Content: "test output", ToolCallID: "c2", Name: "shell"})
+	s.Append(Message{Role: RoleAssistant, Content: "Tests passed"})
+
+	// Compact the entire range with one summary
+	makeCompactifyCall(s, []compactRange{
+		{from: 0, to: 7, summary: "Exploration and testing"},
+	})
+
+	result, _, _ := BuildCompactContext(s, 100000)
+
+	// Collect compaction markers
+	var markers []string
+	for _, m := range result {
+		if m.Role == RoleSystem && strings.Contains(m.Content, "Compacted") {
+			markers = append(markers, m.Content)
+		}
+	}
+
+	// There should be 2 markers (user at idx 0 and idx 4 split the range)
+	if len(markers) != 2 {
+		t.Fatalf("expected 2 markers (split by 2 long user messages), got %d: %v", len(markers), markers)
+	}
+
+	// First marker should have the summary
+	if !strings.Contains(markers[0], "Exploration and testing") {
+		t.Fatalf("first marker should contain summary 'Exploration and testing', got %q", markers[0])
+	}
+
+	// Second marker must NOT repeat the summary
+	if strings.Contains(markers[1], "Exploration and testing") {
+		t.Fatalf("second marker should NOT repeat summary 'Exploration and testing', got %q", markers[1])
+	}
+
+	// Second marker should still show tool names
+	if !strings.Contains(markers[1], "read_file") && !strings.Contains(markers[1], "shell") {
+		t.Fatalf("second marker should list tool names, got %q", markers[1])
+	}
+}
+
+// ---------------------------------------------------------------------------
 // computeEffectiveInRange tests
 // ---------------------------------------------------------------------------
 
@@ -167,19 +549,58 @@ func TestComputeEffectiveInRange_PartialRoundNotCompacted(t *testing.T) {
 	}
 }
 
-func TestComputeEffectiveInRange_UserNeverCompacted(t *testing.T) {
+func TestComputeEffectiveInRange_LongUserNeverCompacted(t *testing.T) {
 	msgs := []Message{
-		{Role: RoleUser, Content: "important"},
+		{Role: RoleUser, Content: "important request that is longer than 60 characters to ensure it stays visible"},
 		{Role: RoleAssistant, Content: "done"},
 	}
 	merged := []compactRange{{from: 0, to: 1}}
 	inRange := computeEffectiveInRange(msgs, merged)
 	if inRange[0] {
-		t.Fatal("user message should never be compacted")
+		t.Fatal("long user message should never be compacted")
 	}
 	// assistant should still be compacted
 	if !inRange[1] {
 		t.Fatal("assistant message should be compacted")
+	}
+}
+
+func TestComputeEffectiveInRange_ShortUserCompressible(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleUser, Content: "continue"},
+		{Role: RoleAssistant, Content: "done"},
+	}
+	merged := []compactRange{{from: 0, to: 1}}
+	inRange := computeEffectiveInRange(msgs, merged)
+	if !inRange[0] {
+		t.Fatal("short user message 'continue' should be compressible")
+	}
+	if !inRange[1] {
+		t.Fatal("assistant message should be compacted")
+	}
+}
+
+func TestComputeEffectiveInRange_ShortUserWithLongUser(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleUser, Content: "proceed"},
+		{Role: RoleAssistant, Content: "ok"},
+		{Role: RoleUser, Content: "Read file /tmp/foo.txt and then run the build script and tell me the output"},
+		{Role: RoleAssistant, Content: "done"},
+	}
+	// Range covers both user messages + both assistants
+	merged := []compactRange{{from: 0, to: 3}}
+	inRange := computeEffectiveInRange(msgs, merged)
+	if !inRange[0] {
+		t.Fatal("short user 'proceed' should be compressible, got false")
+	}
+	if !inRange[1] {
+		t.Fatal("assistant should be compacted")
+	}
+	if inRange[2] {
+		t.Fatal("long user message should NOT be compressible, got true")
+	}
+	if !inRange[3] {
+		t.Fatal("assistant should be compacted")
 	}
 }
 
@@ -482,15 +903,15 @@ func TestBuildCompactContext_PastCompactifyCallApplied(t *testing.T) {
 	}
 }
 
-func TestBuildCompactContext_UserMessagesNeverCompacted(t *testing.T) {
+func TestBuildCompactContext_LongUserMessagesNeverCompacted(t *testing.T) {
 	s := NewSession("testns", "sys")
-	s.Append(Message{Role: RoleUser, Content: "initial task"})
+	s.Append(Message{Role: RoleUser, Content: "Please read the main configuration file and report the database settings"})
 	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{
 		{ID: "c1", Name: "read_file", Arguments: `{}`},
 	}})
 	s.Append(Message{Role: RoleTool, Content: "data", ToolCallID: "c1", Name: "read_file"})
 	s.Append(Message{Role: RoleAssistant, Content: "done reading"})
-	s.Append(Message{Role: RoleUser, Content: "second task"})
+	s.Append(Message{Role: RoleUser, Content: "Now run the tests and let me know if any fail, especially the integration tests in the api package"})
 	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{
 		{ID: "c2", Name: "shell", Arguments: `{}`},
 	}})
@@ -504,18 +925,61 @@ func TestBuildCompactContext_UserMessagesNeverCompacted(t *testing.T) {
 	foundInitial := false
 	foundSecond := false
 	for _, m := range result {
-		if m.Role == RoleUser && m.Content == "initial task" {
+		if m.Role == RoleUser && strings.HasPrefix(m.Content, "Please read") {
 			foundInitial = true
 		}
-		if m.Role == RoleUser && m.Content == "second task" {
+		if m.Role == RoleUser && strings.HasPrefix(m.Content, "Now run") {
 			foundSecond = true
 		}
 	}
 	if !foundInitial {
-		t.Fatal("expected 'initial task' user message to survive compaction untouched")
+		t.Fatal("expected long user message to survive compaction untouched")
 	}
 	if !foundSecond {
-		t.Fatal("expected 'second task' user message to survive compaction untouched")
+		t.Fatal("expected long user message to survive compaction untouched")
+	}
+}
+
+func TestBuildCompactContext_ShortUserMessagesCompressible(t *testing.T) {
+	s := NewSession("testns", "sys")
+	s.Append(Message{Role: RoleUser, Content: "proceed"})
+	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{
+		{ID: "c1", Name: "read_file", Arguments: `{}`},
+	}})
+	s.Append(Message{Role: RoleTool, Content: "data", ToolCallID: "c1", Name: "read_file"})
+	s.Append(Message{Role: RoleAssistant, Content: "done reading"})
+	s.Append(Message{Role: RoleUser, Content: "ok whats next"})
+	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{
+		{ID: "c2", Name: "shell", Arguments: `{}`},
+	}})
+	s.Append(Message{Role: RoleTool, Content: "output", ToolCallID: "c2", Name: "shell"})
+	s.Append(Message{Role: RoleAssistant, Content: "done shelling"})
+
+	// Compact the entire range — short user messages should be included
+	makeCompactifyCall(s, []compactRange{{from: 0, to: 7}})
+
+	result, _, _ := BuildCompactContext(s, 100000)
+
+	// Short user messages should now be replaced by compaction markers
+	for _, m := range result {
+		if m.Role == RoleUser && m.Content == "proceed" {
+			t.Fatal("short user message 'proceed' should have been compacted")
+		}
+		if m.Role == RoleUser && m.Content == "ok whats next" {
+			t.Fatal("short user message 'ok whats next' should have been compacted")
+		}
+	}
+
+	// There should be compaction markers
+	foundMarker := false
+	for _, m := range result {
+		if m.Role == RoleSystem && strings.Contains(m.Content, "Compacted") {
+			foundMarker = true
+			break
+		}
+	}
+	if !foundMarker {
+		t.Fatal("expected compaction markers in result")
 	}
 }
 

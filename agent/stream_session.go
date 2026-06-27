@@ -76,7 +76,7 @@ func (ss *StreamSession) Execute(ctx context.Context, sessionID, userInput strin
 // engine can execute them and iterate again.
 func (ss *StreamSession) streamStep(session SessionView) stepFunc {
 	return func(ctx context.Context, msgs []Message, schemas []ToolSchema, events eventSender) (*llmStepResult, error) {
-		resultCh, err := ss.conv.adapterFor(session).Stream(ctx, msgs, schemas, ss.conv.Config.Options)
+		resultCh, err := ss.conv.Router.Adapter(session).Stream(ctx, msgs, schemas, ss.conv.Config.Options)
 		if err != nil {
 			return nil, err
 		}

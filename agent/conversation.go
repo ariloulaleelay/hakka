@@ -2,11 +2,8 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
-	"sync"
 
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
@@ -16,12 +13,6 @@ import (
 // the channel. The channel is closed when the turn finishes.
 type eventSender chan<- event.EngineEvent
 
-// stepFunc abstracts how the LLM response is obtained. It is the single
-// extension point that differentiates streaming from non-streaming turns.
-// Implementations receive the event channel so streaming steps can emit
-// TextDelta events directly.
-type stepFunc func(ctx context.Context, msgs []Message, schemas []ToolSchema, events eventSender) (*llmStepResult, error)
-
 // TurnExecutor is the interface that both Conversation and StreamSession
 // implement, allowing gateways to treat streaming and non-streaming turns
 // uniformly.
@@ -30,9 +21,21 @@ type TurnExecutor interface {
 }
 
 // Conversation drives the LLM ↔ tool loop for a single conversational
-// turn. It owns the orchestration — append user input, call the LLM,
-// execute tools, loop — and knows nothing about transports, slash
-// commands, or streaming.
+// turn. It is the public-facing facade that gateways interact with;
+// the heavy lifting (iteration loop, compaction, tool execution) is
+// delegated to turnRunner.
+//
+// Conversation owns:
+//   - Session lifecycle (get/create, append user input, persist)
+//   - Turn lifecycle (background goroutine, event channel, finalisation)
+//   - Auto-rename (LLM-generated session names)
+//   - Model binding (per-session model selection)
+//   - Tool context decoration (transport-aware ClientWriter)
+//
+// It delegates to turnRunner for:
+//   - The LLM ↔ tool iteration loop
+//   - Default (non-streaming) step function creation
+//   - Compaction limit resolution and schema augmentation
 //
 // Namespace is used to isolate sessions from different gateways
 // (e.g. "tcp", "ws", "tg:12345"). All store operations from this
@@ -64,6 +67,17 @@ type Conversation struct {
 	// aware ClientWriter (e.g. to talk back to Neovim). When nil, the
 	// context is forwarded to handlers unchanged.
 	ToolContext ToolContextDecorator
+
+	// turnRunner is the extracted orchestration core that handles the
+	// LLM ↔ tool iteration loop. Created by NewConversation and
+	// rebuilt by SetToolContext.
+	turnRunner *turnRunner
+
+	// toolExec is the extracted service that handles tool execution,
+	// concurrent fan-out, hook serialisation, and event emission for
+	// tool calls. It is populated by NewConversation and rebuilt by
+	// SetToolContext.
+	toolExec *toolExecutor
 }
 
 // NewConversation builds a Conversation. Zero-valued config fields are
@@ -80,13 +94,29 @@ func NewConversation(sm *SessionManager, router *Router, tools *ToolRegistry, na
 	if cfg.CompactSoftLimit <= 0 {
 		cfg.CompactSoftLimit = def.CompactSoftLimit
 	}
-	return &Conversation{
+	conv := &Conversation{
 		Router:    router,
 		Sessions:  sm,
 		Tools:     tools,
 		Config:    cfg,
 		Namespace: namespace,
+		toolExec:  newToolExecutor(tools, nil, cfg.Hooks),
 	}
+	conv.turnRunner = newTurnRunner(tools, conv.toolExec, cfg, router, cfg.Logger)
+	return conv
+}
+
+// SetToolContext installs a transport-aware decorator used to enrich the
+// context passed to every tool invocation (e.g. to install a ClientWriter
+// for Neovim communication). It rebuilds both toolExec and turnRunner
+// so the decorator takes effect immediately.
+//
+// Gateways that need a ToolContextDecorator should call this after
+// NewConversation instead of setting the exported field directly.
+func (conv *Conversation) SetToolContext(tc ToolContextDecorator) {
+	conv.ToolContext = tc
+	conv.toolExec = newToolExecutor(conv.Tools, tc, conv.Config.Hooks)
+	conv.turnRunner = newTurnRunner(conv.Tools, conv.toolExec, conv.Config, conv.Router, conv.Config.Logger)
 }
 
 // resolveNamespace returns the namespace to use for store operations.
@@ -119,7 +149,7 @@ func (conv *Conversation) Execute(ctx context.Context, sessionID, userInput stri
 	if err != nil {
 		return nil, err
 	}
-	return conv.runTurnWithStep(ctx, session, conv.defaultStep(session)), nil
+	return conv.runTurnWithStep(ctx, session, conv.turnRunner.defaultStep(session)), nil
 }
 
 // prepareWithInput gets or creates a session. If userInput is non-empty,
@@ -150,10 +180,18 @@ func (conv *Conversation) runTurnWithStep(ctx context.Context, session SessionVi
 	eventCh := make(chan event.EngineEvent, 256)
 	go func() {
 		defer close(eventCh)
-		reply, err := conv.runToolIterations(ctx, session, eventCh, step)
+
+		// saveFn is the persistence callback that turnRunner calls after
+		// every iteration round. We provide it here so turnRunner does
+		// not need to know about session persistence.
+		saveFn := func(ctx context.Context, session SessionView) error {
+			return conv.finishTurn(ctx, session)
+		}
+
+		reply, err := conv.turnRunner.run(ctx, session, eventCh, step, saveFn)
 
 		if err == nil {
-			if saveErr := conv.finishTurn(ctx, session); saveErr != nil {
+			if saveErr := saveFn(ctx, session); saveErr != nil {
 				conv.Config.Logger.Error("failed to save session after turn",
 					"session", session.SessionID(), "error", saveErr)
 				err = fmt.Errorf("save session: %w", saveErr)
@@ -170,23 +208,6 @@ func (conv *Conversation) runTurnWithStep(ctx context.Context, session SessionVi
 		}
 	}()
 	return eventCh
-}
-
-// defaultStep creates a non-streaming step function that uses
-// adapter.Complete to obtain LLM responses.
-func (conv *Conversation) defaultStep(session SessionView) stepFunc {
-	return func(ctx context.Context, msgs []Message, schemas []ToolSchema, _ eventSender) (*llmStepResult, error) {
-		adapter := conv.adapterFor(session)
-		resp, err := adapter.Complete(ctx, msgs, schemas, conv.Config.Options)
-		if err != nil {
-			return nil, err
-		}
-		return &llmStepResult{
-			content:   resp.Message.Content,
-			toolCalls: resp.Message.ToolCalls,
-			usage:     resp.Usage,
-		}, nil
-	}
 }
 
 // SessionModel returns the name of the model currently bound to the
@@ -228,14 +249,6 @@ type errMsg struct{ msg string }
 
 func (e *errMsg) Error() string { return e.msg }
 
-// adapterFor returns the LLM adapter to use for the given session.
-func (conv *Conversation) adapterFor(s SessionView) LLMAdapter {
-	if conv.Router == nil {
-		return nil
-	}
-	return conv.Router.Adapter(s)
-}
-
 // BuildContext returns the full message history enriched with the CWD
 // system message (if set). This is the method that produces the context
 // sent to the LLM adapter. It is used by both Conversation and
@@ -260,336 +273,15 @@ func BuildContext(session SessionHistory) []Message {
 	return history
 }
 
-// llmStepResult is the result of a single LLM call within the tool loop.
-type llmStepResult struct {
-	content   string
-	toolCalls []ToolCall
-	usage     *Usage
-}
-
-// runToolIterations drives the LLM ↔ tool iteration loop using a
-// caller-provided step function. This is the shared core that both
-// Complete-based and Stream-based loops delegate to.
-//
-// The step function abstracts how the LLM response is obtained;
-// runToolIterations handles everything else: hook serialisation,
-// recording the assistant response, firing events, tracking usage,
-// and executing tools when the model requests them.
-//
-// On success it returns the final assistant text. On exhaustion of
-// iterations it returns ErrMaxIterations. The caller is responsible
-// for persisting the session and emitting TurnFinished.
-func (conv *Conversation) runToolIterations(
-	ctx context.Context,
-	session SessionView,
-	events eventSender,
-	step stepFunc,
-) (string, error) {
-	schemas := conv.Tools.SchemasForSession(session)
-	var turnMu sync.Mutex
-	hooks := conv.serialisedHooks(&turnMu)
-
-	for i := 0; i < conv.Config.MaxToolIterations; i++ {
-		resp, needCompactify, err := conv.runOneIteration(ctx, session, schemas, events, step, hooks, i)
-		if err != nil {
-			return "", err
-		}
-		if resp == nil {
-			continue // compactify-only round — loop again
-		}
-		if len(resp.toolCalls) == 0 {
-			return resp.content, nil
-		}
-
-		conv.logCompactifySkipped(session.SessionID(), i, needCompactify, resp.toolCalls)
-		conv.executeToolCalls(ctx, session, resp.toolCalls, hooks, events)
-
-		if saveErr := conv.finishTurn(ctx, session); saveErr != nil {
-			conv.Config.Logger.Error("failed to save session mid-turn",
-				"session", session.SessionID(), "iteration", i, "error", saveErr)
-			return "", fmt.Errorf("save session: %w", saveErr)
-		}
-	}
-
-	return "", ErrMaxIterations
-}
-
-// runOneIteration executes a single LLM-call+record cycle within the
-// tool loop. It builds the compacted context, calls the step function,
-// records the assistant response, and returns the result.
-//
-// Returns (nil, _, nil) when the LLM only called context_compactify —
-// the caller should loop again so the newly-compacted context takes effect.
-func (conv *Conversation) runOneIteration(
-	ctx context.Context,
-	session SessionView,
-	schemas []ToolSchema,
-	events eventSender,
-	step stepFunc,
-	hooks Hooks,
-	iteration int,
-) (*llmStepResult, bool, error) {
-	softLimit := conv.resolveSoftLimit(session)
-	msgs, needCompactify, estimatedTokens := BuildCompactContext(session, softLimit)
-	turnSchemas := conv.augmentSchemasWithCompactify(schemas, needCompactify)
-
-	conv.Config.Logger.Debug("tool-iteration context",
-		"iteration", iteration,
-		"session", session.SessionID(),
-		"estTokens", estimatedTokens,
-		"softLimit", softLimit,
-		"needCompactify", needCompactify)
-
-	resp, err := step(ctx, msgs, turnSchemas, events)
-	if err != nil {
-		conv.finishTurnOnError(ctx, session)
-		return nil, needCompactify, conv.notifyError(session.SessionID(), err, hooks)
-	}
-
-	conv.recordLLMResponse(session, resp, hooks, events)
-
-	// If the LLM only called context_compactify (no real tool calls),
-	// signal the caller to loop again so the newly-compacted context
-	// takes effect immediately.
-	if len(resp.toolCalls) == 1 && resp.toolCalls[0].Name == "context_compactify" {
-		return nil, needCompactify, nil
-	}
-
-	return resp, needCompactify, nil
-}
-
-// resolveSoftLimit returns the effective compaction soft limit for the
-// session. Falls back from session → engine config → global default.
-func (conv *Conversation) resolveSoftLimit(session SessionView) int {
-	softLimit := session.GetCompactSoftLimit()
-	if softLimit <= 0 {
-		softLimit = conv.Config.CompactSoftLimit
-	}
-	if softLimit <= 0 {
-		softLimit = DefaultEngineConfig().CompactSoftLimit
-	}
-	return softLimit
-}
-
-// augmentSchemasWithCompactify returns a copy of schemas with
-// context_compactify appended when compaction is needed and the
-// schema is not already present.
-func (conv *Conversation) augmentSchemasWithCompactify(schemas []ToolSchema, needCompactify bool) []ToolSchema {
-	if !needCompactify {
-		return schemas
-	}
-	for _, s := range schemas {
-		if s.Name == "context_compactify" {
-			return schemas // already present
-		}
-	}
-	return append(schemas, contextCompactifySchema)
-}
-
-// recordLLMResponse appends the assistant message to the session,
-// fires the LLM response hook, and updates token usage.
-func (conv *Conversation) recordLLMResponse(session SessionView, resp *llmStepResult, hooks Hooks, events eventSender) {
-	msg := Message{Role: RoleAssistant, Content: resp.content, ToolCalls: resp.toolCalls, Usage: resp.usage}
-	session.Append(msg)
-
-	hooks.FireLLMResponse(session.SessionID(), &LLMResponse{Message: msg, Usage: resp.usage})
-	if resp.usage != nil {
-		session.AddTokenUsage(resp.usage.TotalTokens)
-		conv.sendEvent(events, event.UsageReported{
-			SessionID: session.SessionID(),
-			Usage: event.UsageInfo{
-				PromptTokens:     resp.usage.PromptTokens,
-				CompletionTokens: resp.usage.CompletionTokens,
-				TotalTokens:      resp.usage.TotalTokens,
-			},
-		})
-	}
-}
-
-// finishTurnOnError saves the session before propagating an error.
-// Unlike finishTurn, it never returns — errors are logged and swallowed
-// because the caller already has a primary error to propagate.
-func (conv *Conversation) finishTurnOnError(ctx context.Context, session SessionView) {
-	if saveErr := conv.finishTurn(ctx, session); saveErr != nil {
-		conv.Config.Logger.Error("failed to save session on error",
-			"session", session.SessionID(), "error", saveErr)
-	}
-}
-
-// logCompactifySkipped logs a debug message when the LLM chose not to
-// call context_compactify despite the soft limit being exceeded.
-func (conv *Conversation) logCompactifySkipped(sessionID string, iteration int, needCompactify bool, toolCalls []ToolCall) {
-	if !needCompactify {
-		return
-	}
-	names := make([]string, len(toolCalls))
-	for j, tc := range toolCalls {
-		names[j] = tc.Name
-	}
-	conv.Config.Logger.Debug("tool-iteration compactify-needed-but-llm-called",
-		"iteration", iteration,
-		"session", sessionID,
-		"calledTools", names,
-	)
-}
-
-// sendEvent sends an event to the optional event channel (non-blocking).
-// If the channel is nil or full, the event is dropped silently.
-func (conv *Conversation) sendEvent(events eventSender, ev event.EngineEvent) {
-	if events == nil {
-		return
-	}
-	events <- ev
-}
-
-// notifyError fires the OnError hook and returns the error so callers can
-// propagate it. Falls back to logging if no hook is configured.
-func (conv *Conversation) notifyError(sessionID string, err error, hooks Hooks) error {
-	hooks.FireError(sessionID, err)
-	if hooks.OnError == nil {
-		conv.Config.Logger.Error("llm complete error", "err", err, "session", sessionID)
-	}
-	return err
-}
-
 // finishTurn persists the session.
 func (conv *Conversation) finishTurn(ctx context.Context, session SessionView) error {
 	return conv.Sessions.Save(ctx, conv.resolveNamespace(ctx), session)
-}
-
-// executeToolCalls runs every tool requested by the model, then appends
-// all results to the session as tool-role messages.
-func (conv *Conversation) executeToolCalls(ctx context.Context, session SessionView, calls []ToolCall, hooks Hooks, events eventSender) {
-	results := conv.runToolsConcurrently(ctx, session, calls, hooks, events)
-	conv.appendToolResults(session, calls, results)
-}
-
-// runToolsConcurrently fans out tool handlers across goroutines and
-// collects results in order. The order matches the calls slice so the
-// LLM sees results in the same sequence it requested them.
-func (conv *Conversation) runToolsConcurrently(ctx context.Context, session SessionView, calls []ToolCall, hooks Hooks, events eventSender) []string {
-	results := make([]string, len(calls))
-	var wg sync.WaitGroup
-	for i, call := range calls {
-		wg.Add(1)
-		go func(idx int, toolCall ToolCall) {
-			defer wg.Done()
-			results[idx] = conv.runSingleTool(ctx, session, toolCall, hooks, events)
-		}(i, call)
-	}
-	wg.Wait()
-	return results
-}
-
-// runSingleTool resolves the exec snippet, fires the OnToolCall hook,
-// invokes the handler, fires the OnToolResult hook, emits events, and
-// returns the result string.
-//
-// If a ToolContextDecorator is configured on the Conversation, it is
-// invoked once here to enrich the context (e.g. install a client
-// writer) before the handler runs. The orchestration loop itself
-// stays transport-agnostic.
-func (conv *Conversation) runSingleTool(ctx context.Context, session SessionView, call ToolCall, hooks Hooks, events eventSender) string {
-	// Defense-in-depth: check if the tool is enabled for this session.
-	// Even if the LLM somehow calls a disabled tool (e.g. from context window),
-	// we reject it here without invoking the handler.
-	// context_compactify is a system meta-tool that is always allowed;
-	// it only appears in schemas when the engine determines compaction is needed.
-	if session != nil && !session.IsToolEnabled(call.Name) && call.Name != "context_compactify" {
-		res := event.ErrorResult(errors.New("tool '" + call.Name + "' is disabled for this session"))
-		hooks.FireToolCall(session.SessionID(), call)
-		conv.sendEvent(events, event.ToolCallStarted{SessionID: session.SessionID(), ID: call.ID, Name: call.Name, Arguments: call.Arguments})
-		hooks.FireToolResult(session.SessionID(), call, res)
-		conv.sendEvent(events, event.ToolCallFinished{SessionID: session.SessionID(), ID: call.ID, Name: call.Name, Arguments: call.Arguments, Result: res, Err: res.Err})
-		return res.ForLLM()
-	}
-
-	call.ExecSnippet = conv.Tools.ExecSnippet(call.Name, call.Arguments)
-	hooks.FireToolCall(session.SessionID(), call)
-	conv.sendEvent(events, event.ToolCallStarted{SessionID: session.SessionID(), ID: call.ID, Name: call.Name, Arguments: call.Arguments, ExecSnippet: call.ExecSnippet})
-
-	if conv.ToolContext != nil {
-		if decorated := conv.ToolContext.Decorate(ctx, session.SessionID(), events); decorated != nil {
-			ctx = decorated
-		}
-	}
-
-	result := conv.Tools.Execute(ctx, call.Name, call.Arguments)
-	hooks.FireToolResult(session.SessionID(), call, result)
-	conv.sendEvent(events, event.ToolCallFinished{SessionID: session.SessionID(), ID: call.ID, Name: call.Name, Arguments: call.Arguments, Result: result, Err: result.Err, ExecSnippet: call.ExecSnippet})
-	return result.ForLLM()
-}
-
-// appendToolResults adds tool-role messages to the session, one per call,
-// preserving the order of the original calls slice.
-func (conv *Conversation) appendToolResults(session SessionView, calls []ToolCall, results []string) {
-	for i, call := range calls {
-		session.Append(Message{
-			Role:       RoleTool,
-			Content:    results[i],
-			ToolCallID: call.ID,
-			Name:       call.Name,
-		})
-	}
-}
-
-// serialisedHooks wraps EngineConfig.Hooks so that every callback is
-// invoked under the provided mutex. This serialises hook invocations
-// across concurrent tool goroutines, preventing torn writes when hooks
-// write to a shared transport connection.
-func (conv *Conversation) serialisedHooks(turnMu *sync.Mutex) Hooks {
-	base := conv.Config.Hooks
-	return Hooks{
-		OnToolCall: func(sid string, call ToolCall) {
-			turnMu.Lock()
-			defer turnMu.Unlock()
-			base.FireToolCall(sid, call)
-		},
-		OnToolResult: func(sid string, call ToolCall, res event.ToolResult) {
-			turnMu.Lock()
-			defer turnMu.Unlock()
-			base.FireToolResult(sid, call, res)
-		},
-		OnLLMResponse: func(sid string, r *LLMResponse) {
-			turnMu.Lock()
-			defer turnMu.Unlock()
-			base.FireLLMResponse(sid, r)
-		},
-		OnError: func(sid string, err error) {
-			turnMu.Lock()
-			defer turnMu.Unlock()
-			base.FireError(sid, err)
-		},
-	}
 }
 
 // ---------------------------------------------------------------------------
 // Auto-rename — uses the LLM to generate a short session name after
 // the user has had 2+ exchanges (user messages).
 // ---------------------------------------------------------------------------
-
-// generateName calls the LLM to suggest a session name.
-// Returns the sanitised name (or "" if no name could be generated) and any
-// LLM or transport error. When the adapter is unavailable it returns ("", nil)
-// — callers distinguish this from an empty LLM response by checking the
-// pre-condition themselves.
-func (conv *Conversation) generateName(ctx context.Context, session SessionView) (string, error) {
-	adapter := conv.adapterFor(session)
-	if adapter == nil {
-		return "", nil
-	}
-
-	namingMsgs := buildNamingMessages(session)
-	resp, err := adapter.Complete(ctx, namingMsgs, nil, CompleteOptions{})
-	if err != nil {
-		return "", err
-	}
-
-	name := strings.TrimSpace(resp.Message.Content)
-	name = strings.Trim(name, `"'*#`)
-	name = Truncate(name, 120)
-	return name, nil
-}
 
 // AutoRename forces an LLM-generated session name, regardless of whether
 // the session already has a name or how many messages it contains.
@@ -598,19 +290,16 @@ func (conv *Conversation) generateName(ctx context.Context, session SessionView)
 //
 // This is the public entry point used by the /session autorename command.
 func (conv *Conversation) AutoRename(ctx context.Context, session SessionView) (string, error) {
-	if conv.adapterFor(session) == nil {
+	adapter := conv.Router.Adapter(session)
+	if adapter == nil {
 		return "", fmt.Errorf("no LLM adapter available for this session")
 	}
 
-	name, err := conv.generateName(ctx, session)
+	name, err := generateName(ctx, adapter, session, conv.Config.Logger)
 	if err != nil {
-		conv.Config.Logger.Warn("session auto-rename LLM call failed",
-			"session", session.SessionID(), "error", err)
 		return "", fmt.Errorf("LLM call failed: %w", err)
 	}
 	if name == "" {
-		conv.Config.Logger.Warn("session auto-rename returned empty name",
-			"session", session.SessionID())
 		return "", fmt.Errorf("LLM returned an empty name")
 	}
 
@@ -645,7 +334,12 @@ func (conv *Conversation) autoRenameIfNeeded(ctx context.Context, session Sessio
 		return // not enough conversation history yet
 	}
 
-	name, err := conv.generateName(ctx, session)
+	adapter := conv.Router.Adapter(session)
+	if adapter == nil {
+		return
+	}
+
+	name, err := generateName(ctx, adapter, session, conv.Config.Logger)
 	if err != nil {
 		conv.Config.Logger.Warn("session auto-rename failed",
 			"session", session.SessionID(), "error", err)
@@ -663,75 +357,3 @@ func (conv *Conversation) autoRenameIfNeeded(ctx context.Context, session Sessio
 	conv.Config.Logger.Info("session auto-renamed",
 		"session", session.SessionID(), "name", name)
 }
-
-// StripToolCalls filters a raw message list for human-readable consumption
-// by removing context_compactify messages and replacing assistant messages
-// that only contain tool calls with a placeholder.
-//
-// When replaceToolsWithPlaceholder is true, tool-role messages are also
-// replaced with the placeholder (as buildNamingMessages does). When false,
-// they are dropped entirely (as buildAskQuestionMessages does).
-func StripToolCalls(messages []Message, replaceToolsWithPlaceholder bool) []Message {
-	msgs := make([]Message, 0, len(messages))
-	for _, m := range messages {
-		// Skip context_compactify messages entirely — they are engine
-		// meta-tool artifacts that should never appear in human-readable
-		// contexts (naming, ask-question). Without this, compactify-only
-		// assistant messages would leak a misleading [TRUNCATED TOOL CALLS]
-		// placeholder.
-		if isCompactifyMessage(m) {
-			continue
-		}
-		if m.Role == RoleTool {
-			if replaceToolsWithPlaceholder {
-				msgs = append(msgs, Message{
-					Role:    RoleSystem,
-					Content: "[TRUNCATED TOOL CALLS]",
-				})
-			}
-			continue
-		}
-		if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
-			msgs = append(msgs, Message{
-				Role:    RoleSystem,
-				Content: "[TRUNCATED TOOL CALLS]",
-			})
-			continue
-		}
-		msgs = append(msgs, m)
-	}
-	return msgs
-}
-
-// buildNamingMessages builds a short message list for the LLM naming task.
-// It includes only user messages and assistant replies that are actual text
-// responses (not tool-call messages). Tool-role messages and assistant
-// tool-call-only messages are excluded because they don't contribute useful
-// context for naming and can cause provider errors (empty content + nil
-// tool_calls is an invalid assistant message).
-//
-// The naming instruction is placed as a system message at the END so it
-// is the last thing the model sees before generating the name, preventing
-// it from being buried by long conversations.
-//
-// Depends only on SessionHistory — the narrowest interface needed.
-func buildNamingMessages(session SessionHistory) []Message {
-	msgs := StripToolCalls(session.AllMessages(), true)
-	// Drop genuine system messages but keep the [TRUNCATED TOOL CALLS] placeholders.
-	filtered := make([]Message, 0, len(msgs))
-	for _, m := range msgs {
-		if m.Role == RoleUser || m.Role == RoleAssistant {
-			filtered = append(filtered, m)
-		} else if m.Role == RoleSystem && m.Content == "[TRUNCATED TOOL CALLS]" {
-			filtered = append(filtered, m)
-		}
-	}
-	// Append the naming instruction as the final user message so it is
-	// the last thing the model sees.
-	filtered = append(filtered, Message{
-		Role:    RoleUser,
-		Content: "Suggest name for this chat. One sentence.",
-	})
-	return filtered
-}
-

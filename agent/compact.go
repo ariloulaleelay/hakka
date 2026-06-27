@@ -54,6 +54,29 @@ func sortedKeys(set map[string]bool) []string {
 	return keys
 }
 
+// defaultShortUserMessageMaxLen is the character count threshold below
+// which a user message is considered "trivial" and eligible for compaction.
+// Short messages like "continue", "proceed", "ok" carry no substantive
+// content and can be safely compressed alongside surrounding tool rounds,
+// preventing context bloat from repeated compaction markers.
+const defaultShortUserMessageMaxLen = 60
+
+// isMessageCompressible reports whether an individual message can be
+// compacted when it falls within a compaction range. This encapsulates
+// all the per-message eligibility logic in one place.
+//
+//   - Non-user messages (assistant, tool, system) are always compressible.
+//   - User messages are only compressible if they are short/trivial
+//     (trimmed length ≤ defaultShortUserMessageMaxLen). Long user messages
+//     carry substantive content that must survive compaction.
+func isMessageCompressible(m Message) bool {
+	if m.Role != RoleUser {
+		return true
+	}
+	trimmed := strings.TrimSpace(m.Content)
+	return len(trimmed) <= defaultShortUserMessageMaxLen
+}
+
 // isCompactifyMessage returns true if the message is a context_compactify
 // tool call (assistant with only context_compactify tool calls) or a
 // context_compactify tool result.
@@ -89,13 +112,19 @@ func stripCompactifyCalls(calls []ToolCall) []ToolCall {
 // the constraint that tool-call rounds must be compacted atomically:
 // either all messages in a round are compacted, or none are.
 // A round is: one assistant(tool_calls) + its matching tool results.
-// User messages are NEVER compacted.
+//
+// Message eligibility is delegated to isMessageCompressible:
+//   - Long/substantive user messages are NEVER compacted.
+//   - Short/trivial user messages (≤ defaultShortUserMessageMaxLen chars)
+//     CAN be compacted alongside surrounding tool rounds, preventing
+//     context bloat from repeated identical compaction markers.
+//   - All non-user messages are always compressible.
 func computeEffectiveInRange(rawMsgs []Message, merged []compactRange) []bool {
-	// Start with the raw ranges, excluding user messages.
+	// Start with the raw ranges, excluding messages that aren't compressible.
 	inRange := make([]bool, len(rawMsgs))
 	for _, r := range merged {
 		for i := r.from; i <= r.to && i < len(rawMsgs); i++ {
-			if rawMsgs[i].Role != RoleUser {
+			if isMessageCompressible(rawMsgs[i]) {
 				inRange[i] = true
 			}
 		}
@@ -181,6 +210,11 @@ func buildSummaryLookup(numMsgs int, ranges []compactRange) []string {
 // [Compacted N messages: ...] markers, and strips compactify calls from
 // mixed assistant messages.
 //
+// When compaction ranges are split by non-compressible messages (e.g. long
+// user messages), only the FIRST marker carries the user-provided summary.
+// Subsequent markers from the same split range fall back to listing tool
+// names, preventing context bloat from repeated identical summary text.
+//
 // Returns the view messages and a parallel slice mapping each view message
 // to its original raw index (-1 for marker messages).
 //
@@ -190,6 +224,7 @@ func buildSummaryLookup(numMsgs int, ranges []compactRange) []string {
 func buildCompactedView(rawMsgs []Message, inRange []bool, summaryAt []string) ([]Message, []int) {
 	var view []Message
 	var origIdx []int
+	usedSummaries := make(map[string]bool)
 
 	for i := 0; i < len(rawMsgs); {
 		if isCompactifyMessage(rawMsgs[i]) {
@@ -197,7 +232,7 @@ func buildCompactedView(rawMsgs []Message, inRange []bool, summaryAt []string) (
 			continue
 		}
 		if inRange[i] {
-			marker, next := collectCompactedSpan(rawMsgs, inRange, summaryAt, i)
+			marker, next := collectCompactedSpan(rawMsgs, inRange, summaryAt, i, usedSummaries)
 			if marker.Role != "" {
 				view = append(view, marker)
 				origIdx = append(origIdx, -1)
@@ -220,7 +255,13 @@ func buildCompactedView(rawMsgs []Message, inRange []bool, summaryAt []string) (
 // Compactify messages inside the span are skipped — this is what prevents
 // separate compaction ranges (separated only by compactify call/results)
 // from merging into a single marker.
-func collectCompactedSpan(rawMsgs []Message, inRange []bool, summaryAt []string, i int) (Message, int) {
+//
+// usedSummaries tracks which user-provided summaries have already appeared
+// in previous markers. When a summary has already been emitted, the marker
+// falls back to listing tool names — this prevents the same summary text
+// from being repeated across split ranges (e.g. when a long user message
+// forces a compaction range to split into multiple markers).
+func collectCompactedSpan(rawMsgs []Message, inRange []bool, summaryAt []string, i int, usedSummaries map[string]bool) (Message, int) {
 	start := i
 	toolSet := make(map[string]bool)
 	msgCount := 0
@@ -244,7 +285,14 @@ func collectCompactedSpan(rawMsgs []Message, inRange []bool, summaryAt []string,
 	if msgCount == 0 {
 		return Message{}, i
 	}
-	return Message{Role: RoleSystem, Content: markerText(msgCount, toolSet, summaryAt[start])}, i
+	summary := summaryAt[start]
+	if summary != "" && usedSummaries[summary] {
+		summary = "" // already used in a previous marker — fall back to tool names
+	}
+	if summary != "" {
+		usedSummaries[summary] = true
+	}
+	return Message{Role: RoleSystem, Content: markerText(msgCount, toolSet, summary)}, i
 }
 
 // markerText formats a compaction marker. When summary is non-empty it is
@@ -273,7 +321,10 @@ func passThroughMessage(m Message) Message {
 // extracts and merges their compaction ranges, then builds a view where:
 //   - context_compactify call/result messages are filtered out entirely
 //   - compacted ranges are replaced with [Compacted N messages: ...] markers
-//   - user messages and partial tool-call rounds are NEVER compacted
+//   - long/substantive user messages (len > defaultShortUserMessageMaxLen)
+//     and partial tool-call rounds are NEVER compacted
+//   - short/trivial user messages (len ≤ defaultShortUserMessageMaxLen)
+//     CAN be compacted when they fall within a compaction range
 //
 // After building the view, it estimates total tokens. If the estimate
 // exceeds softLimit, it adds [N] index prefixes (raw session positions)

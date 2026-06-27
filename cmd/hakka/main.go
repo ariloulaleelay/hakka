@@ -302,7 +302,7 @@ func buildGateways(p gatewayParams, tcpAddr, wsAddr, telegramToken, telegramWhit
 // a client communication decorator for Neovim integration.
 func buildTCPGateway(p gatewayParams, tools *agent.ToolRegistry, clientDecorator agent.ToolContextDecorator, addr string) *gateways.TCPGateway {
 	conv := agent.NewConversation(p.Sessions, p.Router, tools, "tcp", p.EngineCfg)
-	conv.ToolContext = clientDecorator
+	conv.SetToolContext(clientDecorator)
 	streamer := agent.NewStreamSession(conv, "tcp")
 	cmd := commands.New(p.Sessions, conv, p.SystemPrompt, "tcp")
 	cmd.SetTools(tools)
@@ -313,7 +313,7 @@ func buildTCPGateway(p gatewayParams, tools *agent.ToolRegistry, clientDecorator
 // tool registry as TCP but with its own conversation namespace.
 func buildWebSocketGateway(p gatewayParams, tools *agent.ToolRegistry, clientDecorator agent.ToolContextDecorator, addr string) *gateways.WebSocketGateway {
 	conv := agent.NewConversation(p.Sessions, p.Router, tools, "ws", p.EngineCfg)
-	conv.ToolContext = clientDecorator
+	conv.SetToolContext(clientDecorator)
 	streamer := agent.NewStreamSession(conv, "ws")
 	cmd := commands.New(p.Sessions, conv, p.SystemPrompt, "ws")
 	cmd.SetTools(tools)

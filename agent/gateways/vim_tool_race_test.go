@@ -93,7 +93,7 @@ func TestVimToolRace(t *testing.T) {
 	// engine event channel; without it the writer in context is
 	// preserved and tool goroutines would write directly to the wire
 	// (the exact race this test exists to guard against).
-	conv.ToolContext = agent.EngineChannelClientDecorator()
+	conv.SetToolContext(agent.EngineChannelClientDecorator())
 
 	cw := &gwClientWriter{writer: writerFunc(writeFrame), sessionID: "sess-1"}
 	ctx = event.ContextWithClient(ctx, cw, rr)
