@@ -15,10 +15,10 @@ import (
 // The tool is always registered so Execute() can find it, but it only
 // appears in schemas when BuildCompactContext signals needCompactify.
 func Compactify() agent.Tool {
-	return NewTool("context_compactify", "Compress message ranges to free context space. Ranges refer to [N] indices shown on each message. Use when system warns about context quota.").
+	return NewTool("context_compactify", "Compress [range_start, range_end] message range using [N] indexes to free context. Provide a summary of what was compacted.").
 		IntParam("range_start", "Start index of the message range to compact (inclusive)", true).
 		IntParam("range_end", "End index of the message range to compact (inclusive)", true).
-		StringParam("summary", "Optional one-line summary of what this range contains", false).
+		StringParam("summary", "Summary of what the compacted range contained", false).
 		Tags("meta").
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args struct {

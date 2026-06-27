@@ -859,6 +859,50 @@ func TestBuildCompactContext_SoftLimitTriggersWarning(t *testing.T) {
 	}
 }
 
+func TestBuildCompactContext_WarningFormat(t *testing.T) {
+	// Verify the compaction warning has the new decision-focused format
+	// with STOP! prefix and guidance on what to compact.
+	s := NewSession("testns", "You are helpful.")
+	bigContent := strings.Repeat("x", 400)
+	s.Append(Message{Role: RoleUser, Content: bigContent})
+	s.Append(Message{Role: RoleAssistant, Content: "ok"})
+
+	result, needCompactify, _ := BuildCompactContext(s, 10)
+	if !needCompactify {
+		t.Fatal("expected needCompactify=true")
+	}
+
+	last := result[len(result)-1]
+	if last.Role != RoleUser {
+		t.Fatalf("expected warning to be user-role, got %s", last.Role)
+	}
+
+	// Must start with STOP!
+	if !strings.HasPrefix(last.Content, "STOP!") {
+		t.Fatalf("warning should start with STOP!, got %q", last.Content[:20])
+	}
+
+	// Must contain the decision-focused guidance
+	if !strings.Contains(last.Content, "Archive finished tool rounds") {
+		t.Fatalf("warning should contain 'Archive finished tool rounds', got %q", last.Content)
+	}
+	if !strings.Contains(last.Content, "context_compactify") {
+		t.Fatalf("warning should mention context_compactify, got %q", last.Content)
+	}
+	if !strings.Contains(last.Content, "completed operations") {
+		t.Fatalf("warning should mention 'completed operations', got %q", last.Content)
+	}
+	if !strings.Contains(last.Content, "old file reads") {
+		t.Fatalf("warning should mention 'old file reads', got %q", last.Content)
+	}
+	if !strings.Contains(last.Content, "Each [N] is a message index") {
+		t.Fatalf("warning should explain [N] index, got %q", last.Content)
+	}
+	if !strings.Contains(last.Content, "keep recent exchanges") {
+		t.Fatalf("warning should say 'keep recent exchanges', got %q", last.Content)
+	}
+}
+
 func TestBuildCompactContext_PastCompactifyCallApplied(t *testing.T) {
 	s := NewSession("testns", "You are helpful.")
 	s.Append(Message{Role: RoleUser, Content: "read file"})
@@ -1093,7 +1137,7 @@ func TestBuildCompactContext_CompactifyMessagesNeverInOutput(t *testing.T) {
 	}
 
 	// Verify no compactify messages leak (except the proactive notice).
-	proactiveNotice := "You have access to `context_compactify` tool"
+	proactiveNotice := "`context_compactify` frees context"
 	for _, m := range result {
 		if m.Role == RoleTool && m.Name == "context_compactify" {
 			t.Fatalf("context_compactify tool result leaked into LLM view: %+v", m)

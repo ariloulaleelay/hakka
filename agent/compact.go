@@ -371,7 +371,7 @@ func annotateViewWithIndices(view []Message, origIdx []int) {
 func buildCompactionWarning(estimatedTokens, softLimit int) Message {
 	return Message{
 		Role:    RoleUser,
-		Content: fmt.Sprintf("STOP! Context exceeded ~%dK tokens (soft limit: %dK)! You MUST compact old history NOW using `context_compactify` before responding to the user. Range indices refer to [N] prefixes of each message. Decide what info you do not need anymore, and those ranges will be replaced with your summarization. Thus you can keep only importang info and drop boilerplate.", estimatedTokens/1000, softLimit/1000),
+		Content: fmt.Sprintf("STOP! Context at ~%dK tokens (limit %dK). Archive finished tool rounds with `context_compactify`. Look for completed operations, old file reads, or resolved multi-step tasks that no longer inform the current goal. Each [N] is a message index — keep recent exchanges, compact the rest.", estimatedTokens/1000, softLimit/1000),
 	}
 }
 
@@ -388,7 +388,7 @@ func buildContextPrefix(session SessionHistory, needCompactify bool) []Message {
 	if needCompactify {
 		result = append(result, Message{
 			Role:    RoleSystem,
-			Content: "You have access to `context_compactify` tool for compacting old conversation history when context gets too large. When warned about context quota, use it with range_start/range_end to compact unneeded tool-call rounds before continuing. Add meaningful summarization for compacted messages. You can call this tool multiple times to throw out obsolete and unneeded data.",
+			Content: "`context_compactify` frees context by replacing old [N..M] message ranges with a summary marker. Use when the warning appears.",
 		})
 	}
 	if cwdMsg := session.CWDMessage(); cwdMsg != nil {
@@ -446,21 +446,21 @@ func messageTokens(m Message) int {
 // triggers, prompting the LLM to compact unneeded history.
 var contextCompactifySchema = ToolSchema{
 	Name:        "context_compactify",
-	Description: "Compress message ranges to free context space. Use when the system warns about context quota. Ranges refer to [N] indices shown on each message.",
+	Description: "Compress [range_start, range_end] message range using [N] indexes to free context. Provide a summary of what was compacted.",
 	Parameters: map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"range_start": map[string]any{
 				"type":        "integer",
-				"description": "Start index of the message range to compact (inclusive, refers to [N] prefix)",
+				"description": "Start of message range (inclusive, refers to [N] index)",
 			},
 			"range_end": map[string]any{
 				"type":        "integer",
-				"description": "End index of the message range to compact (inclusive, refers to [N] prefix)",
+				"description": "End of message range (inclusive, refers to [N] index)",
 			},
 			"summary": map[string]any{
 				"type":        "string",
-				"description": "Optional one-line summary of what this range contains",
+				"description": "Summary of what the compacted range contained",
 			},
 		},
 		"required": []any{"range_start", "range_end"},
