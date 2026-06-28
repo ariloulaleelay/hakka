@@ -238,6 +238,16 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 			Output:    e.Reply,
 			Done:      true,
 		})
+	case event.SessionRenamed:
+		return writeFrame(w, FrameResponse{
+			SessionID: e.SessionID,
+			Event:     "session_renamed",
+			Data: map[string]any{
+				"session_id": e.SessionID,
+				"old_name":   e.OldName,
+				"name":       e.NewName,
+			},
+		})
 	}
 	return true
 }

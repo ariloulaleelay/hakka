@@ -82,6 +82,17 @@ type TurnFinished struct {
 
 func (TurnFinished) engineEvent() {}
 
+// SessionRenamed is emitted when a session's name is changed (auto-rename,
+// tool rename, or explicit /session rename). The event contains both old
+// and new names so observers (gateways, UI) can update their display.
+type SessionRenamed struct {
+	SessionID string
+	OldName   string
+	NewName   string
+}
+
+func (SessionRenamed) engineEvent() {}
+
 // ---------------------------------------------------------------------------
 // Client communication — allows tools to send requests to the client
 // (e.g. Neovim) and receive responses over the same connection.

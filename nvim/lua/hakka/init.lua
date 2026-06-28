@@ -5,6 +5,7 @@ local ui = require("hakka.ui")
 local M = {}
 
 local session_id = nil
+local session_name = nil
 local pending = false
 local _cancelling = false
 
@@ -177,12 +178,14 @@ local function handle_command_result(frame)
   if cmd == "session_create" or cmd == "start" then
     if data.session then
       session_id = data.session.id
+      session_name = data.session.name
       ui.set_session_id(session_id)
       ui.clear()
     end
   elseif cmd == "session_switch" then
     if data.session then
       session_id = data.session.id
+      session_name = data.session.name
       ui.set_session_id(session_id)
     end
     -- Populate the UI with session history
@@ -198,6 +201,7 @@ local function handle_command_result(frame)
   elseif cmd == "session_delete" then
     if data.active_cleared then
       session_id = nil
+      session_name = nil
       ui.set_session_id(nil)
       ui.clear()
     end
@@ -220,11 +224,13 @@ local function handle_command_result(frame)
     end
   elseif cmd == "session_rename" then
     if data.session then
+      session_name = data.session.name
       ui.set_session_id(data.session.id)
       ui.append_assistant("Session renamed to: " .. (data.session.name or ""))
     end
   elseif cmd == "session_autorename" then
     if data.session and data.session.name then
+      session_name = data.session.name
       ui.set_session_id(data.session.id)
       ui.append_assistant("Session renamed to: " .. data.session.name)
     end
@@ -369,6 +375,7 @@ local function send(text)
     local target = trimmed:match("^/session%s+delete%s*(.*)$")
     if target == session_id or target == "" or target == "this" then
       session_id = nil
+      session_name = nil
       ui.set_session_id(nil)
     end
   end
@@ -393,6 +400,17 @@ local function send(text)
         ui.load_history(frame.data.messages)
       end
     end
+
+    -- Handle session_renamed events (from auto-rename or session_rename tool)
+    if frame.event == "session_renamed" and frame.data then
+      session_id = frame.data.session_id or session_id
+      session_name = frame.data.name
+      ui.set_session_id(session_id)
+      -- Update window title to reflect new name
+      ui.set_session_id(session_id)
+      return
+    end
+
     if frame.session_id and frame.session_id ~= "" then
       session_id = frame.session_id
       ui.set_session_id(session_id)
@@ -509,6 +527,7 @@ end
 
 function M.reset()
   session_id = nil
+  session_name = nil
   ui.set_session_id(nil)
   ui.set_model(nil)
   vim.notify("hakka: session reset", vim.log.levels.INFO)

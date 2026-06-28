@@ -196,7 +196,16 @@ func (conv *Conversation) runTurnWithStep(ctx context.Context, session SessionVi
 					"session", session.SessionID(), "error", saveErr)
 				err = fmt.Errorf("save session: %w", saveErr)
 			} else {
+				oldName := session.SessionName()
 				conv.autoRenameIfNeeded(ctx, session)
+				newName := session.SessionName()
+				if newName != "" && newName != oldName {
+					eventCh <- event.SessionRenamed{
+						SessionID: session.SessionID(),
+						OldName:   oldName,
+						NewName:   newName,
+					}
+				}
 			}
 		}
 
@@ -258,8 +267,6 @@ func (e *errMsg) Error() string { return e.msg }
 func BuildContext(session SessionHistory) []Message {
 	history := session.History()
 	if cwdMsg := session.CWDMessage(); cwdMsg != nil {
-		// Insert CWD message right after the system prompt (if any),
-		// or at the beginning.
 		insertAt := 0
 		if len(history) > 0 && history[0].Role == RoleSystem {
 			insertAt = 1
@@ -323,7 +330,6 @@ func (conv *Conversation) autoRenameIfNeeded(ctx context.Context, session Sessio
 		return // already named
 	}
 
-	// Count user messages (excluding system and tool messages).
 	userCount := 0
 	for _, m := range session.AllMessages() {
 		if m.Role == RoleUser {

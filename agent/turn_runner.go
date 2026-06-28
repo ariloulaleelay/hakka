@@ -2,9 +2,13 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
+
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // stepFunc abstracts how the LLM response is obtained. It is the single
@@ -110,7 +114,15 @@ func (r *turnRunner) run(
 		}
 
 		logCompactifySkipped(r.logger, session.SessionID(), i, needCompactify, resp.toolCalls)
+
+		// Capture the old session name before tool execution, so we can
+		// detect if a tool (e.g. session_rename) changes it.
+		oldName := session.SessionName()
 		r.toolExec.ExecuteToolCalls(ctx, session, resp.toolCalls, events, hooks)
+
+		// Emit SessionRenamed event if the LLM called session_rename on
+		// the current session (the tool handler persists the rename directly).
+		emitSessionRenamedIfNeeded(events, session, oldName, resp.toolCalls)
 
 		if saveErr := saveFn(ctx, session); saveErr != nil {
 			r.logger.Error("failed to save session mid-turn",
@@ -120,6 +132,35 @@ func (r *turnRunner) run(
 	}
 
 	return "", ErrMaxIterations
+}
+
+// emitSessionRenamedIfNeeded checks whether any tool call was a
+// session_rename targeting the current session, and if so emits a
+// SessionRenamed event via the events channel.
+func emitSessionRenamedIfNeeded(events eventSender, session SessionView, oldName string, calls []ToolCall) {
+	for _, call := range calls {
+		if call.Name == "session_rename" {
+			var args struct {
+				SessionID string `json:"session_id"`
+				Name      string `json:"name"`
+			}
+			if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+				continue
+			}
+			if args.Name == "" {
+				continue
+			}
+			// Check if the renamed session is the current one.
+			// The tool accepts prefixes, so check both exact match and prefix.
+			if args.SessionID == session.SessionID() || strings.HasPrefix(session.SessionID(), args.SessionID) {
+				events <- event.SessionRenamed{
+					SessionID: session.SessionID(),
+					OldName:   oldName,
+					NewName:   args.Name,
+				}
+			}
+		}
+	}
 }
 
 // defaultStep creates a non-streaming step function that uses
@@ -171,8 +212,6 @@ func (r *turnRunner) runOneIteration(
 
 	resp, err := step(ctx, msgs, turnSchemas, events)
 	if err != nil {
-		// Step failed — run() will save the session via saveFn before
-		// propagating. We just fire the error hook and return here.
 		return nil, needCompactify, notifyError(session.SessionID(), err, hooks, r.logger)
 	}
 
@@ -188,9 +227,6 @@ func (r *turnRunner) runOneIteration(
 
 	recordLLMResponse(session, resp, hooks, events)
 
-	// If the LLM only called context_compactify (no real tool calls),
-	// signal the caller to loop again so the newly-compacted context
-	// takes effect immediately.
 	if len(resp.toolCalls) == 1 && resp.toolCalls[0].Name == ContextCompactifyToolName {
 		return nil, needCompactify, nil
 	}
