@@ -1,3 +1,5 @@
+---
+---
 # Hakka — LLM Agent Core Framework
 
 ## Project Description
@@ -76,6 +78,7 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | `list_dir` | List directory entries (dirs as `name/`, files as `name\t<size>`) |
 | `shell` | Execute `sh -c` commands; short output inlined, large output saved to tempfiles |
 | `http_get` | HTTP GET with headers, returns status, headers, and body. HTML content is automatically converted to Markdown for easier LLM reading. |
+| `feedback` | Submit anonymous feedback (feature request or bug report) with a unique anonymous ID |
 | `random` | Generate a random integer between min_value and max_value (inclusive). |
 | `search` | ripgrep recursive search with file:line:col output |
 | `vim_run_command` | Execute Lua in the user's Neovim instance (requires Neovim client) |
@@ -95,6 +98,11 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | `session_delete` | Delete a session by ID or unique prefix |
 | `session_create` | Create a new empty session |
 | `context_compactify` | Compact message ranges to free context space (meta-tool; only appears when context exceeds `CompactSoftLimit`) |
+| `list_tools` | List all tools with descriptions; optionally filter by tag |
+| `enable_tool` | Enable a tool by name for the current session |
+| `show_tool` | Show detailed info about a specific tool (name, description, parameters, tags) |
+
+Tools tagged `"tool"` (`list_tools`, `enable_tool`, `show_tool`) are **always available** to the LLM -- they are included in every session's schema and bypass the session's enabled-tools check. This lets the LLM discover, inspect, and enable other tools at runtime without any prior configuration.
 
 Session tools are scoped to the per-gateway namespace via Go context (see `agent/event/event.go` — `ContextWithNamespace` / `NamespaceFromContext`). A TCP client can only see `"tcp"` sessions; a Telegram chat only sees its own `"tg:<chat_id>"` sessions.
 
@@ -159,3 +167,5 @@ Session tools are scoped to the per-gateway namespace via Go context (see `agent
 - **Thread safety**: `Session.Messages` protected by `sync.Mutex`; `Session.State` accessed only through the session; hooks serialised under a mutex in Conversation
 - **Logging**: `slog.Logger` throughout, passed via `EngineConfig`
 - **Configuration**: JSON model config with `${env: VAR_NAME}` placeholder substitution for credentials
+
+

@@ -360,14 +360,16 @@ end
 
 local util = require("hakka.util")
 
-function M.append_tool_event(name, status, snippet)
+--- Append a tool event to the buffer.
+--- @param name string Tool name
+--- @param status string "start", "ok", or "err"
+--- @param snippet string Human-readable exec snippet (e.g. 'read_file("/tmp/foo.txt")')
+--- @param data table|nil Optional data from server, may contain "result" with tool output
+function M.append_tool_event(name, status, snippet, data)
   if not state.buf then return end
   vim.api.nvim_buf_set_option(state.buf, "modifiable", true)
 
   -- Compute dynamic max length for the snippet.
-  -- The line format is: `name(snippet)`
-  -- Overhead chars: ` ( ) ` = 4 chars (backtick, parens, backtick)
-  -- Available width caps at 100 cols or the buffer window width.
   local win_width = vim.o.columns
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     win_width = vim.api.nvim_win_get_width(state.win)
@@ -375,7 +377,7 @@ function M.append_tool_event(name, status, snippet)
   local max_line = math.min(100, win_width)
   local snippet_max = math.max(10, max_line - #name - 4)
 
-  -- Escape then shorten, so truncation accounts for actual display length.
+  -- Escape then shorten.
   local safe = util.shorten_snippet(util.escape_snippet(snippet), snippet_max)
 
   if status == "start" then
@@ -385,15 +387,23 @@ function M.append_tool_event(name, status, snippet)
       ensure_new_line()
     end
   else
-    -- On completion, find the matching pending line and update its snippet
-    -- (the snippet may have been truncated differently if the window was
-    -- resized between "start" and "ok"/"err" events).
+    -- On completion, find the matching pending line and update its snippet.
     local all = lines(state.buf)
     local line_prefix = "`" .. name .. "("
     local found = false
+    local result_text = ""
+    if data and data.result then
+      result_text = tostring(data.result)
+    end
+
     for i = #all, 1, -1 do
       if all[i]:sub(1, #line_prefix) == line_prefix then
-        all[i] = "`" .. name .. "(" .. safe .. ")`"
+        -- Append result to the tool line if available
+        if result_text ~= "" and result_text ~= "null" then
+          all[i] = "`" .. name .. "(" .. safe .. ")` → " .. result_text
+        else
+          all[i] = "`" .. name .. "(" .. safe .. ")`"
+        end
         found = true
         break
       end
@@ -402,9 +412,13 @@ function M.append_tool_event(name, status, snippet)
     if found then
       vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, all)
     else
-      -- Fallback: append a new completed line (shouldn't normally happen)
+      -- Fallback: append a new completed line
       ensure_new_line()
-      append(state.buf, "`" .. name .. "(" .. safe .. ")`")
+      if result_text ~= "" and result_text ~= "null" then
+        append(state.buf, "`" .. name .. "(" .. safe .. ")` → " .. result_text)
+      else
+        append(state.buf, "`" .. name .. "(" .. safe .. ")`")
+      end
       if streaming then
         ensure_new_line()
       end
@@ -501,21 +515,18 @@ function M.load_history(messages)
   vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
 
   -- Add a fresh user prompt after history.
-  -- If the last message was a user message, its # Me header already serves
-  -- as the prompt header — just add a blank line separator.
   if last_role == "user" then
     table.insert(lines, "")
     vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
     state.prompt_start = #lines
   else
-    state.prompt_start = #lines + 2  -- blank + "# Me"
+    state.prompt_start = #lines + 2
     table.insert(lines, "")
     table.insert(lines, "# Me")
     table.insert(lines, "")
     vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
   end
 
-  -- Scroll to the prompt
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     vim.api.nvim_win_set_cursor(state.win, { #lines, 0 })
   end

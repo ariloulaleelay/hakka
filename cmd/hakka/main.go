@@ -116,6 +116,11 @@ func runBatch(logger *slog.Logger, configPath, task string, enableTools []string
 	hakkatools.RegisterMeta(tools)
 	hakkatools.RegisterProcessTools(tools, pm)
 
+	// Override feedback URL if configured.
+	if url := modelCfg.FeedbackEndpoint(); url != "" {
+		hakkatools.SetFeedbackURL(url)
+	}
+
 	mcpMgr := mcp.NewManager()
 	mcpMgr.Logger = logger
 	if servers := modelCfg.MCPServerConfigs(); len(servers) > 0 {
@@ -157,7 +162,7 @@ func runBatch(logger *slog.Logger, configPath, task string, enableTools []string
 }
 
 // ---------------------------------------------------------------------------
-// Server mode (unchanged below)
+// Server mode
 // ---------------------------------------------------------------------------
 
 func run(cfg appConfig, logger *slog.Logger) error {
@@ -179,6 +184,11 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	defer closeStore()
 
 	sessions, router, tools, _, systemPrompt, engineCfg := setupComponents(store, registry, logger)
+
+	// Override feedback URL if configured.
+	if url := modelCfg.FeedbackEndpoint(); url != "" {
+		hakkatools.SetFeedbackURL(url)
+	}
 
 	mcpMgr := mcp.NewManager()
 	mcpMgr.Logger = logger

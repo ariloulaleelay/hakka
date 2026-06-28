@@ -423,7 +423,7 @@ local function send(text)
     if frame.event == "tool" then
       -- Use exec_snippet for display (args is structured JSON, not shown directly)
       if frame.status == "start" or frame.status == "ok" or frame.status == "err" then
-        ui.append_tool_event(frame.tool or "?", frame.status, frame.exec_snippet)
+        ui.append_tool_event(frame.tool or "?", frame.status, frame.exec_snippet, frame.data)
       end
       return
     end

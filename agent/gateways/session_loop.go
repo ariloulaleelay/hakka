@@ -199,6 +199,9 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 			Status:      status,
 			Args:        args,
 			ExecSnippet: e.ExecSnippet,
+			Data: map[string]any{
+				"result": e.Result.ForLLM(),
+			},
 		})
 	case event.UsageReported:
 		return writeFrame(w, FrameResponse{

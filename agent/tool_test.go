@@ -182,15 +182,21 @@ func TestExecSnippet_CalledWithArgs(t *testing.T) {
 //
 // Tool authorisation model:
 //
-//   - When a session has NO explicit tool configuration (EnabledTools is
-//     nil or empty), NO tools are available. The user must explicitly
-//     enable tools via /tool enable or /tool disable commands.
+//   - Tools tagged "tool" (e.g. list_tools, enable_tool, show_tool) are
+//     ALWAYS available to the LLM — they let it discover and enable other
+//     tools at runtime. They bypass the session's EnabledTools check.
+//
+//   - All other tools follow the session's opt-in model: when a session
+//     has NO explicit tool configuration (EnabledTools is nil/empty), NO
+//     non-"tool" tools are returned. The user must explicitly enable tools
+//     via /tool enable or /tool disable commands.
 //
 //   - Once at least one tool has been explicitly enabled or disabled
 //     (EnabledTools becomes non-nil), the map is consulted: tools with
 //     a true value are enabled, tools with a false value are disabled,
 //     and tools not mentioned are disabled (opt-in model — you must
-//     explicitly enable tools you want).
+//     explicitly enable tools you want). "tool"-tagged tools are still
+//     always included regardless.
 // ---------------------------------------------------------------------------
 
 func TestToolWithTags(t *testing.T) {
@@ -251,6 +257,123 @@ func TestSchemasForSession_EmptyEnabledGetsNoTools(t *testing.T) {
 	schemas := r.SchemasForSession(session)
 	if len(schemas) != 0 {
 		t.Fatalf("expected 0 schemas for session with no explicit config, got %d: %+v", len(schemas), schemas)
+	}
+}
+
+func TestSchemasForSession_ToolTaggedAlwaysAvailable(t *testing.T) {
+	r := NewToolRegistry()
+	// A tool with the "tool" tag — should always be available
+	r.Register(Tool{
+		Schema: ToolSchema{Name: "list_tools"},
+		Tags:   []string{"tool", "all"},
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "ok", nil
+		},
+	})
+	// A normal tool without the "tool" tag
+	r.Register(Tool{
+		Schema: ToolSchema{Name: "echo"},
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "ok", nil
+		},
+	})
+
+	session := NewSession("testns", "sys")
+	// No tools enabled — only "tool"-tagged tools should appear
+	schemas := r.SchemasForSession(session)
+	if len(schemas) != 1 {
+		t.Fatalf("expected 1 schema (the always-enabled 'tool'-tagged tool), got %d: %+v", len(schemas), schemas)
+	}
+	if schemas[0].Name != "list_tools" {
+		t.Fatalf("expected schema 'list_tools', got %q", schemas[0].Name)
+	}
+}
+
+func TestExecuteForSession_ToolTaggedAvailableByDefault(t *testing.T) {
+	r := NewToolRegistry()
+	// A tool tagged "tool" — available by default
+	r.Register(Tool{
+		Schema: ToolSchema{Name: "list_tools"},
+		Tags:   []string{"tool", "all"},
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "tool-list-result", nil
+		},
+	})
+	// A normal tool — must be explicitly enabled
+	r.Register(Tool{
+		Schema: ToolSchema{Name: "echo"},
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "hello", nil
+		},
+	})
+
+	session := NewSession("testns", "sys")
+	// Do NOT enable any tools — "tool"-tagged should still work by default
+
+	result := r.ExecuteForSession(context.Background(), session, "list_tools", `{}`)
+	if result.IsError() {
+		t.Fatalf("expected success for default-available tool, got error: %v", result.Err)
+	}
+	if result.Output != "tool-list-result" {
+		t.Fatalf("expected 'tool-list-result', got %q", result.Output)
+	}
+
+	// Normal tool should fail
+	result = r.ExecuteForSession(context.Background(), session, "echo", `{}`)
+	if !result.IsError() {
+		t.Fatalf("expected error for disabled tool, got success: %+v", result)
+	}
+	if !strings.Contains(result.Err.Error(), "disabled") {
+		t.Fatalf("expected 'disabled' error, got %q", result.Err)
+	}
+}
+
+func TestExecuteForSession_ToolTaggedCanBeExplicitlyDisabled(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(Tool{
+		Schema: ToolSchema{Name: "list_tools"},
+		Tags:   []string{"tool", "all"},
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "tool-list-result", nil
+		},
+	})
+
+	session := NewSession("testns", "sys")
+	session.DisableTool("list_tools") // explicitly disable
+
+	// "tool"-tagged tool should now be rejected
+	result := r.ExecuteForSession(context.Background(), session, "list_tools", `{}`)
+	if !result.IsError() {
+		t.Fatalf("expected error for explicitly disabled tool, got success: %+v", result)
+	}
+	if !strings.Contains(result.Err.Error(), "disabled") {
+		t.Fatalf("expected 'disabled' error, got %q", result.Err)
+	}
+}
+
+func TestSchemasForSession_ToolTaggedExcludedWhenExplicitlyDisabled(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(Tool{
+		Schema: ToolSchema{Name: "list_tools"},
+		Tags:   []string{"tool", "all"},
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "ok", nil
+		},
+	})
+	r.Register(Tool{
+		Schema: ToolSchema{Name: "echo"},
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "ok", nil
+		},
+	})
+
+	session := NewSession("testns", "sys")
+	session.DisableTool("list_tools") // explicitly disable
+
+	schemas := r.SchemasForSession(session)
+	// list_tools should NOT appear (explicitly disabled). echo should not appear either (not enabled).
+	if len(schemas) != 0 {
+		t.Fatalf("expected 0 schemas (only tool was explicitly disabled), got %d: %+v", len(schemas), schemas)
 	}
 }
 

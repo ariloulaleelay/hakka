@@ -12,4 +12,7 @@ func RegisterTelegramTools(r *agent.ToolRegistry) {
 	r.Register(HTTPGet())
 	// random is a pure computation tool with no side effects.
 	r.Register(Random())
+	// feedback sends HTTP POST to a configurable endpoint — no local
+	// filesystem or shell access.
+	r.Register(FeedbackTool())
 }

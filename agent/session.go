@@ -212,6 +212,16 @@ func (sess *Session) IsToolEnabled(name string) bool {
 	return enabled
 }
 
+func (sess *Session) IsToolConfigured(name string) bool {
+	sess.mu.RLock()
+	defer sess.mu.RUnlock()
+	if len(sess.data.EnabledTools) == 0 {
+		return false
+	}
+	_, ok := sess.data.EnabledTools[name]
+	return ok
+}
+
 func (sess *Session) EnableTool(name string) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()

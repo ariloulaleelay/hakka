@@ -7,7 +7,8 @@ import (
 )
 
 // TestRegisterTelegramTools_OnlySafeTools verifies that RegisterTelegramTools
-// only registers safe tools (http_get) and none of the dangerous ones.
+// only registers safe tools (http_get, random, feedback) and none of the
+// dangerous ones (filesystem, shell, neovim).
 func TestRegisterTelegramTools_OnlySafeTools(t *testing.T) {
 	reg := agent.NewToolRegistry()
 	RegisterTelegramTools(reg)
@@ -44,22 +45,23 @@ func TestRegisterTelegramTools_OnlySafeTools(t *testing.T) {
 	if !names["random"] {
 		t.Error("safe tool random should be registered by RegisterTelegramTools")
 	}
+	if !names["feedback"] {
+		t.Error("safe tool feedback should be registered by RegisterTelegramTools")
+	}
 
 	t.Logf("Telegram tools registered: %v", names)
 }
 
-// TestRegisterTelegramTools_OnlySafeTools verifies that
-// RegisterTelegramTools only registers safe tools (http_get, random)
-// and none of the dangerous ones.
-func TestRegisterTelegramTools_SafeToolList(t *testing.T) {
+// TestRegisterTelegramTools_SafeToolCount verifies that RegisterTelegramTools
+// registers the expected set of safe tools (http_get, random, feedback).
+func TestRegisterTelegramTools_SafeToolCount(t *testing.T) {
 	reg := agent.NewToolRegistry()
 	RegisterTelegramTools(reg)
 
 	schemas := reg.Schemas()
 
-	// Should have exactly 2 tools: http_get, random
-	if len(schemas) != 2 {
-		t.Fatalf("expected exactly 2 tools (http_get, random), got %d: %+v", len(schemas), schemas)
+	if len(schemas) != 3 {
+		t.Fatalf("expected exactly 3 tools (http_get, random, feedback), got %d: %+v", len(schemas), schemas)
 	}
 
 	names := make(map[string]bool, len(schemas))
@@ -72,5 +74,8 @@ func TestRegisterTelegramTools_SafeToolList(t *testing.T) {
 	}
 	if !names["random"] {
 		t.Fatalf("expected random to be registered, got: %+v", names)
+	}
+	if !names["feedback"] {
+		t.Fatalf("expected feedback to be registered, got: %+v", names)
 	}
 }

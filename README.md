@@ -152,7 +152,7 @@ Tool tags available for `--run-enable-tool`:
 | `filesystem` | `read_file`, `list_dir`, `write_file`, `edit_file`, `search` |
 | `network` | `http_get` |
 | `exec` | `shell` |
-| `utility` | `random`, `echo`, session tools |
+| `utility` | `random`, `echo`, `feedback`, session tools |
 | `vim` | `vim_list_buffers`, `vim_read_buffer` |
 | `session` | All session management tools |
 | `all` | Every tool |

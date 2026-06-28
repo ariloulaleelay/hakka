@@ -32,6 +32,7 @@ type SessionHistory interface {
 // SessionToolAuth authorises tool usage for this session.
 type SessionToolAuth interface {
 	IsToolEnabled(name string) bool
+	IsToolConfigured(name string) bool
 }
 
 // SessionModelBinding stores and retrieves the session's model binding.

@@ -72,9 +72,16 @@ func (reg *ToolRegistry) Schemas() []ToolSchema {
 	return out
 }
 
-// SchemasForSession returns the tool schemas that are enabled for the given
-// session. When the session has no explicit tool configuration (EnabledTools
-// is nil/empty), NO tools are returned — all tools disabled by default.
+// SchemasForSession returns the tool schemas available for the given
+// session.
+//
+// Tools tagged "tool" (e.g. list_tools, enable_tool, show_tool) are
+// available by default — they let the LLM discover and enable other tools
+// at runtime. However, if the user explicitly disables such a tool via
+// session.DisableTool(), it is excluded.
+//
+// All other tools follow the session's opt-in model: only tools
+// explicitly enabled via EnableTool() are included.
 //
 // Depends only on SessionToolAuth — the narrowest interface needed.
 func (reg *ToolRegistry) SchemasForSession(session SessionToolAuth) []ToolSchema {
@@ -87,11 +94,30 @@ func (reg *ToolRegistry) SchemasForSession(session SessionToolAuth) []ToolSchema
 
 	out := make([]ToolSchema, 0)
 	for _, t := range reg.tools {
-		if session.IsToolEnabled(t.Schema.Name) {
+		if reg.isAlwaysEnabled(t) {
+			// Include "tool"-tagged tools by default, unless explicitly disabled.
+			if session.IsToolConfigured(t.Schema.Name) && !session.IsToolEnabled(t.Schema.Name) {
+				continue // explicitly disabled
+			}
+			out = append(out, t.Schema)
+		} else if session.IsToolEnabled(t.Schema.Name) {
 			out = append(out, t.Schema)
 		}
 	}
 	return out
+}
+
+// isAlwaysEnabled checks whether a tool is always available by default
+// (no explicit enable needed). Tools with the "tool" tag (meta-tools for
+// tool management) are available by default, but can still be explicitly
+// disabled.
+func (reg *ToolRegistry) isAlwaysEnabled(t Tool) bool {
+	for _, tag := range t.Tags {
+		if tag == "tool" {
+			return true
+		}
+	}
+	return false
 }
 
 // SchemasByTags returns schemas for tools that match ANY of the given tags.
@@ -200,14 +226,29 @@ func (reg *ToolRegistry) Execute(ctx context.Context, name, rawArgs string) even
 type toolSession interface {
 	SessionID() string
 	IsToolEnabled(name string) bool
+	IsToolConfigured(name string) bool
 }
 
 // ExecuteForSession runs the named tool, but first checks that the tool is
 // enabled for the given session. If disabled, returns a typed error
 // result without invoking the handler. This provides defense-in-depth
 // even if the LLM somehow calls a disabled tool (e.g. from context window).
+//
+// Tools tagged "tool" (e.g. list_tools, enable_tool, show_tool) are
+// executable by default, unless the user has explicitly disabled them.
 func (reg *ToolRegistry) ExecuteForSession(ctx context.Context, session toolSession, name, rawArgs string) event.ToolResult {
 	if session != nil && !session.IsToolEnabled(name) {
+		// Before rejecting, check if this is a "tool"-tagged tool that is
+		// simply not configured yet (available by default).
+		if t, ok := reg.Get(name); ok && reg.isAlwaysEnabled(t) {
+			if !session.IsToolConfigured(name) {
+				// Not configured → available by default.
+				return reg.Execute(ctx, name, rawArgs)
+			}
+			// Configured but disabled → reject.
+			reg.log().Warn("execute: tool explicitly disabled for session", "tool", name, "session", session.SessionID())
+			return event.ErrorResult(errors.New("tool '" + name + "' is disabled for this session"))
+		}
 		reg.log().Warn("execute: tool disabled for session", "tool", name, "session", session.SessionID())
 		return event.ErrorResult(errors.New("tool '" + name + "' is disabled for this session"))
 	}

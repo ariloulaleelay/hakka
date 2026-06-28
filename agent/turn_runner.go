@@ -83,6 +83,12 @@ func newTurnRunner(tools *ToolRegistry, toolExec *toolExecutor, config EngineCon
 // iterations it returns ErrMaxIterations. saveFn is called after each
 // iteration round to persist the session — it is provided by Conversation
 // so turnRunner does not need to know about session persistence details.
+//
+// Schemas are refreshed at the start of each iteration to catch mid-turn
+// changes: a user disabling a tool from another connection, or the LLM
+// calling enable_tool/disable_tool during the same turn. This prevents
+// stale schemas from causing false "tool is disabled" errors or missing
+// newly-enabled tools.
 func (r *turnRunner) run(
 	ctx context.Context,
 	session SessionView,
@@ -90,11 +96,11 @@ func (r *turnRunner) run(
 	step stepFunc,
 	saveFn func(context.Context, SessionView) error,
 ) (string, error) {
-	schemas := r.tools.SchemasForSession(session)
 	var turnMu sync.Mutex
 	hooks := r.toolExec.SerialisedHooks(&turnMu)
 
 	for i := 0; i < r.config.MaxToolIterations; i++ {
+		schemas := r.tools.SchemasForSession(session) // fresh each iteration
 		resp, needCompactify, err := r.runOneIteration(ctx, session, schemas, events, step, hooks, i)
 		if err != nil {
 			// Persist session state before propagating — runTurnWithStep

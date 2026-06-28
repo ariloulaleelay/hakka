@@ -27,9 +27,10 @@ type ModelConfig struct {
 
 // File is the on-disk shape of the configuration.
 type File struct {
-	Default    string                          `json:"default"`
-	Models     map[string]ModelConfig          `json:"models"`
-	MCPServers map[string]MCPServerConfig      `json:"mcp_servers,omitempty"`
+	Default     string                          `json:"default"`
+	Models      map[string]ModelConfig          `json:"models"`
+	MCPServers  map[string]MCPServerConfig      `json:"mcp_servers,omitempty"`
+	FeedbackURL string                          `json:"feedback_url,omitempty"`
 }
 
 // MCPServerConfig describes a single MCP server endpoint.
@@ -88,6 +89,15 @@ func Load(path string) (*File, error) {
 			return nil, fmt.Errorf("config: mcp_server %q: %w", name, e.err)
 		}
 		cfgFile.MCPServers[name] = mcpCfg
+	}
+
+	// Expand env vars in feedback_url if set.
+	if cfgFile.FeedbackURL != "" {
+		var e envExpander
+		e.String(&cfgFile.FeedbackURL, "feedback_url")
+		if e.err != nil {
+			return nil, fmt.Errorf("config: %w", e.err)
+		}
 	}
 
 	return &cfgFile, nil
@@ -190,6 +200,11 @@ func (t *headerTransport) RoundTrip(request *http.Request) (*http.Response, erro
 		request.Header.Set(key, value)
 	}
 	return t.base.RoundTrip(request)
+}
+
+// FeedbackEndpoint returns the configured feedback URL, or empty string if not set.
+func (f *File) FeedbackEndpoint() string {
+	return f.FeedbackURL
 }
 
 // MCPServerConfigs returns a map of MCP server name to server config.

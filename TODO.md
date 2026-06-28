@@ -1,3 +1,4 @@
+---
 This file is for humans only, agent should not modify it!
 
 # Epics
@@ -36,7 +37,7 @@ This file is for humans only, agent should not modify it!
   - [ ] Add dangerous tools confirmations
   - [ ] Add tools confirmation
   - [x] remove mcp prefix from tools
-  - [ ] Add tool to discover and enable tools
+  - [x] Add tool to discover and enable tools
 - [ ] Add command to control system prompt (add, remove, show, change)
 - [ ] Improve sessions
   - [x] Session autorename
@@ -97,3 +98,4 @@ This file is for humans only, agent should not modify it!
 # Architecture
 - [ ] Clean Architecture fix: route vim_request through the engine event system (more architectural, but larger change)
 - [x] Refactor environment substitution to all text fields in config (now it is some hacks)
+
