@@ -252,17 +252,19 @@ func TestSchemasForSession_EmptyEnabledGetsNoTools(t *testing.T) {
 	})
 
 	session := NewSession("testns", "sys")
-	// New session has empty EnabledTools → no tools returned (opt-in model)
+	// New session pre-enables management tools (show_tool, allow_tool, deny_tool)
+	// but the registry only has "echo" which is not pre-enabled.
+	// Since echo is allowed but not enabled, SchemasForSession returns 0.
 
 	schemas := r.SchemasForSession(session)
 	if len(schemas) != 0 {
-		t.Fatalf("expected 0 schemas for session with no explicit config, got %d: %+v", len(schemas), schemas)
+		t.Fatalf("expected 0 schemas for session with no matching pre-enabled tools, got %d: %+v", len(schemas), schemas)
 	}
 }
 
-func TestSchemasForSession_ToolTaggedAlwaysAvailable(t *testing.T) {
+func TestSchemasForSession_ToolTaggedToolsMustBeEnabled(t *testing.T) {
 	r := NewToolRegistry()
-	// A tool with the "tool" tag — should always be available
+	// A tool with the "tool" tag — no longer special, must be enabled
 	r.Register(Tool{
 		Schema: ToolSchema{Name: "list_tools"},
 		Tags:   []string{"tool", "all"},
@@ -270,28 +272,30 @@ func TestSchemasForSession_ToolTaggedAlwaysAvailable(t *testing.T) {
 			return "ok", nil
 		},
 	})
-	// A normal tool without the "tool" tag
-	r.Register(Tool{
-		Schema: ToolSchema{Name: "echo"},
-		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
-			return "ok", nil
-		},
-	})
+	// Management tools (show_tool, allow_tool, deny_tool) are pre-enabled in
+	// the session, but "list_tools" is not a management tool.
 
 	session := NewSession("testns", "sys")
-	// No tools enabled — only "tool"-tagged tools should appear
+	// list_tools is allowed but not enabled → not in API tools section
 	schemas := r.SchemasForSession(session)
+	if len(schemas) != 0 {
+		t.Fatalf("expected 0 schemas (list_tools must be explicitly enabled), got %d: %+v", len(schemas), schemas)
+	}
+
+	// When explicitly enabled, it should appear
+	session.EnableTool("list_tools")
+	schemas = r.SchemasForSession(session)
 	if len(schemas) != 1 {
-		t.Fatalf("expected 1 schema (the always-enabled 'tool'-tagged tool), got %d: %+v", len(schemas), schemas)
+		t.Fatalf("expected 1 schema after enabling list_tools, got %d: %+v", len(schemas), schemas)
 	}
 	if schemas[0].Name != "list_tools" {
 		t.Fatalf("expected schema 'list_tools', got %q", schemas[0].Name)
 	}
 }
 
-func TestExecuteForSession_ToolTaggedAvailableByDefault(t *testing.T) {
+func TestExecuteForSession_ToolTaggedFollowsAllowDeny(t *testing.T) {
 	r := NewToolRegistry()
-	// A tool tagged "tool" — available by default
+	// A tool tagged "tool" — follows the same allow/deny rules as any tool
 	r.Register(Tool{
 		Schema: ToolSchema{Name: "list_tools"},
 		Tags:   []string{"tool", "all"},
@@ -299,7 +303,7 @@ func TestExecuteForSession_ToolTaggedAvailableByDefault(t *testing.T) {
 			return "tool-list-result", nil
 		},
 	})
-	// A normal tool — must be explicitly enabled
+	// A normal tool
 	r.Register(Tool{
 		Schema: ToolSchema{Name: "echo"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
@@ -308,72 +312,35 @@ func TestExecuteForSession_ToolTaggedAvailableByDefault(t *testing.T) {
 	})
 
 	session := NewSession("testns", "sys")
-	// Do NOT enable any tools — "tool"-tagged should still work by default
+	// Both are allowed (not denied) but disabled.
+	// Mutual activation: disabled + allowed tools can still execute.
 
+	// list_tools should execute even though disabled (mutual activation)
 	result := r.ExecuteForSession(context.Background(), session, "list_tools", `{}`)
 	if result.IsError() {
-		t.Fatalf("expected success for default-available tool, got error: %v", result.Err)
+		t.Fatalf("expected success for allowed-but-disabled tool (mutual activation), got error: %v", result.Err)
 	}
 	if result.Output != "tool-list-result" {
 		t.Fatalf("expected 'tool-list-result', got %q", result.Output)
 	}
 
-	// Normal tool should fail
+	// Normal tool should also work via mutual activation
 	result = r.ExecuteForSession(context.Background(), session, "echo", `{}`)
+	if result.IsError() {
+		t.Fatalf("expected success for allowed-but-disabled tool (mutual activation), got error: %v", result.Err)
+	}
+	if result.Output != "hello" {
+		t.Fatalf("expected 'hello', got %q", result.Output)
+	}
+
+	// Denied tools should be rejected
+	session.DenyTool("list_tools")
+	result = r.ExecuteForSession(context.Background(), session, "list_tools", `{}`)
 	if !result.IsError() {
-		t.Fatalf("expected error for disabled tool, got success: %+v", result)
+		t.Fatalf("expected error for denied tool, got success: %+v", result)
 	}
-	if !strings.Contains(result.Err.Error(), "disabled") {
-		t.Fatalf("expected 'disabled' error, got %q", result.Err)
-	}
-}
-
-func TestExecuteForSession_ToolTaggedCanBeExplicitlyDisabled(t *testing.T) {
-	r := NewToolRegistry()
-	r.Register(Tool{
-		Schema: ToolSchema{Name: "list_tools"},
-		Tags:   []string{"tool", "all"},
-		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
-			return "tool-list-result", nil
-		},
-	})
-
-	session := NewSession("testns", "sys")
-	session.DisableTool("list_tools") // explicitly disable
-
-	// "tool"-tagged tool should now be rejected
-	result := r.ExecuteForSession(context.Background(), session, "list_tools", `{}`)
-	if !result.IsError() {
-		t.Fatalf("expected error for explicitly disabled tool, got success: %+v", result)
-	}
-	if !strings.Contains(result.Err.Error(), "disabled") {
-		t.Fatalf("expected 'disabled' error, got %q", result.Err)
-	}
-}
-
-func TestSchemasForSession_ToolTaggedExcludedWhenExplicitlyDisabled(t *testing.T) {
-	r := NewToolRegistry()
-	r.Register(Tool{
-		Schema: ToolSchema{Name: "list_tools"},
-		Tags:   []string{"tool", "all"},
-		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
-			return "ok", nil
-		},
-	})
-	r.Register(Tool{
-		Schema: ToolSchema{Name: "echo"},
-		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
-			return "ok", nil
-		},
-	})
-
-	session := NewSession("testns", "sys")
-	session.DisableTool("list_tools") // explicitly disable
-
-	schemas := r.SchemasForSession(session)
-	// list_tools should NOT appear (explicitly disabled). echo should not appear either (not enabled).
-	if len(schemas) != 0 {
-		t.Fatalf("expected 0 schemas (only tool was explicitly disabled), got %d: %+v", len(schemas), schemas)
+	if !strings.Contains(result.Err.Error(), "denied") {
+		t.Fatalf("expected 'denied' error, got %q", result.Err)
 	}
 }
 
@@ -473,7 +440,7 @@ func TestSchemasByTags(t *testing.T) {
 	}
 }
 
-func TestSchemasForSession_RespectsTags(t *testing.T) {
+func TestSchemasForSession_RespectsDeny(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(Tool{
 		Schema: ToolSchema{Name: "read_file"},
@@ -493,15 +460,18 @@ func TestSchemasForSession_RespectsTags(t *testing.T) {
 	session := NewSession("testns", "sys")
 	session.EnableTool("read_file")
 	session.EnableTool("shell")
+	session.DenyTool("shell") // denied → not in schemas
 
-	// All enabled tools should appear regardless of tags
 	schemas := r.SchemasForSession(session)
-	if len(schemas) != 2 {
-		t.Fatalf("expected 2 schemas, got %d: %+v", len(schemas), schemas)
+	if len(schemas) != 1 {
+		t.Fatalf("expected 1 schema (read_file only, shell denied), got %d: %+v", len(schemas), schemas)
+	}
+	if schemas[0].Name != "read_file" {
+		t.Fatalf("expected schema 'read_file', got %q", schemas[0].Name)
 	}
 }
 
-func TestExecute_DisabledToolReturnsError(t *testing.T) {
+func TestExecute_DeniedToolReturnsError(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(Tool{
 		Schema: ToolSchema{Name: "echo"},
@@ -511,14 +481,14 @@ func TestExecute_DisabledToolReturnsError(t *testing.T) {
 	})
 
 	session := NewSession("testns", "sys")
-	session.DisableTool("echo") // explicitly disable
+	session.DenyTool("echo") // explicitly deny
 
 	result := r.ExecuteForSession(context.Background(), session, "echo", `{}`)
 	if !result.IsError() {
-		t.Fatalf("expected error result for disabled tool, got %+v", result)
+		t.Fatalf("expected error result for denied tool, got %+v", result)
 	}
-	if !strings.Contains(result.Err.Error(), "disabled") {
-		t.Fatalf("expected error about tool being disabled, got %q", result.Err)
+	if !strings.Contains(result.Err.Error(), "denied") {
+		t.Fatalf("expected error about tool being denied, got %q", result.Err)
 	}
 }
 
@@ -537,6 +507,28 @@ func TestExecute_EnabledToolSucceeds(t *testing.T) {
 	result := r.ExecuteForSession(context.Background(), session, "echo", `{}`)
 	if result.IsError() {
 		t.Fatalf("expected success, got error: %v", result.Err)
+	}
+	if result.Output != "hello" {
+		t.Fatalf("expected 'hello', got %q", result.Output)
+	}
+}
+
+func TestExecute_DisabledToolMutualActivation(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(Tool{
+		Schema: ToolSchema{Name: "echo"},
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "hello", nil
+		},
+	})
+
+	session := NewSession("testns", "sys")
+	// echo is NOT enabled (disabled by default), but is allowed.
+	// Mutual activation: allowed-but-disabled tools can still execute.
+
+	result := r.ExecuteForSession(context.Background(), session, "echo", `{}`)
+	if result.IsError() {
+		t.Fatalf("expected success for allowed-but-disabled tool (mutual activation), got error: %v", result.Err)
 	}
 	if result.Output != "hello" {
 		t.Fatalf("expected 'hello', got %q", result.Output)

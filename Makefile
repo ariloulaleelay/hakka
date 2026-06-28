@@ -22,6 +22,9 @@ debug-run: build
 run: build
 	$(BIN) --log-level info --config hakka.json $(if $(DB),--db $(DB),)
 
+failsafe-run: build
+	$(BIN) --log-level debug --config hakka.json
+
 lint:
 	go vet ./...
 

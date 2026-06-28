@@ -3,10 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -72,18 +72,12 @@ func (reg *ToolRegistry) Schemas() []ToolSchema {
 	return out
 }
 
-// SchemasForSession returns the tool schemas available for the given
-// session.
+// SchemasForSession returns the tool schemas that should appear in the
+// API "tools" section for the given session. These are tools that are
+// both ALLOWED (not denied) and ENABLED.
 //
-// Tools tagged "tool" (e.g. list_tools, enable_tool, show_tool) are
-// available by default — they let the LLM discover and enable other tools
-// at runtime. However, if the user explicitly disables such a tool via
-// session.DisableTool(), it is excluded.
-//
-// All other tools follow the session's opt-in model: only tools
-// explicitly enabled via EnableTool() are included.
-//
-// Depends only on SessionToolAuth — the narrowest interface needed.
+// Tools that are allowed but disabled are NOT included here — they
+// appear only in the system prompt list (via AllowedSchemas).
 func (reg *ToolRegistry) SchemasForSession(session SessionToolAuth) []ToolSchema {
 	reg.mu.RLock()
 	defer reg.mu.RUnlock()
@@ -94,30 +88,31 @@ func (reg *ToolRegistry) SchemasForSession(session SessionToolAuth) []ToolSchema
 
 	out := make([]ToolSchema, 0)
 	for _, t := range reg.tools {
-		if reg.isAlwaysEnabled(t) {
-			// Include "tool"-tagged tools by default, unless explicitly disabled.
-			if session.IsToolConfigured(t.Schema.Name) && !session.IsToolEnabled(t.Schema.Name) {
-				continue // explicitly disabled
-			}
-			out = append(out, t.Schema)
-		} else if session.IsToolEnabled(t.Schema.Name) {
+		if session.IsToolAllowed(t.Schema.Name) && session.IsToolEnabled(t.Schema.Name) {
 			out = append(out, t.Schema)
 		}
 	}
 	return out
 }
 
-// isAlwaysEnabled checks whether a tool is always available by default
-// (no explicit enable needed). Tools with the "tool" tag (meta-tools for
-// tool management) are available by default, but can still be explicitly
-// disabled.
-func (reg *ToolRegistry) isAlwaysEnabled(t Tool) bool {
-	for _, tag := range t.Tags {
-		if tag == "tool" {
-			return true
+// AllowedSchemas returns all tool schemas that are allowed (not denied)
+// for the given session. This includes both enabled and disabled tools.
+// Used to build the system prompt listing.
+func (reg *ToolRegistry) AllowedSchemas(session SessionToolAuth) []ToolSchema {
+	reg.mu.RLock()
+	defer reg.mu.RUnlock()
+
+	if session == nil {
+		return nil
+	}
+
+	out := make([]ToolSchema, 0)
+	for _, t := range reg.tools {
+		if session.IsToolAllowed(t.Schema.Name) {
+			out = append(out, t.Schema)
 		}
 	}
-	return false
+	return out
 }
 
 // SchemasByTags returns schemas for tools that match ANY of the given tags.
@@ -225,32 +220,108 @@ func (reg *ToolRegistry) Execute(ctx context.Context, name, rawArgs string) even
 // Defined locally (consumer-site interface) to minimise coupling.
 type toolSession interface {
 	SessionID() string
-	IsToolEnabled(name string) bool
-	IsToolConfigured(name string) bool
+	IsToolAllowed(name string) bool
 }
 
 // ExecuteForSession runs the named tool, but first checks that the tool is
-// enabled for the given session. If disabled, returns a typed error
-// result without invoking the handler. This provides defense-in-depth
-// even if the LLM somehow calls a disabled tool (e.g. from context window).
+// allowed (not denied) for the given session. If denied, returns a typed
+// error result without invoking the handler.
 //
-// Tools tagged "tool" (e.g. list_tools, enable_tool, show_tool) are
-// executable by default, unless the user has explicitly disabled them.
+// In the new model (v2), tools that are allowed but disabled can still
+// execute — this is "mutual activation": if the LLM manages to call a
+// disabled tool (e.g. via provider-specific function calling bypass),
+// we honour the call rather than reject it.
 func (reg *ToolRegistry) ExecuteForSession(ctx context.Context, session toolSession, name, rawArgs string) event.ToolResult {
-	if session != nil && !session.IsToolEnabled(name) {
-		// Before rejecting, check if this is a "tool"-tagged tool that is
-		// simply not configured yet (available by default).
-		if t, ok := reg.Get(name); ok && reg.isAlwaysEnabled(t) {
-			if !session.IsToolConfigured(name) {
-				// Not configured → available by default.
-				return reg.Execute(ctx, name, rawArgs)
-			}
-			// Configured but disabled → reject.
-			reg.log().Warn("execute: tool explicitly disabled for session", "tool", name, "session", session.SessionID())
-			return event.ErrorResult(errors.New("tool '" + name + "' is disabled for this session"))
-		}
-		reg.log().Warn("execute: tool disabled for session", "tool", name, "session", session.SessionID())
-		return event.ErrorResult(errors.New("tool '" + name + "' is disabled for this session"))
+	if session != nil && !session.IsToolAllowed(name) {
+		reg.log().Warn("execute: tool denied for session", "tool", name, "session", session.SessionID())
+		return event.ErrorResult(fmt.Errorf("tool %q is denied for this session", name))
 	}
 	return reg.Execute(ctx, name, rawArgs)
+}
+
+// BuildToolListMessage returns a system message listing all allowed tools
+// with their descriptions. This is injected into the conversation context
+// so the LLM knows what tools are available (and which ones are enabled
+// vs disabled). The message also hints that show_tool can be used to
+// enable a tool for direct use.
+func BuildToolListMessage(tools *ToolRegistry, session SessionToolAuth) string {
+	if tools == nil || session == nil {
+		return ""
+	}
+
+	schemas := tools.AllowedSchemas(session)
+	if len(schemas) == 0 {
+		return ""
+	}
+
+	sort.Slice(schemas, func(i, j int) bool {
+		return schemas[i].Name < schemas[j].Name
+	})
+
+	// Find longest name for alignment
+	maxLen := 0
+	for _, s := range schemas {
+		if len(s.Name) > maxLen {
+			maxLen = len(s.Name)
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("You are allowed to use next tools:\n")
+	for _, s := range schemas {
+		/*
+		status := "[disabled]"
+		if session.IsToolEnabled(s.Name) {
+			status = "[enabled] "
+		}
+		*/
+		snippet := compactDescription(s.Description)
+		// b.WriteString(fmt.Sprintf("  %-*s  %s %s\n", maxLen, s.Name, status, snippet))
+		b.WriteString(fmt.Sprintf("  %-*s - %s\n", maxLen, s.Name, snippet))
+	}
+	b.WriteString("\nTo activate any tool or get detailed info, use show_tool call.")
+	return b.String()
+}
+
+// appendToolListMessage injects a tool list system message into the
+// message array. It is inserted after any existing system messages but
+// before the conversation history, ensuring the LLM always sees the
+// current tool availability status.
+func appendToolListMessage(msgs []Message, tools *ToolRegistry, session SessionToolAuth) []Message {
+	if tools == nil || session == nil {
+		return msgs
+	}
+	msg := BuildToolListMessage(tools, session)
+	if msg == "" {
+		return msgs
+	}
+	toolMsg := Message{Role: RoleSystem, Content: msg}
+	// Find the last system message position
+	insertAt := 0
+	for i, m := range msgs {
+		if m.Role == RoleSystem {
+			insertAt = i + 1
+		} else {
+			break
+		}
+	}
+	enriched := make([]Message, 0, len(msgs)+1)
+	enriched = append(enriched, msgs[:insertAt]...)
+	enriched = append(enriched, toolMsg)
+	enriched = append(enriched, msgs[insertAt:]...)
+	return enriched
+}
+
+// compactDescription returns a compact version of a tool description by
+// taking the first sentence and truncating if needed.
+func compactDescription(desc string) string {
+	// Take first sentence
+	if idx := strings.Index(desc, "."); idx > 0 {
+		desc = desc[:idx+1]
+	}
+	// Truncate at reasonable length
+	if len(desc) > 100 {
+		desc = desc[:97] + "..."
+	}
+	return desc
 }

@@ -80,15 +80,20 @@ func newTurnRunner(tools *ToolRegistry, toolExec *toolExecutor, config EngineCon
 // model requests them.
 //
 // On success it returns the final assistant text. On exhaustion of
-// iterations it returns ErrMaxIterations. saveFn is called after each
-// iteration round to persist the session — it is provided by Conversation
-// so turnRunner does not need to know about session persistence details.
+// iterations it returns ErrMaxIterations.
 //
-// Schemas are refreshed at the start of each iteration to catch mid-turn
-// changes: a user disabling a tool from another connection, or the LLM
-// calling enable_tool/disable_tool during the same turn. This prevents
-// stale schemas from causing false "tool is disabled" errors or missing
-// newly-enabled tools.
+// Schemas are computed fresh each iteration from the current session state.
+// This catches mid-turn changes such as the LLM calling allow_tool or
+// deny_tool during the same turn.
+//
+// saveFn is called after each iteration round to persist the session. It
+// is provided by Conversation so turnRunner does not need to know about
+// session persistence details.
+//
+// Tool handlers (e.g. allow_tool) mutate the session in-place via the
+// context-injected session view — they NEVER fetch and save the session
+// from the store independently. This means the engine's session pointer
+// is never stale, and no reloadFn/mergeToolResults is needed.
 func (r *turnRunner) run(
 	ctx context.Context,
 	session SessionView,
@@ -100,7 +105,7 @@ func (r *turnRunner) run(
 	hooks := r.toolExec.SerialisedHooks(&turnMu)
 
 	for i := 0; i < r.config.MaxToolIterations; i++ {
-		schemas := r.tools.SchemasForSession(session) // fresh each iteration
+		schemas := r.tools.SchemasForSession(session)
 		resp, needCompactify, err := r.runOneIteration(ctx, session, schemas, events, step, hooks, i)
 		if err != nil {
 			// Persist session state before propagating — runTurnWithStep
@@ -127,7 +132,7 @@ func (r *turnRunner) run(
 		r.toolExec.ExecuteToolCalls(ctx, session, resp.toolCalls, events, hooks)
 
 		// Emit SessionRenamed event if the LLM called session_rename on
-		// the current session (the tool handler persists the rename directly).
+		// the current session.
 		emitSessionRenamedIfNeeded(events, session, oldName, resp.toolCalls)
 
 		if saveErr := saveFn(ctx, session); saveErr != nil {
@@ -208,6 +213,10 @@ func (r *turnRunner) runOneIteration(
 	softLimit := r.resolveSoftLimit(session)
 	msgs, needCompactify, estimatedTokens := BuildCompactContext(session, softLimit)
 	turnSchemas := r.augmentSchemasWithCompactify(schemas, needCompactify)
+
+	// Inject the tool list system message into the context so the LLM
+	// knows what tools are available and their status.
+	msgs = appendToolListMessage(msgs, r.tools, session)
 
 	r.logger.Debug("tool-iteration context",
 		"iteration", iteration,

@@ -8,127 +8,21 @@ import (
 	"strings"
 
 	"github.com/ariloulaleelay/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // ---------------------------------------------------------------------------
-// list_tools — list all tools with short descriptions
-// ---------------------------------------------------------------------------
-
-type listToolsArgs struct {
-	Tag string `json:"tag"`
-}
-
-// ListTools returns a tool that lists all registered tools with compact
-// descriptions. Optionally filtered by tag.
-func ListTools(r *agent.ToolRegistry, sm *agent.SessionManager) agent.Tool {
-	return NewTool("list_tools", "List all tools with info snippets. Optionally filter by tag.").
-		StringParam("tag", "Filter by tag (optional)", false).
-		Tags("tool", "all").
-		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
-			var args listToolsArgs
-			if err := json.Unmarshal(raw, &args); err != nil {
-				return "", fmt.Errorf("list_tools: %w", err)
-			}
-
-			var schemas []agent.ToolSchema
-			if args.Tag != "" {
-				schemas = r.SchemasByTags(args.Tag)
-			} else {
-				schemas = r.Schemas()
-			}
-
-			if len(schemas) == 0 {
-				if args.Tag != "" {
-					return fmt.Sprintf("No tools with tag %q.", args.Tag), nil
-				}
-				return "No tools available.", nil
-			}
-
-			sort.Slice(schemas, func(i, j int) bool {
-				return schemas[i].Name < schemas[j].Name
-			})
-
-			// Find longest name for alignment
-			maxLen := 0
-			for _, s := range schemas {
-				if len(s.Name) > maxLen {
-					maxLen = len(s.Name)
-				}
-			}
-
-			var b strings.Builder
-			for _, s := range schemas {
-				snippet := compactDescription(s.Description)
-				b.WriteString(fmt.Sprintf("  %-*s  %s\n", maxLen, s.Name, snippet))
-			}
-			return b.String(), nil
-		}).
-		Build()
-}
-
-// ---------------------------------------------------------------------------
-// enable_tool — enable a tool for the current session
-// ---------------------------------------------------------------------------
-
-type enableToolArgs struct {
-	SessionID string `json:"session_id"`
-	Name      string `json:"name"`
-}
-
-// EnableTool returns a tool that enables a tool for the current session.
-func EnableTool(r *agent.ToolRegistry, sm *agent.SessionManager) agent.Tool {
-	return NewTool("enable_tool", "Enable a tool for the current session.").
-		StringParam("session_id", "Session ID or unique prefix", true).
-		StringParam("name", "Name of the tool to enable", true).
-		Tags("tool", "all").
-		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
-			var args enableToolArgs
-			if err := json.Unmarshal(raw, &args); err != nil {
-				return "", fmt.Errorf("enable_tool: %w", err)
-			}
-			if args.Name == "" {
-				return "", fmt.Errorf("enable_tool: name is required")
-			}
-			if args.SessionID == "" {
-				return "", fmt.Errorf("enable_tool: session_id is required")
-			}
-
-			// Validate tool exists
-			if _, ok := r.Get(args.Name); !ok {
-				return "", fmt.Errorf("unknown tool: %s", args.Name)
-			}
-
-			ns, err := sessionToolPreamble(ctx, "enable_tool")
-			if err != nil {
-				return "", err
-			}
-
-			session, err := resolveSessionFromTool(ctx, sm, ns, args.SessionID, "enable_tool")
-			if err != nil {
-				return "", err
-			}
-
-			session.EnableTool(args.Name)
-			if err := sm.Save(ctx, ns, session); err != nil {
-				return "", fmt.Errorf("enable_tool: %w", err)
-			}
-
-			return fmt.Sprintf("Enabled tool: %s", args.Name), nil
-		}).
-		Build()
-}
-
-// ---------------------------------------------------------------------------
-// show_tool — show detailed tool information
+// show_tool — show detailed tool information (and auto-enable)
 // ---------------------------------------------------------------------------
 
 type showToolArgs struct {
 	Name string `json:"name"`
 }
 
-// ShowTool returns a tool that shows detailed information about a tool.
+// ShowTool returns a tool that shows detailed information about a tool
+// and automatically enables it so it appears in the API "tools" section.
 func ShowTool(r *agent.ToolRegistry) agent.Tool {
-	return NewTool("show_tool", "Show detailed information about a specific tool including its parameters.").
+	return NewTool("show_tool", "Enable tool by name. Show tool detailed description with parameters.").
 		StringParam("name", "Name of the tool to inspect", true).
 		Tags("tool", "all").
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
@@ -145,9 +39,16 @@ func ShowTool(r *agent.ToolRegistry) agent.Tool {
 				return "", fmt.Errorf("unknown tool: %s", args.Name)
 			}
 
+			// Auto-enable the tool in the current session
+			session, ok := event.SessionViewFromContext(ctx).(agent.SessionToolEditor)
+			if ok && session != nil {
+				session.EnableTool(args.Name)
+			}
+
 			var b strings.Builder
 			b.WriteString(fmt.Sprintf("Tool: %s\n", t.Schema.Name))
 			b.WriteString(fmt.Sprintf("Description: %s\n", t.Schema.Description))
+			b.WriteString(fmt.Sprintf("Status: enabled\n"))
 
 			if len(t.Tags) > 0 {
 				tagStrs := make([]string, len(t.Tags))

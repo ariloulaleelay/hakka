@@ -562,7 +562,7 @@ func TestConversation_SomeToolsEnabled_LLMGetsThoseSchemas(t *testing.T) {
 // TestConversation_DefenseInDepth_DisabledToolReturnsError verifies that
 // even if the LLM somehow calls a disabled tool (e.g. from context window),
 // the engine rejects it with an error.
-func TestConversation_DefenseInDepth_DisabledToolReturnsError(t *testing.T) {
+func TestConversation_DefenseInDepth_DeniedToolReturnsError(t *testing.T) {
 	sm := NewSessionManager(NewMemoryStore(), "sys")
 	reg := NewRegistry()
 	reg.Register("default", &simpleAdapter{
@@ -592,24 +592,24 @@ func TestConversation_DefenseInDepth_DisabledToolReturnsError(t *testing.T) {
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "defense-session")
-	session.DisableTool("echo") // explicitly disable the tool
+	session.DenyTool("echo") // deny the tool
 
 	_, _, err := executeSync(conv, context.Background(), "defense-session", "do it")
 	if err != nil {
 		t.Fatalf("Execute should not return error (tool error is recoverable): %v", err)
 	}
 
-	// The tool result should be in the session messages and contain "disabled"
+	// The tool result should be in the session messages and contain "denied"
 	session, _ = sm.GetOrCreate(context.Background(), "testns", "defense-session")
-	foundDisabledErr := false
+	foundDeniedErr := false
 	for _, m := range session.AllMessages() {
-		if m.Role == RoleTool && strings.Contains(m.Content, "disabled") {
-			foundDisabledErr = true
+		if m.Role == RoleTool && strings.Contains(m.Content, "denied") {
+			foundDeniedErr = true
 			break
 		}
 	}
-	if !foundDisabledErr {
-		t.Fatal("expected a tool-role message with 'disabled' error, but none found")
+	if !foundDeniedErr {
+		t.Fatal("expected a tool-role message with 'denied' error, but none found")
 	}
 }
 

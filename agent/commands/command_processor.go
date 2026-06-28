@@ -138,11 +138,11 @@ func (cp *CommandProcessor) ExecuteJSON(ctx context.Context, sessionID, cmd stri
 		if cp.toolHandler != nil {
 			return cp.toolHandler.HandleJSON(ctx, sessionID, cmd, params)
 		}
-	case "tool_enable":
+	case "tool_allow":
 		if cp.toolHandler != nil {
 			return cp.toolHandler.HandleJSON(ctx, sessionID, cmd, params)
 		}
-	case "tool_disable":
+	case "tool_deny":
 		if cp.toolHandler != nil {
 			return cp.toolHandler.HandleJSON(ctx, sessionID, cmd, params)
 		}
@@ -226,8 +226,8 @@ func (cp *CommandProcessor) handleHelp(_ context.Context, _ string, _ []string) 
   /session rename <name>        - Rename current session
   /session autorename           - Auto-generate a session name using LLM
   /tool list                    - List available tools with status
-  /tool enable <name-or-#tag>...   - Enable a tool or all tools with a #tag
-  /tool disable <name-or-#tag>...  - Disable a tool or all tools with a #tag
+  /tool allow <name-or-#tag>... - Allow (and enable) a tool or all tools with a #tag
+  /tool deny <name-or-#tag>...  - Deny (hide) a tool or all tools with a #tag
   /compact <n>                  - Set context soft limit in tokens (default 150000)`
 	return CommandResult{Handled: true, Action: ActionReply, Reply: helpText}
 }
@@ -323,8 +323,8 @@ func (cp *CommandProcessor) execHelp(ctx context.Context, sessionID string) Comm
 			{Cmd: "model_list", Desc: "List available models"},
 			{Cmd: "model_switch", Desc: "Switch to a different model", Params: map[string]string{"name": "model name"}},
 			{Cmd: "tool_list", Desc: "List available tools with status"},
-			{Cmd: "tool_enable", Desc: "Enable a tool or tag", Params: map[string]string{"name": "tool name or #tag"}},
-			{Cmd: "tool_disable", Desc: "Disable a tool or tag", Params: map[string]string{"name": "tool name or #tag"}},
+			{Cmd: "tool_allow", Desc: "Allow (and enable) a tool or tag", Params: map[string]string{"name": "tool name or #tag"}},
+			{Cmd: "tool_deny", Desc: "Deny (hide) a tool or tag", Params: map[string]string{"name": "tool name or #tag"}},
 		},
 	})
 	return CommandResult{Handled: true, Action: ActionReply, Cmd: "help", Data: helpJSON}

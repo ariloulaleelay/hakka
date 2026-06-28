@@ -122,6 +122,7 @@ func RunBatchWithOutput(ctx context.Context, p RunBatchParams, output io.Writer,
 		hakkatools.RegisterAll(tools)
 		hakkatools.RegisterMeta(tools)
 		hakkatools.RegisterProcessTools(tools, pm)
+		hakkatools.RegisterToolManagementTools(tools)
 		hakkatools.RegisterSessionTools(tools, sessions, nil)
 	}
 

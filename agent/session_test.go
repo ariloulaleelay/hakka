@@ -115,18 +115,6 @@ func TestEnabledTools_DisablingToolWorks(t *testing.T) {
 	}
 }
 
-func TestEnabledTools_DisableTool(t *testing.T) {
-	s := NewSession("testns", "sys")
-	s.DisableTool("read_file")
-	s.EnableTool("write_file")
-	if s.IsToolEnabled("read_file") {
-		t.Fatal("expected read_file to be disabled after DisableTool")
-	}
-	if !s.IsToolEnabled("write_file") {
-		t.Fatal("expected write_file to still be enabled")
-	}
-}
-
 func TestEnabledTools_EnableByTag(t *testing.T) {
 	s := NewSession("testns", "sys")
 	s.DisableTool("read_file")
@@ -177,20 +165,31 @@ func TestEnabledTools_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestEnabledTools_NewSessionHasNilMap(t *testing.T) {
+func TestEnabledTools_NewSessionHasPreEnabled(t *testing.T) {
 	s := NewSession("testns", "sys")
-	if s.Read().EnabledTools != nil {
-		t.Fatal("expected EnabledTools to be nil in new session (saves space)")
+	// New sessions pre-enable management tools (show_tool, allow_tool, deny_tool)
+	if s.Read().EnabledTools == nil {
+		t.Fatal("expected EnabledTools to be non-nil in new session (management tools pre-enabled)")
+	}
+	if !s.IsToolEnabled("show_tool") {
+		t.Fatal("expected show_tool to be pre-enabled")
+	}
+	// Non-management tools should not be enabled
+	if s.IsToolEnabled("read_file") {
+		t.Fatal("expected read_file to not be enabled by default")
 	}
 }
 
-func TestEnabledTools_FirstDisableCreatesMap(t *testing.T) {
+func TestEnabledTools_DisableTool(t *testing.T) {
 	s := NewSession("testns", "sys")
-	s.DisableTool("read_file")
-	if s.Read().EnabledTools == nil {
-		t.Fatal("expected EnabledTools to be non-nil after first DisableTool")
+	err := s.DisableTool("show_tool")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(s.Read().EnabledTools) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(s.Read().EnabledTools))
+	if s.IsToolEnabled("show_tool") {
+		t.Fatal("expected show_tool to be disabled")
+	}
+	if len(s.Read().EnabledTools) == 0 {
+		t.Fatal("expected EnabledTools to have entries after DisableTool call")
 	}
 }

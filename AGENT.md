@@ -26,8 +26,11 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
                          ┌──────────▼──────────────────────────┐
                          │          ENGINE LAYER               │
                          │    Conversation (tool loop)         │
+                         │    ├─ TurnRunner (iteration)        │
+                         │    ├─ ToolExecutor (concurrent)     │
+                         │    └─ AutoRenamer (naming)          │
                          │    StreamSession (stream+fallback)  │
-                         │    CommandProcessor (/commands)     │
+                         │    commands/ (slash-commands)       │
                          └──────────┬──────────────────────────┘
                                     │
               ┌─────────────────────┼─────────────────────┐
@@ -56,17 +59,28 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | **Session** | `agent/session.go` | Append-only conversation history, system prompt, thread-safe state bag (`map[string]any`), model binding, token tracking |
 | **SessionStore** | `agent/store.go` | Pluggable persistence — `MemoryStore` (in-process) or `sqlite.Store` (disk-backed via `modernc.org/sqlite`, CGO-free) |
 | **SessionManager** | `agent/manager.go` | Wraps a store with `GetOrCreate`/`Save`/`Drop` helpers |
+| **SessionView** | `agent/session_view.go` | Role-specific session interfaces (ISP) — `SessionHistory`, `SessionToolAuth`, `SessionModelBinding`, `SessionIdentity` |
 | **LLMAdapter** | `agent/adapter.go` | Interface: `Complete()` + `Stream()`. Implementations in `agent/adapters/` for OpenAI, Anthropic, Gemini |
 | **Registry** | `agent/registry.go` | Named collection of adapters with a default selection |
 | **Router** | `agent/router.go` | Decides which adapter serves a given session based on the session's model binding. Single owner of the `Model` field |
 | **Tool / ToolRegistry** | `agent/tool.go` | Tool schema + handler + optional timeout + exec snippet. Concurrent-safe registry |
-| **Conversation** | `agent/conversation.go` | Drives the LLM ↔ tool loop — append user input, call LLM, execute tools concurrently, loop until final text or `MaxToolIterations` (default 128) |
+| **Conversation** | `agent/conversation.go` | High-level public API for gateways — session lifecycle, turn dispatch, auto-rename. Delegates the LLM↔tool loop internals to `turnRunner` |
+| **TurnRunner** | `agent/turn_runner.go` | Drives the LLM ↔ tool iteration loop (extracted from Conversation per SRP). Owns the step function, compaction limit resolution, and compactify schema augmentation |
+| **ToolExecutor** | `agent/tool_executor.go` | Concurrent tool execution with fan-out, event hooks, and result appending (extracted from Conversation per SRP) |
 | **Compact** | `agent/compact.go` | LLM-driven context compaction — when estimated context exceeds the soft limit, [N] message indices and a warning prompt the LLM to call `context_compactify` to compress unneeded ranges; controlled per-session via `Session.CompactSoftLimit` |
 | **StreamSession** | `agent/stream_session.go` | Cooperative streaming — streams text tokens, but if the model requests tools, aborts the stream and falls back to the tool loop |
-| **CommandProcessor** | `agent/command_processor.go` | Slash-commands (`/help`, `/model`, `/session`, `/models`) without any LLM dependency |
+| **CommandProcessor** | `agent/commands/` | Slash-commands (`/help`, `/model`, `/session`, `/tools`) without any LLM dependency. Split into `command_processor.go` (dispatcher), `model_commands.go`, `session_commands.go`, `tool_commands.go` |
+| **AutoRenamer** | `agent/auto_renamer.go` | LLM-driven session naming logic (extracted from Conversation per SRP) |
+| **Truncate** | `agent/truncate.go` | UTF-8-safe string truncation utility with `...` suffix |
 | **ProcessManager** | `agent/tools/process.go` | Goroutine-safe subprocess registry; manages spawn, interact, kill, and lifecycle of child processes with ring-buffered stdout+stderr output |
-| **Gateway** | `agent/gateways/` | Transport layer — TCP (newline-JSON), WebSocket, Telegram. Each wraps `Conversation` + `StreamSession` + `CommandProcessor` |
+| **Gateway** | `agent/gateways/` | Transport layer — TCP (`tcp.go`), WebSocket (`websocket.go`), Telegram (`telegram.go`). Wire framing in `frame.go`. Each wraps `Conversation` + `StreamSession` + `CommandProcessor` |
+| **ResponseReader** | `agent/gateways/response_reader.go` | Async response awaiting for client-initated tool calls (e.g. Neovim `vim_run_command`) |
+| **TurnTracker** | `agent/gateways/turn_tracker.go` | Serialises concurrent turns per session — prevents race conditions when multiple inputs arrive simultaneously |
 | **Hooks** | `agent/engine.go` | Lifecycle callbacks: `OnToolCall`, `OnToolResult`, `OnLLMResponse`, `OnError` — serialised under a mutex for safe transport use |
+| **EngineEvent types** | `agent/event/event.go` | Typed event structs (`ToolCallStarted`, `ToolCallFinished`, `UsageReported`, `TextDelta`, etc.) emitted by the engine and consumed by transports |
+| **EngineChannelWriter** | `agent/event/engine_writer.go` | Funnels tool-to-client requests into the engine's event channel, serialising all outbound writes without explicit locking |
+| **Format** | `agent/format/md2tg.go` | Markdown-to-Telegram-HTML conversion for the Telegram gateway |
+| **Batch** | `batch/batch.go` | Reusable API for running Hakka in batch mode — a single autonomous task with no interactive transport |
 
 ### Built-in Tools (`agent/tools/`)
 
@@ -98,11 +112,10 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | `session_delete` | Delete a session by ID or unique prefix |
 | `session_create` | Create a new empty session |
 | `context_compactify` | Compact message ranges to free context space (meta-tool; only appears when context exceeds `CompactSoftLimit`) |
-| `list_tools` | List all tools with descriptions; optionally filter by tag |
-| `enable_tool` | Enable a tool by name for the current session |
+| `show_tool` | Show detailed info about a specific tool (name, description, parameters, tags). Also enables the tool |
 | `show_tool` | Show detailed info about a specific tool (name, description, parameters, tags) |
 
-Tools tagged `"tool"` (`list_tools`, `enable_tool`, `show_tool`) are **always available** to the LLM -- they are included in every session's schema and bypass the session's enabled-tools check. This lets the LLM discover, inspect, and enable other tools at runtime without any prior configuration.
+Tools tagged `"tool"` (`show_tool`) is **pre-enabled** in every new session so the LLM can always discover and enable tools at runtime. `show_tool` also automatically enables the inspected tool, making it callable via the API "tools" section. The system prompt lists all allowed (non-denied) tools with their enabled/disabled status, so the LLM always knows what's available.
 
 Session tools are scoped to the per-gateway namespace via Go context (see `agent/event/event.go` — `ContextWithNamespace` / `NamespaceFromContext`). A TCP client can only see `"tcp"` sessions; a Telegram chat only sees its own `"tg:<chat_id>"` sessions.
 
@@ -142,10 +155,13 @@ Session tools are scoped to the per-gateway namespace via Go context (see `agent
 
 - Strong TDD approach (see `prompts.md`)
 - Unit tests per component (`*_test.go` alongside each source file)
-- Integration tests for the full engine loop (`engine_test.go`, `engine_iteration_test.go`)
-- Streaming + tool fallback tests (`session_loop_stream_vim_test.go`)
-- Bug reproduction tests (`anthropic_bug_test.go`, `gemini_bug_test.go`)
-- Parallel tool execution tests (`tcp_parallel_tools_test.go`)
+- Integration tests for the full engine loop (`engine_test.go`, `engine_iteration_test.go`, `conversation_test.go`, `conversation_mid_turn_test.go`)
+- Turn runner tests (`turn_runner_test.go`)
+- Streaming + tool fallback tests (`gateways/session_loop_stream_vim_test.go`, `gateways/stream_tool_fallback_test.go`)
+- Command processor tests (`commands/command_test.go`)
+- Parallel tool execution tests (`gateways/tcp_parallel_tools_test.go`)
+- Gateway reconnection and session switch tests (`gateways/reconnect_test.go`, `gateways/reconnect_switch_test.go`, `gateways/session_switch_test.go`)
+- Concurrent Vim tool race tests (`gateways/vim_tool_race_test.go`)
 
 ---
 

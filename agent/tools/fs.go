@@ -161,7 +161,7 @@ func EditFile() agent.Tool {
 		StringParam("old", "", true).
 		StringParam("new", "", true).
 		BoolParam("replace_all", "", false).
-		Tags("filesystem", "write", "developer").
+		Tags("filesystem", "write", "developer", "all").
 		ExecSnippet(func(args json.RawMessage) string {
 			var params editFileArgs
 			if err := json.Unmarshal(args, &params); err != nil {

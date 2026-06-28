@@ -57,3 +57,16 @@ func RegisterSessionTools(r *agent.ToolRegistry, sm *agent.SessionManager, conv 
 	r.Register(SessionCreate(sm))
 	r.Register(SessionAskQuestion(sm, conv))
 }
+
+// RegisterToolManagementTools registers tool-management tools that let the
+// LLM discover and inspect tools at runtime:
+//   - show_tool — show detailed information about a specific tool and enable it
+//
+// show_tool is pre-enabled in every new session so the LLM can always call it
+// to bootstrap tool access.
+//
+// allow_tool and deny_tool are NOT registered as LLM-callable tools — they are
+// human-only slash commands (/tool allow, /tool deny) available in command_processor.go.
+func RegisterToolManagementTools(r *agent.ToolRegistry) {
+	r.Register(ShowTool(r))
+}

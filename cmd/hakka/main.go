@@ -250,6 +250,7 @@ func setupComponents(store agent.SessionStore, registry *agent.Registry, logger 
 	hakkatools.RegisterAll(tools)
 	hakkatools.RegisterMeta(tools)
 	hakkatools.RegisterProcessTools(tools, pm)
+	hakkatools.RegisterToolManagementTools(tools)
 
 	cfg := agent.DefaultEngineConfig()
 	cfg.Logger = logger
@@ -357,6 +358,7 @@ func buildTelegramGateway(p gatewayParams, telegramToken, telegramWhitelist, tel
 	// to the per-chat namespace, so we include them for Telegram users too.
 	tgTools := agent.NewToolRegistry()
 	hakkatools.RegisterTelegramTools(tgTools)
+	hakkatools.RegisterToolManagementTools(tgTools)
 	hakkatools.RegisterSessionTools(tgTools, p.Sessions, nil)
 
 	conv := agent.NewConversation(p.Sessions, p.Router, tgTools, "tg", p.EngineCfg)

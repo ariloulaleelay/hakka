@@ -30,9 +30,28 @@ type SessionHistory interface {
 }
 
 // SessionToolAuth authorises tool usage for this session.
+//
+// Tool authorisation model (v2):
+//   - Denied → completely invisible (not in system prompt, not in API tools)
+//   - Allowed → visible in system prompt. If enabled, also in API "tools".
+//   - Locked → tool has been called; cannot be denied or disabled.
 type SessionToolAuth interface {
 	IsToolEnabled(name string) bool
 	IsToolConfigured(name string) bool
+	IsToolAllowed(name string) bool
+	IsToolDenied(name string) bool
+	IsToolLocked(name string) bool
+}
+
+// SessionToolEditor provides write access to tool auth settings.
+// Tool handlers that need to modify tool access (e.g. allow_tool, deny_tool)
+// should depend on this narrow interface instead of the full SessionView.
+type SessionToolEditor interface {
+	EnableTool(name string)
+	DisableTool(name string) error
+	AllowTool(name string)
+	DenyTool(name string) error
+	MarkToolUsed(name string)
 }
 
 // SessionModelBinding stores and retrieves the session's model binding.
@@ -62,6 +81,7 @@ type SessionView interface {
 	SessionIdentity
 	SessionHistory
 	SessionToolAuth
+	SessionToolEditor
 	SessionModelBinding
 	SessionTokenTracking
 	SessionCompactLimits

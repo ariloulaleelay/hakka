@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/ariloulaleelay/hakka/agent/event"
@@ -101,7 +101,7 @@ func (ex *toolExecutor) runToolsConcurrently(ctx context.Context, session Sessio
 	return results
 }
 
-// runSingleTool resolves the exec snippet, fires the OnToolCall hook,
+
 // invokes the handler, fires the OnToolResult hook, emits events, and
 // returns the result string.
 //
@@ -109,11 +109,11 @@ func (ex *toolExecutor) runToolsConcurrently(ctx context.Context, session Sessio
 // enrich the context (e.g. install a client writer) before the handler
 // runs. The orchestration loop itself stays transport-agnostic.
 func (ex *toolExecutor) runSingleTool(ctx context.Context, session SessionView, call ToolCall, events eventSender, hooks Hooks) string {
-	// Defense-in-depth: check if the tool is enabled for this session.
-	// Even if the LLM somehow calls a disabled tool (e.g. from context window),
-	// we reject it here without invoking the handler.
-	if session != nil && !session.IsToolEnabled(call.Name) && call.Name != ContextCompactifyToolName {
-		res := event.ErrorResult(errors.New("tool '" + call.Name + "' is disabled for this session"))
+	// Defense-in-depth: check if the tool is denied for this session.
+	// Denied tools are completely invisible to the LLM, but if it somehow
+	// calls one (e.g. from context window), we reject it here.
+	if session != nil && session.IsToolDenied(call.Name) {
+		res := event.ErrorResult(fmt.Errorf("tool %q is denied for this session", call.Name))
 		fireToolCall(hooks, session.SessionID(), call)
 		sendEngineEvent(events, event.ToolCallStarted{SessionID: session.SessionID(), ID: call.ID, Name: call.Name, Arguments: call.Arguments})
 		fireToolResult(hooks, session.SessionID(), call, res)
@@ -134,7 +134,13 @@ func (ex *toolExecutor) runSingleTool(ctx context.Context, session SessionView, 
 		}
 	}
 
-	result := ex.tools.Execute(ctx, call.Name, call.Arguments)
+	// Enrich context with the current session ID and session view so tools
+	// (e.g. allow_tool) can modify session state (allow/deny tools)
+	// without fetching and overwriting the session from the store.
+	ctx = event.ContextWithSessionID(ctx, session.SessionID())
+	ctx = event.ContextWithSessionView(ctx, session)
+
+	result := ex.tools.ExecuteForSession(ctx, session, call.Name, call.Arguments)
 	fireToolResult(hooks, session.SessionID(), call, result)
 	sendEngineEvent(events, event.ToolCallFinished{
 		SessionID: session.SessionID(), ID: call.ID, Name: call.Name,

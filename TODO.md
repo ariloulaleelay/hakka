@@ -38,6 +38,9 @@ This file is for humans only, agent should not modify it!
   - [ ] Add tools confirmation
   - [x] remove mcp prefix from tools
   - [x] Add tool to discover and enable tools
+  - [ ] Bugfix: [Truncated: N bytes ommited] should be [TRUNCATED N bytes left] or propely calculate ommited bytes
+  - [ ] Automatically join chains of the same tool with different page size.
+  - [ ] Llm report bug tool (for example ommited and offset in read file does not work as intended)
 - [ ] Add command to control system prompt (add, remove, show, change)
 - [ ] Improve sessions
   - [x] Session autorename
@@ -48,6 +51,7 @@ This file is for humans only, agent should not modify it!
     - [x] Session search
     - [x] Session summarize
     - [ ] Session tags
+  - [ ] Better session persistence (dedicated table for messages, not a single json blob)
 - [x] Add standalone agentic mode (batch run without human, for real autonomous tasks)
 - [ ] Advanced session manipulation — on the fly context compression, guided context compression, stashes, forks
     - [x] Guided session compression

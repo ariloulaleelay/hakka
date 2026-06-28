@@ -153,6 +153,8 @@ type clientWriterKey struct{}
 type responseReaderKey struct{}
 type clientCWDKey struct{}
 type sessionNamespaceKey struct{}
+type sessionIDKey struct{}
+type sessionViewKey struct{}
 
 // ContextWithCWD stores the client working directory in the context so
 // tools can access it and resolve relative paths against it.
@@ -179,6 +181,34 @@ func ContextWithNamespace(ctx context.Context, ns string) context.Context {
 func NamespaceFromContext(ctx context.Context) string {
 	ns, _ := ctx.Value(sessionNamespaceKey{}).(string)
 	return ns
+}
+
+// ContextWithSessionID stores the current session ID in the context so
+// tools called from within a conversation can identify the session they
+// are operating on.
+func ContextWithSessionID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, sessionIDKey{}, id)
+}
+
+// SessionIDFromContext returns the current session ID from the context,
+// or "" if not set.
+func SessionIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(sessionIDKey{}).(string)
+	return id
+}
+
+// ContextWithSessionView stores the current session view in the context so
+// tool handlers can modify session state (e.g. enable/disable tools)
+// without fetching and overwriting the session from the store.
+func ContextWithSessionView(ctx context.Context, session any) context.Context {
+	return context.WithValue(ctx, sessionViewKey{}, session)
+}
+
+// SessionViewFromContext returns the session view stored in the context,
+// or nil if not set.
+func SessionViewFromContext(ctx context.Context) any {
+	s, _ := ctx.Value(sessionViewKey{}).(any)
+	return s
 }
 
 // ContextWithClient stores the client writer and response reader in the

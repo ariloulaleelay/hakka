@@ -27,10 +27,10 @@ func (tc *ToolCommands) HandleJSON(ctx context.Context, sessionID, cmd string, p
 	switch cmd {
 	case "tool_list":
 		return tc.jsonToolList(ctx, sessionID)
-	case "tool_enable":
-		return tc.jsonToolEnable(ctx, sessionID, params)
-	case "tool_disable":
-		return tc.jsonToolDisable(ctx, sessionID, params)
+	case "tool_allow":
+		return tc.jsonToolAllow(ctx, sessionID, params)
+	case "tool_deny":
+		return tc.jsonToolDeny(ctx, sessionID, params)
 	}
 	return CommandResult{Handled: false}
 }
@@ -66,7 +66,7 @@ func (tc *ToolCommands) jsonToolList(ctx context.Context, sessionID string) Comm
 	return CommandResult{Handled: true, Cmd: "tool_list", Data: data, Session: session}
 }
 
-func (tc *ToolCommands) jsonToolEnable(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
+func (tc *ToolCommands) jsonToolAllow(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 
 	var p struct {
@@ -76,34 +76,35 @@ func (tc *ToolCommands) jsonToolEnable(ctx context.Context, sessionID string, pa
 		json.Unmarshal(params, &p)
 	}
 	if p.Name == "" {
-		return CommandResult{Handled: true, Cmd: "tool_enable", Reply: "error: please specify a tool name or #tag"}
+		return CommandResult{Handled: true, Cmd: "tool_allow", Reply: "error: please specify a tool name or #tag"}
 	}
 
-	// Tag enable
+	// Tag allow
 	if strings.HasPrefix(p.Name, "#") {
-		return tc.jsonEnableByTag(ctx, sessionID, strings.TrimPrefix(p.Name, "#"))
+		return tc.jsonAllowByTag(ctx, sessionID, strings.TrimPrefix(p.Name, "#"))
 	}
 
 	if tc.Tools != nil {
 		if _, ok := tc.Tools.Get(p.Name); !ok {
-			return CommandResult{Handled: true, Cmd: "tool_enable", Reply: fmt.Sprintf("unknown tool: %s", p.Name)}
+			return CommandResult{Handled: true, Cmd: "tool_allow", Reply: fmt.Sprintf("unknown tool: %s", p.Name)}
 		}
 	}
 
 	session, err := tc.Sessions.GetOrCreate(ctx, ns, sessionID)
 	if err != nil {
-		return CommandResult{Handled: true, Cmd: "tool_enable", Error: err}
+		return CommandResult{Handled: true, Cmd: "tool_allow", Error: err}
 	}
-	session.EnableTool(p.Name)
+	session.AllowTool(p.Name)
+	session.EnableTool(p.Name) // Also enable so it appears in API "tools" section
 	if err := tc.Sessions.Save(ctx, ns, session); err != nil {
-		return CommandResult{Handled: true, Cmd: "tool_enable", Error: err}
+		return CommandResult{Handled: true, Cmd: "tool_allow", Error: err}
 	}
 
-	data, _ := json.Marshal(map[string]any{"enabled": []string{p.Name}})
-	return CommandResult{Handled: true, Cmd: "tool_enable", Data: data, Session: session}
+	data, _ := json.Marshal(map[string]any{"allowed": []string{p.Name}})
+	return CommandResult{Handled: true, Cmd: "tool_allow", Data: data, Session: session}
 }
 
-func (tc *ToolCommands) jsonToolDisable(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
+func (tc *ToolCommands) jsonToolDeny(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 
 	var p struct {
@@ -113,82 +114,87 @@ func (tc *ToolCommands) jsonToolDisable(ctx context.Context, sessionID string, p
 		json.Unmarshal(params, &p)
 	}
 	if p.Name == "" {
-		return CommandResult{Handled: true, Cmd: "tool_disable", Reply: "error: please specify a tool name or #tag"}
+		return CommandResult{Handled: true, Cmd: "tool_deny", Reply: "error: please specify a tool name or #tag"}
 	}
 
 	if strings.HasPrefix(p.Name, "#") {
-		return tc.jsonDisableByTag(ctx, sessionID, strings.TrimPrefix(p.Name, "#"))
+		return tc.jsonDenyByTag(ctx, sessionID, strings.TrimPrefix(p.Name, "#"))
 	}
 
 	session, err := tc.Sessions.GetOrCreate(ctx, ns, sessionID)
 	if err != nil {
-		return CommandResult{Handled: true, Cmd: "tool_disable", Error: err}
+		return CommandResult{Handled: true, Cmd: "tool_deny", Error: err}
 	}
-	session.DisableTool(p.Name)
+	if err := session.DenyTool(p.Name); err != nil {
+		return CommandResult{Handled: true, Cmd: "tool_deny", Reply: fmt.Sprintf("error: %v", err)}
+	}
 	if err := tc.Sessions.Save(ctx, ns, session); err != nil {
-		return CommandResult{Handled: true, Cmd: "tool_disable", Error: err}
+		return CommandResult{Handled: true, Cmd: "tool_deny", Error: err}
 	}
 
-	data, _ := json.Marshal(map[string]any{"disabled": []string{p.Name}})
-	return CommandResult{Handled: true, Cmd: "tool_disable", Data: data, Session: session}
+	data, _ := json.Marshal(map[string]any{"denied": []string{p.Name}})
+	return CommandResult{Handled: true, Cmd: "tool_deny", Data: data, Session: session}
 }
 
-func (tc *ToolCommands) jsonEnableByTag(ctx context.Context, sessionID, tag string) CommandResult {
+func (tc *ToolCommands) jsonAllowByTag(ctx context.Context, sessionID, tag string) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 	if tc.Tools == nil {
-		return CommandResult{Handled: true, Cmd: "tool_enable", Reply: "no tool registry configured"}
+		return CommandResult{Handled: true, Cmd: "tool_allow", Reply: "no tool registry configured"}
 	}
 
 	tagged := tc.collectTagged([]string{tag})
 	if len(tagged) == 0 {
-		return CommandResult{Handled: true, Cmd: "tool_enable", Reply: fmt.Sprintf("no tools with tag #%s", tag)}
+		return CommandResult{Handled: true, Cmd: "tool_allow", Reply: fmt.Sprintf("no tools with tag #%s", tag)}
 	}
 
 	session, err := tc.Sessions.GetOrCreate(ctx, ns, sessionID)
 	if err != nil {
-		return CommandResult{Handled: true, Cmd: "tool_enable", Error: err}
+		return CommandResult{Handled: true, Cmd: "tool_allow", Error: err}
 	}
 
 	names := make([]string, 0, len(tagged))
 	for _, ts := range tagged {
+		session.AllowTool(ts.Name)
 		session.EnableTool(ts.Name)
 		names = append(names, ts.Name)
 	}
 	if err := tc.Sessions.Save(ctx, ns, session); err != nil {
-		return CommandResult{Handled: true, Cmd: "tool_enable", Error: err}
+		return CommandResult{Handled: true, Cmd: "tool_allow", Error: err}
 	}
 
-	data, _ := json.Marshal(map[string]any{"enabled": names, "tag": tag})
-	return CommandResult{Handled: true, Cmd: "tool_enable", Data: data, Session: session}
+	data, _ := json.Marshal(map[string]any{"allowed": names, "tag": tag})
+	return CommandResult{Handled: true, Cmd: "tool_allow", Data: data, Session: session}
 }
 
-func (tc *ToolCommands) jsonDisableByTag(ctx context.Context, sessionID, tag string) CommandResult {
+func (tc *ToolCommands) jsonDenyByTag(ctx context.Context, sessionID, tag string) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 	if tc.Tools == nil {
-		return CommandResult{Handled: true, Cmd: "tool_disable", Reply: "no tool registry configured"}
+		return CommandResult{Handled: true, Cmd: "tool_deny", Reply: "no tool registry configured"}
 	}
 
 	tagged := tc.collectTagged([]string{tag})
 	if len(tagged) == 0 {
-		return CommandResult{Handled: true, Cmd: "tool_disable", Reply: fmt.Sprintf("no tools with tag #%s", tag)}
+		return CommandResult{Handled: true, Cmd: "tool_deny", Reply: fmt.Sprintf("no tools with tag #%s", tag)}
 	}
 
 	session, err := tc.Sessions.GetOrCreate(ctx, ns, sessionID)
 	if err != nil {
-		return CommandResult{Handled: true, Cmd: "tool_disable", Error: err}
+		return CommandResult{Handled: true, Cmd: "tool_deny", Error: err}
 	}
 
 	names := make([]string, 0, len(tagged))
 	for _, ts := range tagged {
-		session.DisableTool(ts.Name)
+		if err := session.DenyTool(ts.Name); err != nil {
+			return CommandResult{Handled: true, Cmd: "tool_deny", Reply: fmt.Sprintf("error denying tool %s: %v", ts.Name, err)}
+		}
 		names = append(names, ts.Name)
 	}
 	if err := tc.Sessions.Save(ctx, ns, session); err != nil {
-		return CommandResult{Handled: true, Cmd: "tool_disable", Error: err}
+		return CommandResult{Handled: true, Cmd: "tool_deny", Error: err}
 	}
 
-	data, _ := json.Marshal(map[string]any{"disabled": names, "tag": tag})
-	return CommandResult{Handled: true, Cmd: "tool_disable", Data: data, Session: session}
+	data, _ := json.Marshal(map[string]any{"denied": names, "tag": tag})
+	return CommandResult{Handled: true, Cmd: "tool_deny", Data: data, Session: session}
 }
 
 func (tc *ToolCommands) collectTagged(tags []string) []agent.ToolSchema {
@@ -210,30 +216,30 @@ func (tc *ToolCommands) collectTagged(tags []string) []agent.ToolSchema {
 
 func (tc *ToolCommands) Handle(ctx context.Context, sessionID string, parts []string) CommandResult {
 	if len(parts) < 2 {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "tool usage:\n  /tool list\n  /tool enable <name-or-#tag>...\n  /tool disable <name-or-#tag>..."}
+		return CommandResult{Handled: true, Action: ActionReply, Reply: "tool usage:\n  /tool list\n  /tool allow <name-or-#tag>...\n  /tool deny <name-or-#tag>..."}
 	}
 
 	sub := parts[1]
 	switch sub {
 	case "list":
 		return tc.handleToolList(ctx, sessionID)
-	case "enable":
-		return tc.enableTool(ctx, sessionID, parts)
-	case "disable":
-		return tc.disableTool(ctx, sessionID, parts)
+	case "allow":
+		return tc.allowTool(ctx, sessionID, parts)
+	case "deny":
+		return tc.denyTool(ctx, sessionID, parts)
 	default:
 		return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("unknown tool subcommand %q", sub)}
 	}
 }
 
-func (tc *ToolCommands) enableTool(ctx context.Context, sessionID string, parts []string) CommandResult {
+func (tc *ToolCommands) allowTool(ctx context.Context, sessionID string, parts []string) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 	if len(parts) < 3 {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "error: please specify a tool name or #tag to enable"}
+		return CommandResult{Handled: true, Action: ActionReply, Reply: "error: please specify a tool name or #tag to allow"}
 	}
 	values := parts[2:]
 	if isTagValue(values[0]) {
-		return tc.enableToolsByTag(ctx, sessionID, values)
+		return tc.allowToolsByTag(ctx, sessionID, values)
 	}
 	name := parts[2]
 	if tc.Tools != nil {
@@ -245,32 +251,35 @@ func (tc *ToolCommands) enableTool(ctx context.Context, sessionID string, parts 
 	if err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}
-	session.EnableTool(name)
+	session.AllowTool(name)
+	session.EnableTool(name) // Also enable so it appears in API "tools" section
 	if err := tc.Sessions.Save(ctx, ns, session); err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}
-	return CommandResult{Handled: true, Action: ActionReply, Reply: "enabled: " + name, Session: session}
+	return CommandResult{Handled: true, Action: ActionReply, Reply: "allowed: " + name, Session: session}
 }
 
-func (tc *ToolCommands) disableTool(ctx context.Context, sessionID string, parts []string) CommandResult {
+func (tc *ToolCommands) denyTool(ctx context.Context, sessionID string, parts []string) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 	if len(parts) < 3 {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "error: please specify a tool name or #tag to disable"}
+		return CommandResult{Handled: true, Action: ActionReply, Reply: "error: please specify a tool name or #tag to deny"}
 	}
 	values := parts[2:]
 	if isTagValue(values[0]) {
-		return tc.disableToolsByTag(ctx, sessionID, values)
+		return tc.denyToolsByTag(ctx, sessionID, values)
 	}
 	name := parts[2]
 	session, err := tc.Sessions.GetOrCreate(ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}
-	session.DisableTool(name)
+	if err := session.DenyTool(name); err != nil {
+		return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("error: %v", err)}
+	}
 	if err := tc.Sessions.Save(ctx, ns, session); err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}
-	return CommandResult{Handled: true, Action: ActionReply, Reply: "disabled: " + name, Session: session}
+	return CommandResult{Handled: true, Action: ActionReply, Reply: "denied: " + name, Session: session}
 }
 
 func isTagValue(v string) bool {
@@ -281,10 +290,10 @@ func stripTagPrefix(v string) string {
 	return strings.TrimPrefix(v, "#")
 }
 
-func (tc *ToolCommands) enableToolsByTag(ctx context.Context, sessionID string, values []string) CommandResult {
+func (tc *ToolCommands) allowToolsByTag(ctx context.Context, sessionID string, values []string) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 	if len(values) < 1 {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "error: please specify at least one tag to enable"}
+		return CommandResult{Handled: true, Action: ActionReply, Reply: "error: please specify at least one tag to allow"}
 	}
 	tags := make([]string, len(values))
 	for i, v := range values {
@@ -303,6 +312,7 @@ func (tc *ToolCommands) enableToolsByTag(ctx context.Context, sessionID string, 
 	}
 	names := make([]string, 0, len(allTagged))
 	for _, ts := range allTagged {
+		session.AllowTool(ts.Name)
 		session.EnableTool(ts.Name)
 		names = append(names, ts.Name)
 	}
@@ -310,13 +320,13 @@ func (tc *ToolCommands) enableToolsByTag(ctx context.Context, sessionID string, 
 		return CommandResult{Handled: true, Error: err}
 	}
 	tagList := strings.Join(tags, ", ")
-	return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("enabled by tags %q: %s", "#"+tagList, strings.Join(names, ", ")), Session: session}
+	return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("allowed by tags %q: %s", "#"+tagList, strings.Join(names, ", ")), Session: session}
 }
 
-func (tc *ToolCommands) disableToolsByTag(ctx context.Context, sessionID string, values []string) CommandResult {
+func (tc *ToolCommands) denyToolsByTag(ctx context.Context, sessionID string, values []string) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 	if len(values) < 1 {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "error: please specify at least one tag to disable"}
+		return CommandResult{Handled: true, Action: ActionReply, Reply: "error: please specify at least one tag to deny"}
 	}
 	tags := make([]string, len(values))
 	for i, v := range values {
@@ -335,14 +345,16 @@ func (tc *ToolCommands) disableToolsByTag(ctx context.Context, sessionID string,
 	}
 	names := make([]string, 0, len(allTagged))
 	for _, ts := range allTagged {
-		session.DisableTool(ts.Name)
+		if err := session.DenyTool(ts.Name); err != nil {
+			return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("error denying %s: %v", ts.Name, err)}
+		}
 		names = append(names, ts.Name)
 	}
 	if err := tc.Sessions.Save(ctx, ns, session); err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}
 	tagList := strings.Join(tags, ", ")
-	return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("disabled by tags %q: %s", "#"+tagList, strings.Join(names, ", ")), Session: session}
+	return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("denied by tags %q: %s", "#"+tagList, strings.Join(names, ", ")), Session: session}
 }
 
 func (tc *ToolCommands) handleToolList(ctx context.Context, sessionID string) CommandResult {
@@ -370,16 +382,22 @@ func (tc *ToolCommands) handleToolList(ctx context.Context, sessionID string) Co
 	lines = append(lines, "available tools:")
 	for _, ts := range sorted {
 		tool, _ := tc.Tools.Get(ts.Name)
+		allowed := session.IsToolAllowed(ts.Name)
 		enabled := session.IsToolEnabled(ts.Name)
 		toolsList = append(toolsList, map[string]any{
 			"name":        ts.Name,
 			"description": ts.Description,
+			"allowed":     allowed,
 			"enabled":     enabled,
 			"tags":        tool.Tags,
 		})
-		status := "[disabled]"
-		if enabled {
+		status := "[denied] "
+		if !allowed {
+			status = "[denied] "
+		} else if enabled {
 			status = "[enabled] "
+		} else {
+			status = "[allowed] "
 		}
 		tagStr := ""
 		if len(tool.Tags) > 0 {

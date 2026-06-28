@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -45,6 +46,15 @@ type Message struct {
 //
 // The composite primary key is (Namespace, ID), where Namespace isolates
 // sessions from different gateways (e.g. "tcp", "ws", "tg:12345").
+//
+// Tool authorisation model (v2):
+//   - BlockedTools[name]=true  → denied (completely invisible to LLM)
+//   - BlockedTools missing/false → allowed (visible in system prompt)
+//   - EnabledTools[name]=true  → enabled (appears in API "tools" section)
+//   - EnabledTools missing/false → disabled (system prompt only, but
+//     mutual activation allows execution if LLM calls anyway)
+//   - Once a tool appears in conversation history as a tool call, it
+//     becomes "locked" and cannot be denied or disabled.
 // ---------------------------------------------------------------------------
 
 type SessionData struct {
@@ -59,6 +69,7 @@ type SessionData struct {
 	Model            string
 	TotalTokens      int
 	EnabledTools     map[string]bool
+	BlockedTools     map[string]bool
 	CompactSoftLimit int
 }
 
@@ -74,6 +85,12 @@ func NewSessionData(namespace, systemPrompt string) SessionData {
 		UpdatedAt:        now,
 		ClientCWD:        cwd,
 		CompactSoftLimit: 0,
+		// Only show_tool is pre-enabled by default so the LLM can
+		// discover and enable other tools at runtime.
+		// allow_tool and deny_tool are human-only slash commands.
+		EnabledTools: map[string]bool{
+			"show_tool": true,
+		},
 	}
 }
 
@@ -86,6 +103,12 @@ func (sd *SessionData) DeepCopy() SessionData {
 		cp.EnabledTools = make(map[string]bool, len(sd.EnabledTools))
 		for k, v := range sd.EnabledTools {
 			cp.EnabledTools[k] = v
+		}
+	}
+	if sd.BlockedTools != nil {
+		cp.BlockedTools = make(map[string]bool, len(sd.BlockedTools))
+		for k, v := range sd.BlockedTools {
+			cp.BlockedTools[k] = v
 		}
 	}
 	return cp
@@ -197,11 +220,39 @@ func (sess *Session) CWDMessage() *Message {
 	}
 }
 
-// --- SessionToolAuth ---
+// --- SessionToolAuth (v2) ---
+//
+// Tool authorisation model:
+//   - Denied (BlockedTools[name]=true): completely invisible to LLM
+//   - Allowed (!BlockedTools[name]): visible in system prompt listing
+//   - Enabled (Allowed + EnabledTools[name]=true): in API "tools" section
+//   - Locked (tool appears in history calls): cannot be denied/disabled
+
+func (sess *Session) IsToolAllowed(name string) bool {
+	sess.mu.RLock()
+	defer sess.mu.RUnlock()
+	if sess.data.BlockedTools == nil {
+		return true
+	}
+	return !sess.data.BlockedTools[name]
+}
+
+func (sess *Session) IsToolDenied(name string) bool {
+	sess.mu.RLock()
+	defer sess.mu.RUnlock()
+	if sess.data.BlockedTools == nil {
+		return false
+	}
+	return sess.data.BlockedTools[name]
+}
 
 func (sess *Session) IsToolEnabled(name string) bool {
 	sess.mu.RLock()
 	defer sess.mu.RUnlock()
+	// Must be allowed first
+	if sess.data.BlockedTools != nil && sess.data.BlockedTools[name] {
+		return false
+	}
 	if len(sess.data.EnabledTools) == 0 {
 		return false
 	}
@@ -222,6 +273,22 @@ func (sess *Session) IsToolConfigured(name string) bool {
 	return ok
 }
 
+// IsToolLocked returns true if the tool has been used in this session.
+func (sess *Session) IsToolLocked(name string) bool {
+	sess.mu.RLock()
+	defer sess.mu.RUnlock()
+	// Check UsedTools map first (fast path)
+	// Then scan history for any tool call with this name
+	for _, msg := range sess.data.Messages {
+		for _, tc := range msg.ToolCalls {
+			if tc.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (sess *Session) EnableTool(name string) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
@@ -231,13 +298,58 @@ func (sess *Session) EnableTool(name string) {
 	sess.data.EnabledTools[name] = true
 }
 
-func (sess *Session) DisableTool(name string) {
+func (sess *Session) DisableTool(name string) error {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
+	// Check if tool is locked (used in history)
+	for _, msg := range sess.data.Messages {
+		for _, tc := range msg.ToolCalls {
+			if tc.Name == name {
+				return fmt.Errorf("tool %q is locked because it was already used in this session", name)
+			}
+		}
+	}
 	if sess.data.EnabledTools == nil {
 		sess.data.EnabledTools = make(map[string]bool)
 	}
 	sess.data.EnabledTools[name] = false
+	return nil
+}
+
+func (sess *Session) AllowTool(name string) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.data.BlockedTools == nil {
+		return // already allowed
+	}
+	delete(sess.data.BlockedTools, name)
+	if len(sess.data.BlockedTools) == 0 {
+		sess.data.BlockedTools = nil
+	}
+}
+
+func (sess *Session) DenyTool(name string) error {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	// Check if tool is locked (used in history)
+	for _, msg := range sess.data.Messages {
+		for _, tc := range msg.ToolCalls {
+			if tc.Name == name {
+				return fmt.Errorf("tool %q is locked because it was already used in this session", name)
+			}
+		}
+	}
+	if sess.data.BlockedTools == nil {
+		sess.data.BlockedTools = make(map[string]bool)
+	}
+	sess.data.BlockedTools[name] = true
+	return nil
+}
+
+func (sess *Session) MarkToolUsed(name string) {
+	// This is a no-op at the data level because IsToolLocked scans history.
+	// We keep the method for future optimizations (e.g. a UsedTools map).
+	// For now, locking is derived from message history.
 }
 
 // --- SessionModelBinding ---

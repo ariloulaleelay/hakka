@@ -946,16 +946,16 @@ func TestToolCommand_List(t *testing.T) {
 	if !strings.Contains(res.Reply, "read_file") {
 		t.Fatalf("expected read_file in list, got: %q", res.Reply)
 	}
-	if !strings.Contains(res.Reply, "disabled") {
-		t.Fatalf("expected all tools to show as disabled by default, got: %q", res.Reply)
+	if !strings.Contains(res.Reply, "allowed") && !strings.Contains(res.Reply, "disabled") && !strings.Contains(res.Reply, "enabled") {
+		t.Fatalf("expected status marker in list, got: %q", res.Reply)
 	}
 }
 
-func TestToolCommand_Enable(t *testing.T) {
+func TestToolCommand_Allow(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
 
-	res := cmd.Execute(context.Background(), "s1", "/tool enable read_file")
+	res := cmd.Execute(context.Background(), "s1", "/tool allow read_file")
 	if !res.Handled || res.Error != nil {
 		t.Fatalf("handle: %v %v", res.Handled, res.Error)
 	}
@@ -967,12 +967,12 @@ func TestToolCommand_Enable(t *testing.T) {
 	}
 }
 
-func TestToolCommand_Disable(t *testing.T) {
+func TestToolCommand_Deny(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
 	session.EnableTool("write_file")
 
-	res := cmd.Execute(context.Background(), "s1", "/tool disable write_file")
+	res := cmd.Execute(context.Background(), "s1", "/tool deny write_file")
 	if !res.Handled || res.Error != nil {
 		t.Fatalf("handle: %v %v", res.Handled, res.Error)
 	}
@@ -984,11 +984,11 @@ func TestToolCommand_Disable(t *testing.T) {
 	}
 }
 
-func TestToolCommand_EnableTag(t *testing.T) {
+func TestToolCommand_AllowTag(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
 
-	res := cmd.Execute(context.Background(), "s1", "/tool enable #filesystem")
+	res := cmd.Execute(context.Background(), "s1", "/tool allow #filesystem")
 	if !res.Handled || res.Error != nil {
 		t.Fatalf("handle: %v %v", res.Handled, res.Error)
 	}
@@ -1003,14 +1003,14 @@ func TestToolCommand_EnableTag(t *testing.T) {
 	}
 }
 
-func TestToolCommand_DisableTag(t *testing.T) {
+func TestToolCommand_DenyTag(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
 	session.EnableTool("read_file")
 	session.EnableTool("write_file")
 	session.EnableTool("shell")
 
-	res := cmd.Execute(context.Background(), "s1", "/tool disable #filesystem")
+	res := cmd.Execute(context.Background(), "s1", "/tool deny #filesystem")
 	if !res.Handled || res.Error != nil {
 		t.Fatalf("handle: %v %v", res.Handled, res.Error)
 	}
@@ -1028,11 +1028,11 @@ func TestToolCommand_DisableTag(t *testing.T) {
 	}
 }
 
-func TestToolCommand_EnableUnknownTool(t *testing.T) {
+func TestToolCommand_AllowUnknownTool(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	_, _ = sm.GetOrCreate(context.Background(), "testns", "s1")
 
-	res := cmd.Execute(context.Background(), "s1", "/tool enable nonexistent")
+	res := cmd.Execute(context.Background(), "s1", "/tool allow nonexistent")
 	if !res.Handled || res.Error != nil {
 		t.Fatalf("handle: %v %v", res.Handled, res.Error)
 	}
@@ -1053,8 +1053,8 @@ func TestToolCommand_ListShowsEnabledWithMarker(t *testing.T) {
 	if !strings.Contains(res.Reply, "[enabled]") || !strings.Contains(res.Reply, "http_get") {
 		t.Fatalf("expected http_get to show as enabled, got: %q", res.Reply)
 	}
-	if !strings.Contains(res.Reply, "[disabled]") {
-		t.Fatalf("expected other tools to show as disabled by default, got: %q", res.Reply)
+	if !strings.Contains(res.Reply, "[allowed]") && !strings.Contains(res.Reply, "[disabled]") && !strings.Contains(res.Reply, "[denied]") {
+		t.Fatalf("expected other tools to show non-enabled status, got: %q", res.Reply)
 	}
 }
 
@@ -1075,7 +1075,7 @@ func TestToolCommand_PersistsAcrossSessions(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	_, _ = sm.GetOrCreate(context.Background(), "testns", "s1")
 
-	cmd.Execute(context.Background(), "s1", "/tool enable read_file")
+	cmd.Execute(context.Background(), "s1", "/tool allow read_file")
 
 	session2, _ := sm.GetOrCreate(context.Background(), "testns", "s2")
 	if session2.IsToolEnabled("read_file") {
@@ -1088,11 +1088,11 @@ func TestToolCommand_PersistsAcrossSessions(t *testing.T) {
 	}
 }
 
-func TestToolCommand_EnableNonexistentTag(t *testing.T) {
+func TestToolCommand_AllowNonexistentTag(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	_, _ = sm.GetOrCreate(context.Background(), "testns", "s1")
 
-	res := cmd.Execute(context.Background(), "s1", "/tool enable #bogus")
+	res := cmd.Execute(context.Background(), "s1", "/tool allow #bogus")
 	if !res.Handled || res.Error != nil {
 		t.Fatalf("handle: %v %v", res.Handled, res.Error)
 	}
@@ -1101,11 +1101,11 @@ func TestToolCommand_EnableNonexistentTag(t *testing.T) {
 	}
 }
 
-func TestToolCommand_EnableMultipleTags(t *testing.T) {
+func TestToolCommand_AllowMultipleTags(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
 
-	res := cmd.Execute(context.Background(), "s1", "/tool enable #network #dangerous")
+	res := cmd.Execute(context.Background(), "s1", "/tool allow #network #dangerous")
 	if !res.Handled || res.Error != nil {
 		t.Fatalf("handle: %v %v", res.Handled, res.Error)
 	}
@@ -1126,14 +1126,14 @@ func TestToolCommand_EnableMultipleTags(t *testing.T) {
 	}
 }
 
-func TestToolCommand_DisableMultipleTags(t *testing.T) {
+func TestToolCommand_DenyMultipleTags(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
 	session.EnableTool("http_get")
 	session.EnableTool("shell")
 	session.EnableTool("read_file")
 
-	res := cmd.Execute(context.Background(), "s1", "/tool disable #network #dangerous")
+	res := cmd.Execute(context.Background(), "s1", "/tool deny #network #dangerous")
 	if !res.Handled || res.Error != nil {
 		t.Fatalf("handle: %v %v", res.Handled, res.Error)
 	}
@@ -1162,7 +1162,7 @@ func TestToolCommand_GatewayRestriction(t *testing.T) {
 
 	_, _ = sm.GetOrCreate(context.Background(), "testns", "tg-session")
 
-	res := cmd.Execute(context.Background(), "tg-session", "/tool enable shell")
+	res := cmd.Execute(context.Background(), "tg-session", "/tool allow shell")
 	if !res.Handled || res.Error != nil {
 		t.Fatalf("handle: %v %v", res.Handled, res.Error)
 	}
@@ -1170,7 +1170,7 @@ func TestToolCommand_GatewayRestriction(t *testing.T) {
 		t.Fatalf("expected error about unknown tool, got: %q", res.Reply)
 	}
 
-	res = cmd.Execute(context.Background(), "tg-session", "/tool enable http_get")
+	res = cmd.Execute(context.Background(), "tg-session", "/tool allow http_get")
 	if !res.Handled || res.Error != nil {
 		t.Fatalf("handle: %v %v", res.Handled, res.Error)
 	}
