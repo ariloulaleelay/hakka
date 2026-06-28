@@ -1,3 +1,4 @@
+---
 # Hakka — LLM Agent Core Framework
 
 [![Go Version](https://img.shields.io/github/go-mod/go-version/ariloulaleelay/hakka?logo=go&label=Go)](https://golang.org)
@@ -82,7 +83,7 @@ echo '{"input":"Hello! What time is it?"}' | nc 127.0.0.1 9876
 echo '{"input":"Count to 5","stream":true}' | nc 127.0.0.1 9876
 ```
 
-### Chat via WebSocket
+### Chat via WebSocket (used by Neovim plugin)
 
 ```sh
 websocat ws://127.0.0.1:8765/ws
@@ -301,7 +302,7 @@ If the model requests tools mid-stream, the gateway transparently falls back to 
    │  Gemini          │   │  SQLite      │   │  edit_file           │
    └──────────────────┘   └──────────────┘   │  list_dir            │
                                              │  shell               │
-                                             │  http_get            │  (HTML→Markdown)                       │
+                                             │  http_get            │
                                              │  search (ripgrep)    │
                                              │  vim_run_command     │
                                              └──────────────────────┘
@@ -312,6 +313,8 @@ If the model requests tools mid-stream, the gateway transparently falls back to 
 ## Neovim Integration
 
 Hakka ships with a built-in Neovim plugin at [`nvim/hakka.nvim`](nvim/hakka.nvim).
+It connects to the hakka WebSocket gateway using a pure-Lua WebSocket client
+built on libuv (`ws://127.0.0.1:8765/ws` by default).
 
 ### Installation
 
@@ -322,8 +325,7 @@ Using [lazy.nvim](https://github.com/folke/lazy.nvim):
   dir = "/path/to/hakka/nvim/hakka.nvim",
   config = function()
     require("hakka").setup({
-      host = "127.0.0.1",
-      port = 9876,
+      addr = "ws://127.0.0.1:8765/ws",
     })
   end,
 }

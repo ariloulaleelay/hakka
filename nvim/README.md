@@ -1,7 +1,7 @@
 # hakka.nvim
 
-Neovim front-end for the hakka agent. Talks to the TCP gateway
-(`127.0.0.1:9876` by default) using newline-delimited JSON.
+Neovim front-end for the hakka agent. Talks to the WebSocket gateway
+(`ws://127.0.0.1:8765/ws` by default) using JSON text frames.
 Streams assistant deltas live into a floating window.
 
 ## Install (lazy.nvim)
@@ -13,7 +13,7 @@ Streams assistant deltas live into a floating window.
   cmd = { "HakkaChat", "HakkaSend", "HakkaReset" },
   config = function()
     require("hakka").setup({
-      addr = "127.0.0.1:9876",
+      addr = "ws://127.0.0.1:8765/ws",
     })
     vim.keymap.set("n", "<leader>hc", "<cmd>HakkaChat<cr>", { desc = "hakka: chat" })
     vim.keymap.set("n", "<leader>hr", "<cmd>HakkaReset<cr>", { desc = "hakka: reset session" })
@@ -56,7 +56,7 @@ shortcut:
 
 ```lua
 require("hakka").setup({
-  addr = "127.0.0.1:9876",
+  addr = "ws://127.0.0.1:8765/ws",
   shortcuts = {
     ["<C-r>"] = "submit",   -- Ctrl+R to send from insert mode
     ["<C-e>"] = "close",    -- Ctrl+E to close

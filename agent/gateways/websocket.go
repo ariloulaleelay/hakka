@@ -146,6 +146,56 @@ func (gw *WebSocketGateway) handle(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Handle init handshake (same logic as TCP gateway).
+		if env.Type == "init" {
+			var initReq struct {
+				Cwd   string `json:"cwd"`
+				Start bool   `json:"start"`
+			}
+			if err := json.Unmarshal(frameData, &initReq); err != nil {
+				writer := wsWriter(readCtx, wsConn)
+				if writer.Write(FrameResponse{Error: "invalid init frame: " + err.Error()}) != nil {
+					return
+				}
+				continue
+			}
+
+			session := agent.NewSession(gw.Handler.Namespace, gw.Handler.Conv.Sessions.SystemPrompt)
+			if initReq.Cwd != "" {
+				session.SetClientCWD(initReq.Cwd)
+			}
+			if initReq.Start {
+				if gw.Handler.Conv.Tools != nil {
+					for _, schema := range gw.Handler.Conv.Tools.Schemas() {
+						session.EnableTool(schema.Name)
+					}
+				}
+			}
+
+			if saveErr := gw.Handler.Conv.Sessions.Save(readCtx, gw.Handler.Namespace, session); saveErr != nil {
+				writer := wsWriter(readCtx, wsConn)
+				if writer.Write(FrameResponse{Error: saveErr.Error()}) != nil {
+					return
+				}
+				continue
+			}
+
+			data := session.Read()
+			writer := wsWriter(readCtx, wsConn)
+			if writer.Write(FrameResponse{
+				Event:     "init",
+				SessionID: data.ID,
+				Done:      true,
+				Data: map[string]any{
+					"model": gw.Handler.Conv.SessionModel(session),
+					"cwd":   data.ClientCWD,
+				},
+			}) != nil {
+				return
+			}
+			continue
+		}
+
 		// Normal request — process in a separate goroutine so the read
 		// loop stays available for incoming response frames.
 		go func(data []byte) {
@@ -192,3 +242,4 @@ func (w *wsSyncWriter) ConnKey() string {
 }
 
 var _ Gateway = (*WebSocketGateway)(nil)
+

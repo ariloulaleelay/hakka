@@ -1,3 +1,4 @@
+---
 --- Default shortcuts. Each key is a keymap lhs (e.g. "<CR>", "<C-s>")
 --- and the value is a command name (e.g. "submit", "close").
 --- Built-in command names:
@@ -14,7 +15,7 @@ local DEFAULT_SHORTCUTS = {
 local M = {}
 
 M.defaults = {
-  addr = "127.0.0.1:9876",
+  addr = "ws://127.0.0.1:8765/ws",
   ui = {
     width = 0.6,
     height = 0.7,

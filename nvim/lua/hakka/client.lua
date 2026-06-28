@@ -1,14 +1,6 @@
-local uv = vim.uv or vim.loop
+local wsclient = require("hakka.wsclient")
 
 local M = {}
-
-local function parse_addr(addr)
-  local host, port = addr:match("^(.-):(%d+)$")
-  if not host then
-    error("hakka: invalid addr " .. tostring(addr))
-  end
-  return host, tonumber(port)
-end
 
 local function execute_vim_command(cmd)
   local fn, compile_err = load(cmd)
@@ -33,86 +25,70 @@ local function safe_encode(val)
   return '"' .. tostring(val):gsub('["\\]', function(c) return '\\' .. c end) .. '"'
 end
 
-local function connect_and_send(host, port, payload, on_frame, on_done)
-  local tcp = uv.new_tcp()
-  local buffer = ""
-  local closed = false
+--- Open a WebSocket connection, send a single request, and process responses.
+--- Calls on_frame(parsed) for each incoming frame, and on_done(err) on completion.
+local function connect_and_send(url, payload, on_frame, on_done)
+  local connection
 
-  local function close(err)
-    if closed then return end
-    closed = true
-    if tcp and not tcp:is_closing() then
-      tcp:read_stop()
-      tcp:close()
+  --- Handle an incoming JSON frame from the server.
+  --- This is called from a vim.schedule'd context (wsclient ensures this).
+  local function handle_frame(text)
+    local ok, parsed = pcall(vim.json.decode, text)
+    if not ok then
+      if connection then connection:close() end
+      if on_done then on_done("json: " .. tostring(parsed)) end
+      return
     end
-    vim.schedule(function()
-      on_done(err)
-    end)
+
+    if parsed.event == "vim_request" and parsed.vim_request then
+      local req = parsed.vim_request
+      vim.schedule(function()
+        local result, err = execute_vim_command(req.command)
+        local resp = {
+          type = "response",
+          request_id = req.request_id,
+          result = result,
+          error = err,
+        }
+        if connection then
+          connection:send(resp)
+        end
+      end)
+    else
+      -- We are already in a vim.schedule'd context, so call on_frame directly
+      on_frame(parsed)
+      if parsed.done or (parsed.error and parsed.error ~= "") then
+        if connection then
+          connection:close()
+        end
+        if on_done then on_done(nil) end
+      end
+    end
   end
 
-  tcp:connect(host, port, function(err)
+  connection = wsclient.connect(url, function(err)
     if err then
-      return close("connect: " .. err)
+      if on_done then on_done(err) end
+      return
     end
 
-    local req_line = vim.json.encode(payload) .. "\n"
-    tcp:write(req_line, function(werr)
-      if werr then
-        close("write: " .. werr)
-      end
-    end)
+    -- Send the request
+    connection:send(payload)
 
-    tcp:read_start(function(rerr, chunk)
-      if rerr then
-        return close("read: " .. rerr)
-      end
-      if not chunk then
-        return close(nil)
-      end
+    -- Register frame callback (wsclient will deliver any buffered frames)
+    connection:on_frame(handle_frame)
 
-      buffer = buffer .. chunk
-      while true do
-        local nl = buffer:find("\n", 1, true)
-        if not nl then break end
-        local line = buffer:sub(1, nl - 1)
-        buffer = buffer:sub(nl + 1)
-
-        local ok, parsed = pcall(vim.json.decode, line)
-        if not ok then
-          return close("json: " .. parsed)
-        end
-
-        if parsed.event == "vim_request" and parsed.vim_request then
-          local req = parsed.vim_request
-          vim.schedule(function()
-            local result, err = execute_vim_command(req.command)
-            local resp_json = '{"type":"response","request_id":"' .. req.request_id .. '","result":' .. safe_encode(result) .. ',"error":'
-            if err then
-              resp_json = resp_json .. '"' .. err:gsub('["\\]', function(c) return '\\' .. c end) .. '"'
-            else
-              resp_json = resp_json .. 'null'
-            end
-            resp_json = resp_json .. '}'
-            tcp:write(resp_json .. "\n")
-          end)
-        else
-          vim.schedule(function()
-            on_frame(parsed)
-          end)
-          if parsed.done or (parsed.error and parsed.error ~= "") then
-            return close(nil)
-          end
-        end
-      end
+    -- Register close callback
+    connection:on_close(function(close_err)
+      if on_done then on_done(close_err) end
     end)
   end)
 end
 
 -- Non-streaming: invoke on_response(err, parsed) once.
 function M.send(addr, payload, on_response)
-  local host, port = parse_addr(addr)
   local got
-  connect_and_send(host, port, payload,
+  connect_and_send(addr, payload,
     function(frame) got = frame end,
     function(err)
       on_response(err, got)
@@ -121,9 +97,8 @@ end
 
 -- Streaming: on_frame(parsed) is called for each frame until done/error.
 function M.stream(addr, payload, on_frame, on_done)
-  local host, port = parse_addr(addr)
   payload.stream = true
-  connect_and_send(host, port, payload, on_frame, on_done)
+  connect_and_send(addr, payload, on_frame, on_done)
 end
 
 -- Execute a structured JSON command (non-streaming).

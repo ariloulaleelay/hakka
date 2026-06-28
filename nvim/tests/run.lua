@@ -1,3 +1,4 @@
+---
 -- Test runner for hakka.nvim pure Lua modules.
 -- Usage: nvim --headless -c "lua dofile('tests/run.lua')" -c "qa!"
 -- Or via Makefile: make test
@@ -247,7 +248,30 @@ sc = cfg_d.get_shortcuts()
 assert_eq(sc["<CR>"], "submit", "empty opts: defaults work")
 
 -- ──────────────────────────────────────────
-heading("client.stream error frame completion")
+heading("client.stream error frame completion (WebSocket)")
+
+local bit = require("bit")
+local bxor = bit.bxor
+local bor = bit.bor
+
+--- Build an unmasked WebSocket text frame (server → client).
+--- @param payload string The text payload
+--- @return string The raw frame bytes
+local function ws_text_frame(payload)
+  local len = #payload
+  local header = string.char(0x81)  -- FIN=1, opcode=1 (text)
+  if len < 126 then
+    header = header .. string.char(len)  -- no mask bit
+  elseif len < 65536 then
+    header = header .. string.char(126, bit.rshift(len, 8), bit.band(len, 0xFF))
+  else
+    header = header .. string.char(127)
+    for i = 7, 0, -1 do
+      header = header .. string.char(bit.band(bit.rshift(len, i * 8), 0xFF))
+    end
+  end
+  return header .. payload
+end
 
 local client = require("hakka.client")
 local uv = vim.uv or vim.loop
@@ -255,7 +279,7 @@ local uv = vim.uv or vim.loop
 local server = uv.new_tcp()
 assert(server:bind("127.0.0.1", 0))
 local sock = server:getsockname()
-local addr = sock.ip .. ":" .. tostring(sock.port)
+local ws_url = "ws://" .. sock.ip .. ":" .. tostring(sock.port) .. "/ws"
 local server_client
 local server_saw_request = false
 
@@ -268,11 +292,30 @@ server:listen(1, function(err)
     if not chunk then
       return
     end
+    -- We received the HTTP upgrade request
     server_saw_request = true
     server_client:read_stop()
-    server_client:write('{"session_id":"sid-err","error":"llm timeout"}\n', function()
-      server_client:close()
-      server:close()
+
+    -- Send HTTP 101 Switching Protocols response
+    local http_resp = {
+      "HTTP/1.1 101 Switching Protocols",
+      "Upgrade: websocket",
+      "Connection: Upgrade",
+      "",
+      "",
+    }
+    server_client:write(table.concat(http_resp, "\r\n"), function()
+      -- Now send the WebSocket text frame with the error response
+      local err_json = '{"session_id":"sid-err","error":"llm timeout"}'
+      local ws_frame = ws_text_frame(err_json)
+      server_client:write(ws_frame, function()
+        -- Send a close frame
+        local close_frame = string.char(0x88, 0x00)  -- FIN=1, opcode=8 (close), no payload
+        server_client:write(close_frame, function()
+          server_client:close()
+          server:close()
+        end)
+      end)
     end)
   end)
 end)
@@ -281,7 +324,7 @@ local saw_error_frame = false
 local done_called = false
 local done_err = "not-called"
 
-client.stream(addr, { input = "timeout please" }, function(frame)
+client.stream(ws_url, { input = "timeout please" }, function(frame)
   if frame.error == "llm timeout" then
     saw_error_frame = true
   end
@@ -290,12 +333,12 @@ end, function(err)
   done_err = err
 end)
 
-local completed = vim.wait(1000, function()
+local completed = vim.wait(2000, function()
   return done_called
 end, 10)
 
 assert_eq(completed, true, "stream error frame calls on_done")
-assert_eq(server_saw_request, true, "fake server received stream request")
+assert_eq(server_saw_request, true, "fake server received WebSocket upgrade request")
 assert_eq(saw_error_frame, true, "stream forwards error frame before done")
 assert_eq(done_err, nil, "error frame closes stream without transport error")
 
