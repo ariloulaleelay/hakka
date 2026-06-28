@@ -251,7 +251,7 @@ func TestSessionCreate_ReturnsNewSessionWithID(t *testing.T) {
 	if res.Session == nil {
 		t.Fatal("expected new session in result, got nil")
 	}
-	if res.Session.ID == "" {
+	if res.Session.SessionID() == "" {
 		t.Fatal("expected non-empty session ID in new session")
 	}
 }
@@ -260,7 +260,7 @@ func TestSessionSwitch_ChangesActiveSession(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
 	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
 	createRes := cmd.Execute(context.Background(), "session1", "/session create")
-	newID := createRes.Session.ID
+	newID := createRes.Session.SessionID()
 
 	res := cmd.Execute(context.Background(), newID, "/session switch session1")
 
@@ -270,8 +270,8 @@ func TestSessionSwitch_ChangesActiveSession(t *testing.T) {
 	if !strings.Contains(res.Reply, "switched to session: session1") {
 		t.Fatalf("expected switch confirmation to 'session1', got reply: %q", res.Reply)
 	}
-	if res.Session == nil || res.Session.ID != "session1" {
-		t.Fatalf("expected switched session to be session1, got session ID: %q", res.Session.ID)
+	if res.Session == nil || res.Session.SessionID() != "session1" {
+		t.Fatalf("expected switched session to be session1, got session ID: %q", res.Session.SessionID())
 	}
 }
 
@@ -279,7 +279,7 @@ func TestSessionDelete_RemovesTargetFromList(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
 	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
 	createRes := cmd.Execute(context.Background(), "session1", "/session create")
-	newID := createRes.Session.ID
+	newID := createRes.Session.SessionID()
 
 	delRes := cmd.Execute(context.Background(), "session1", "/session delete "+newID)
 
@@ -325,13 +325,13 @@ func TestSessionRename_SetsName(t *testing.T) {
 	if !strings.Contains(res.Reply, "renamed") {
 		t.Fatalf("expected rename confirmation, got: %q", res.Reply)
 	}
-	if res.Session == nil || res.Session.Name != "My Chat" {
-		t.Fatalf("expected session.Name = %q, got %q", "My Chat", res.Session.Name)
+	if res.Session == nil || res.Session.SessionName() != "My Chat" {
+		t.Fatalf("expected session.Name = %q, got %q", "My Chat", res.Session.SessionName())
 	}
 
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
-	if session.Name != "My Chat" {
-		t.Fatalf("expected persisted Name = %q, got %q", "My Chat", session.Name)
+	if session.SessionName() != "My Chat" {
+		t.Fatalf("expected persisted Name = %q, got %q", "My Chat", session.SessionName())
 	}
 }
 
@@ -351,14 +351,14 @@ func TestSessionRename_MissingName(t *testing.T) {
 func TestSessionInfo_ShowsName(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
-	session.Name = "My Session"
+	session.SetSessionName("My Session")
 
 	res := cmd.Execute(context.Background(), "session1", "/session info")
 
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if !strings.Contains(res.Reply, session.ID) {
+	if !strings.Contains(res.Reply, session.SessionID()) {
 		t.Fatalf("expected reply to contain session ID, got: %q", res.Reply)
 	}
 	if !strings.Contains(res.Reply, "My Session") {
@@ -369,7 +369,7 @@ func TestSessionInfo_ShowsName(t *testing.T) {
 func TestSessionList_ShowsNameAndID(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
-	session.Name = "Alpha Chat"
+	session.SetSessionName("Alpha Chat")
 
 	res := cmd.Execute(context.Background(), "session1", "/session list")
 
@@ -404,7 +404,7 @@ func TestSessionList_ShowsIDWhenUnnamed(t *testing.T) {
 func TestSessionList_ShowsCreationDate(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
-	session.Name = "Test Session"
+	session.SetSessionName("Test Session")
 
 	res := cmd.Execute(context.Background(), "session1", "/session list")
 
@@ -412,12 +412,12 @@ func TestSessionList_ShowsCreationDate(t *testing.T) {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
 	// Check that the reply contains the creation date in YYYY-MM-DD format
-	expectedDate := session.CreatedAt.Format("2006-01-02")
+	expectedDate := session.Read().CreatedAt.Format("2006-01-02")
 	if !strings.Contains(res.Reply, expectedDate) {
 		t.Fatalf("expected list to contain creation date %q, got: %q", expectedDate, res.Reply)
 	}
 	// Check that the reply contains the creation time in HH:MM format
-	expectedTime := session.CreatedAt.Format("15:04")
+	expectedTime := session.Read().CreatedAt.Format("15:04")
 	if !strings.Contains(res.Reply, expectedTime) {
 		t.Fatalf("expected list to contain creation time %q, got: %q", expectedTime, res.Reply)
 	}
@@ -436,20 +436,20 @@ func TestSessionList_OrderedByUpdateTimeNewestFirst(t *testing.T) {
 
 	// oldest: created 2 hours ago — saved first
 	s1, _ := sm.GetOrCreate(context.Background(), "testns", "session-c")
-	s1.CreatedAt = now.Add(-2 * time.Hour)
-	s1.Name = "Oldest Session"
+	s1.SetCreatedAt(now.Add(-2 * time.Hour))
+	s1.SetSessionName("Oldest Session")
 	s1.Append(agent.Message{Role: agent.RoleUser, Content: "old"})
 
 	// middle: created 1 hour ago — saved second
 	s2, _ := sm.GetOrCreate(context.Background(), "testns", "session-a")
-	s2.CreatedAt = now.Add(-1 * time.Hour)
-	s2.Name = "Middle Session"
+	s2.SetCreatedAt(now.Add(-1 * time.Hour))
+	s2.SetSessionName("Middle Session")
 	s2.Append(agent.Message{Role: agent.RoleUser, Content: "middle"})
 
 	// newest: created now — saved third (most recently updated)
 	s3, _ := sm.GetOrCreate(context.Background(), "testns", "session-b")
-	s3.CreatedAt = now
-	s3.Name = "Newest Session"
+	s3.SetCreatedAt(now)
+	s3.SetSessionName("Newest Session")
 	s3.Append(agent.Message{Role: agent.RoleUser, Content: "new"})
 
 	// Save sessions in this order. UpdatedAt will be set by Put.
@@ -494,7 +494,7 @@ func TestSessionList_HidesEmptySessions(t *testing.T) {
 	// Create an empty session (like what :HakkaChat does)
 	emptySession, _ := sm.GetOrCreate(context.Background(), "testns", "empty-session")
 	// Ensure it's truly empty — no messages
-	if len(emptySession.Messages) != 0 {
+	if len(emptySession.AllMessages()) != 0 {
 		t.Fatal("expected empty session to have no messages")
 	}
 
@@ -526,7 +526,7 @@ func TestSessionList_ShowsActiveEmptySession(t *testing.T) {
 
 	// Create an empty session — it's the active one
 	activeSession, _ := sm.GetOrCreate(context.Background(), "testns", "active-empty")
-	if len(activeSession.Messages) != 0 {
+	if len(activeSession.AllMessages()) != 0 {
 		t.Fatal("expected session to have no messages")
 	}
 
@@ -551,7 +551,7 @@ func TestSessionList_HidesMultipleEmptySessions(t *testing.T) {
 	// Create several empty sessions (simulating multiple :HakkaChat opens)
 	for _, id := range []string{"empty-1", "empty-2", "empty-3"} {
 		s, _ := sm.GetOrCreate(context.Background(), "testns", id)
-		if len(s.Messages) != 0 {
+		if len(s.AllMessages()) != 0 {
 			t.Fatalf("expected session %q to be empty", id)
 		}
 	}
@@ -585,7 +585,7 @@ func TestSessionList_HidesMultipleEmptySessions(t *testing.T) {
 
 func TestShortestUniquePrefix_SingleSession(t *testing.T) {
 	sessions := []*agent.Session{
-		{ID: "abcdef"},
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abcdef"); return s }(),
 	}
 	prefixes := shortestUniquePrefixes(sessions)
 	if prefixes["abcdef"] != "a" {
@@ -595,9 +595,9 @@ func TestShortestUniquePrefix_SingleSession(t *testing.T) {
 
 func TestShortestUniquePrefix_MultipleSessions(t *testing.T) {
 	sessions := []*agent.Session{
-		{ID: "abc123"},
-		{ID: "abd456"},
-		{ID: "abe789"},
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abc123"); return s }(),
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abd456"); return s }(),
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abe789"); return s }(),
 	}
 	prefixes := shortestUniquePrefixes(sessions)
 	if prefixes["abc123"] != "abc" {
@@ -613,9 +613,9 @@ func TestShortestUniquePrefix_MultipleSessions(t *testing.T) {
 
 func TestShortestUniquePrefix_DifferentLengths(t *testing.T) {
 	sessions := []*agent.Session{
-		{ID: "a-long-id"},
-		{ID: "another-id"},
-		{ID: "b-short"},
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("a-long-id"); return s }(),
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("another-id"); return s }(),
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("b-short"); return s }(),
 	}
 	prefixes := shortestUniquePrefixes(sessions)
 	if prefixes["a-long-id"] != "a-" {
@@ -668,7 +668,7 @@ func TestSessionDelete_WithShortID(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
 	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
 	createRes := cmd.Execute(context.Background(), "session1", "/session create")
-	newID := createRes.Session.ID
+	newID := createRes.Session.SessionID()
 	// Give the new session a message so it's visible
 	createRes.Session.Append(agent.Message{Role: agent.RoleUser, Content: "hi"})
 	sm.Save(context.Background(), "testns", createRes.Session)
@@ -721,7 +721,7 @@ func TestSessionSwitch_WithShortID(t *testing.T) {
 	s1.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
 	sm.Save(context.Background(), "testns", s1)
 	createRes := cmd.Execute(context.Background(), "switch-target", "/session create")
-	newID := createRes.Session.ID
+	newID := createRes.Session.SessionID()
 	createRes.Session.Append(agent.Message{Role: agent.RoleUser, Content: "other"})
 	sm.Save(context.Background(), "testns", createRes.Session)
 
@@ -735,7 +735,7 @@ func TestSessionSwitch_WithShortID(t *testing.T) {
 	if !strings.Contains(res.Reply, "switched to session: switch-target") {
 		t.Fatalf("expected switch to 'switch-target', got: %q", res.Reply)
 	}
-	if res.Session == nil || res.Session.ID != "switch-target" {
+	if res.Session == nil || res.Session.SessionID() != "switch-target" {
 		t.Fatalf("expected session 'switch-target', got: %v", res.Session)
 	}
 }
@@ -830,7 +830,7 @@ func TestSessionAutoRename_NamesSession(t *testing.T) {
 func TestSessionAutoRename_ReplacesExistingName(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
-	session.Name = "Old Name"
+	session.SetSessionName("Old Name")
 	session.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
 	session.Append(agent.Message{Role: agent.RoleAssistant, Content: "hi back"})
 	session.Append(agent.Message{Role: agent.RoleUser, Content: "how are you?"})
@@ -858,7 +858,7 @@ func TestSessionAutoRename_WorksEvenWithNoMessages(t *testing.T) {
 	if !strings.Contains(res.Reply, "session renamed") {
 		t.Fatalf("expected rename reply, got: %q", res.Reply)
 	}
-	if res.Session == nil || res.Session.Name == "" {
+	if res.Session == nil || res.Session.SessionName() == "" {
 		t.Fatal("expected session to have a name after autorename")
 	}
 }
@@ -1203,7 +1203,7 @@ func TestStartCommand_CreatesNewSession(t *testing.T) {
 	if res.Session == nil {
 		t.Fatal("expected a new session in result, got nil")
 	}
-	if res.Session.ID == "s1" {
+	if res.Session.SessionID() == "s1" {
 		t.Fatal("expected a different session ID, not the old one")
 	}
 	if !strings.Contains(res.Reply, "started fresh session") {
@@ -1271,7 +1271,7 @@ func TestStartCommand_PreservesProvidedCWD(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	// Create old session WITH a client CWD (simulating what the gateway does)
 	oldSession, _ := sm.GetOrCreate(context.Background(), "testns", "old-session")
-	oldSession.ClientCWD = "/client/project"
+	oldSession.SetClientCWD("/client/project")
 	sm.Save(context.Background(), "testns", oldSession)
 
 	res := cmd.Execute(context.Background(), "old-session", "/start")
@@ -1282,11 +1282,11 @@ func TestStartCommand_PreservesProvidedCWD(t *testing.T) {
 	if session == nil {
 		t.Fatal("expected a session from /start")
 	}
-	if session.ClientCWD != "/client/project" {
+	if session.Read().ClientCWD != "/client/project" {
 		t.Fatalf("BUG: /start should preserve the client CWD from the old session.\n"+
 			"  expected ClientCWD = %q\n"+
 			"  got               %q",
-			"/client/project", session.ClientCWD)
+			"/client/project", session.Read().ClientCWD)
 	}
 }
 
@@ -1295,7 +1295,7 @@ func TestStartCommand_PreservesProvidedCWD(t *testing.T) {
 func TestSessionCreateCommand_PreservesProvidedCWD(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	oldSession, _ := sm.GetOrCreate(context.Background(), "testns", "old-session")
-	oldSession.ClientCWD = "/workspace"
+	oldSession.SetClientCWD("/workspace")
 	sm.Save(context.Background(), "testns", oldSession)
 
 	res := cmd.Execute(context.Background(), "old-session", "/session create")
@@ -1306,11 +1306,11 @@ func TestSessionCreateCommand_PreservesProvidedCWD(t *testing.T) {
 	if session == nil {
 		t.Fatal("expected a session from /session create")
 	}
-	if session.ClientCWD != "/workspace" {
+	if session.Read().ClientCWD != "/workspace" {
 		t.Fatalf("BUG: /session create should preserve the client CWD from the old session.\n"+
 			"  expected ClientCWD = %q\n"+
 			"  got               %q",
-			"/workspace", session.ClientCWD)
+			"/workspace", session.Read().ClientCWD)
 	}
 }
 
@@ -1331,7 +1331,7 @@ func TestStartCommand_WithoutCWD_UsesServerCWD(t *testing.T) {
 	}
 	// When no CWD is provided, the session should still have the server CWD
 	// (set by NewSession). We just verify it's not empty.
-	if session.ClientCWD == "" {
+	if session.Read().ClientCWD == "" {
 		t.Fatal("expected ClientCWD to be set to server's CWD when no cwd is provided")
 	}
 }

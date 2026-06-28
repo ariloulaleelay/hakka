@@ -45,7 +45,7 @@ func writeCommandResult(w frameWriter, res commands.CommandResult, stream bool, 
 	}
 	resp := FrameResponse{Done: true}
 	if res.Session != nil {
-		resp.SessionID = res.Session.ID
+		resp.SessionID = res.Session.SessionID()
 	}
 
 	if res.Error != nil {
@@ -111,10 +111,10 @@ func sessionToMap(s *agent.Session) map[string]any {
 		return nil
 	}
 	return map[string]any{
-		"id":             s.ID,
-		"name":           s.Name,
-		"short_id":       shortID(s.ID),
-		"message_count":  len(s.Messages),
+		"id":             s.SessionID(),
+		"name":           s.SessionName(),
+		"short_id":       shortID(s.SessionID()),
+		"message_count":  len(s.AllMessages()),
 		"model":          s.GetModel(),
 		"total_tokens":   s.TotalTokenUsage(),
 	}
@@ -134,17 +134,17 @@ func sessionListToMap(sessions []*agent.Session, currentID string, allSessions [
 		allSessions = sessions
 	}
 	for _, s := range allSessions {
-		shortIDs[s.ID] = shortID(s.ID)
+		shortIDs[s.SessionID()] = shortID(s.SessionID())
 	}
 
 	result := make([]map[string]any, 0, len(sessions))
 	for _, s := range sessions {
 		m := sessionToMap(s)
-		if s.Name == "" {
+		if s.SessionName() == "" {
 			m["name"] = ""
 		}
-		m["short_id"] = shortIDs[s.ID]
-		m["current"] = s.ID == currentID
+		m["short_id"] = shortIDs[s.SessionID()]
+		m["current"] = s.SessionID() == currentID
 		result = append(result, m)
 	}
 	return result
@@ -241,8 +241,8 @@ func enrichCtxWithCWD(ctx context.Context, conv *agent.Conversation, req FrameRe
 	cwd := req.Cwd
 	if cwd == "" && req.SessionID != "" && conv != nil {
 		session, err := conv.Sessions.GetOrCreate(ctx, conv.Namespace, req.SessionID)
-		if err == nil && session != nil && session.ClientCWD != "" {
-			cwd = session.ClientCWD
+		if err == nil && session != nil && session.Read().ClientCWD != "" {
+			cwd = session.Read().ClientCWD
 		}
 	}
 	if cwd != "" {

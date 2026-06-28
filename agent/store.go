@@ -8,8 +8,7 @@ import (
 	"time"
 )
 
-// SessionStore persists sessions, keyed by (namespace, id). The namespace
-// isolates sessions from different gateways (e.g. "tcp", "ws", "tg:12345").
+// SessionStore persists sessions, keyed by (namespace, id).
 type SessionStore interface {
 	Get(ctx context.Context, namespace, id string) (*Session, bool, error)
 	Put(ctx context.Context, namespace string, s *Session) error
@@ -41,9 +40,11 @@ func (ms *MemoryStore) Get(_ context.Context, namespace, id string) (*Session, b
 func (ms *MemoryStore) Put(_ context.Context, namespace string, s *Session) error {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
-	s.Namespace = namespace
-	s.UpdatedAt = time.Now()
-	ms.data[storeKey(namespace, s.ID)] = s
+	s.Update(func(d *SessionData) {
+		d.Namespace = namespace
+		d.UpdatedAt = time.Now()
+	})
+	ms.data[storeKey(namespace, s.SessionID())] = s
 	return nil
 }
 
@@ -65,7 +66,8 @@ func (ms *MemoryStore) List(_ context.Context, namespace string) ([]*Session, er
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].UpdatedAt.After(out[j].UpdatedAt)
+		di, dj := out[i].Read(), out[j].Read()
+		return di.UpdatedAt.After(dj.UpdatedAt)
 	})
 	return out, nil
 }

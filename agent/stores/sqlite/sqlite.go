@@ -19,7 +19,15 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	dsn := path
+	pragma := "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	if strings.Contains(path, "?") {
+		dsn = path + "&" + pragma
+	} else {
+		dsn = path + "?" + pragma
+	}
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite open: %w", err)
 	}
@@ -27,17 +35,9 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite schema: %w", err)
 	}
-	// Migration: add name column for older databases
 	runMigration(db, `ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT ''`)
-	// Migration: add enabled_tools column for older databases
 	runMigration(db, `ALTER TABLE sessions ADD COLUMN enabled_tools TEXT NOT NULL DEFAULT ''`)
-	// Migration: add compact_soft_limit column for older databases.
-	// Replaces the old compact_chains column (chain-count based compaction).
-	// The compact_chains column is intentionally left behind — its values are
-	// no longer read or written. The old compaction model was removed; the new
-	// LLM-driven compaction uses a token-based soft limit instead.
 	runMigration(db, `ALTER TABLE sessions ADD COLUMN compact_soft_limit INTEGER NOT NULL DEFAULT 200000`)
-	// Migration: add updated_at column for older databases.
 	runMigration(db, `ALTER TABLE sessions ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`)
 	return &Store{db: db}, nil
 }
@@ -46,11 +46,6 @@ func (st *Store) Close() error {
 	return st.db.Close()
 }
 
-// runMigration executes a schema migration statement. If the column
-// already exists ("duplicate column name" error), it is silently
-// ignored — the migration already ran on a previous startup. All other
-// errors (disk I/O, permission, locked database) are logged at ERROR
-// level so they are visible in production logs.
 func runMigration(db *sql.DB, stmt string) {
 	_, err := db.ExecContext(context.Background(), stmt)
 	if err == nil {
@@ -81,79 +76,90 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);
 `
 
+// scanRow scans a SQL row into a *agent.Session via SessionData.
+func scanRow(scanner interface{ Scan(dest ...any) error }) (*agent.Session, error) {
+	var (
+		data            agent.SessionData
+		messagesJSON    string
+		createdText     string
+		updatedText     string
+		modelStr        string
+		totalTokens     int
+		enabledStr      string
+		compactSoftLim  int
+	)
+	err := scanner.Scan(
+		&data.Namespace, &data.ID, &data.SystemPrompt,
+		&messagesJSON, &createdText, &updatedText,
+		&data.ClientCWD, &modelStr, &totalTokens,
+		&data.Name, &enabledStr, &compactSoftLim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(messagesJSON), &data.Messages); err != nil {
+		return nil, fmt.Errorf("decode messages: %w", err)
+	}
+	if enabledStr != "" {
+		if err := json.Unmarshal([]byte(enabledStr), &data.EnabledTools); err != nil {
+			data.EnabledTools = nil
+		}
+	}
+	data.Model = modelStr
+	data.TotalTokens = totalTokens
+	data.CompactSoftLimit = compactSoftLim
+	if err := data.CreatedAt.UnmarshalText([]byte(createdText)); err != nil {
+		return nil, fmt.Errorf("decode created_at: %w", err)
+	}
+	if updatedText != "" {
+		if err := data.UpdatedAt.UnmarshalText([]byte(updatedText)); err != nil {
+			return nil, fmt.Errorf("decode updated_at: %w", err)
+		}
+	}
+	return agent.NewSessionFromData(&data), nil
+}
+
 func (st *Store) Get(ctx context.Context, namespace, id string) (*agent.Session, bool, error) {
 	row := st.db.QueryRowContext(ctx,
 		`SELECT namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, compact_soft_limit FROM sessions WHERE namespace = ? AND id = ?`, namespace, id)
 
-	var (
-		session       agent.Session
-		messagesJSON  string
-		createdText   string
-		updatedText   string
-		modelStr      string
-		totalTokens   int
-		enabledStr    string
-		compactSoftLimit int
-	)
-	err := row.Scan(&session.Namespace, &session.ID, &session.SystemPrompt, &messagesJSON, &createdText, &updatedText, &session.ClientCWD, &modelStr, &totalTokens, &session.Name, &enabledStr, &compactSoftLimit)
+	session, err := scanRow(row)
 	if err == sql.ErrNoRows {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	if err := json.Unmarshal([]byte(messagesJSON), &session.Messages); err != nil {
-		return nil, false, fmt.Errorf("decode messages: %w", err)
-	}
-	// Restore enabled_tools
-	if enabledStr != "" {
-		if err := json.Unmarshal([]byte(enabledStr), &session.EnabledTools); err != nil {
-			// Backward compat: if we can't parse, start with empty set
-			session.EnabledTools = nil
-		}
-	}
-	session.SetModel(modelStr)
-	session.SetTotalTokenUsage(totalTokens)
-	session.SetCompactSoftLimit(compactSoftLimit)
-	if err := session.CreatedAt.UnmarshalText([]byte(createdText)); err != nil {
-		return nil, false, fmt.Errorf("decode created_at: %w", err)
-	}
-	if updatedText != "" {
-		if err := session.UpdatedAt.UnmarshalText([]byte(updatedText)); err != nil {
-			return nil, false, fmt.Errorf("decode updated_at: %w", err)
-		}
-	}
-	return &session, true, nil
+	return session, true, nil
 }
 
 func (st *Store) Put(ctx context.Context, namespace string, session *agent.Session) error {
-	// Always update the timestamp on every write.
-	session.UpdatedAt = time.Now()
+	data := session.Read()
+	data.UpdatedAt = time.Now()
 
-	messagesJSON, err := json.Marshal(session.Messages)
+	messagesJSON, err := json.Marshal(data.Messages)
 	if err != nil {
 		return err
 	}
-	createdText, err := session.CreatedAt.MarshalText()
+	createdText, err := data.CreatedAt.MarshalText()
 	if err != nil {
 		return err
 	}
-	updatedAt := session.UpdatedAt
+	updatedAt := data.UpdatedAt
 	if updatedAt.IsZero() {
-		updatedAt = session.CreatedAt
+		updatedAt = data.CreatedAt
 	}
 	updatedText, err := updatedAt.MarshalText()
 	if err != nil {
 		return err
 	}
 
-	// Serialize enabled_tools to JSON (or empty string if nil/empty)
 	enabledJSON := "{}"
-	if len(session.EnabledTools) > 0 {
-		b, err := json.Marshal(session.EnabledTools)
+	if len(data.EnabledTools) > 0 {
+		b, err := json.Marshal(data.EnabledTools)
 		if err != nil {
 			slog.Error("sqlite: failed to marshal enabled_tools, saving with empty config",
-				"session", session.ID, "error", err)
+				"session", data.ID, "error", err)
 		} else {
 			enabledJSON = string(b)
 		}
@@ -172,7 +178,14 @@ func (st *Store) Put(ctx context.Context, namespace string, session *agent.Sessi
 			name          = excluded.name,
 			enabled_tools = excluded.enabled_tools,
 			compact_soft_limit = excluded.compact_soft_limit
-	`, namespace, session.ID, session.SystemPrompt, string(messagesJSON), string(createdText), string(updatedText), session.ClientCWD, session.GetModel(), session.TotalTokenUsage(), session.Name, enabledJSON, session.GetCompactSoftLimit())
+	`, namespace, data.ID, data.SystemPrompt, string(messagesJSON), string(createdText), string(updatedText),
+		data.ClientCWD, data.Model, data.TotalTokens, data.Name, enabledJSON, data.CompactSoftLimit)
+
+	session.Update(func(d *agent.SessionData) {
+		d.Namespace = namespace
+		d.UpdatedAt = updatedAt
+	})
+
 	return err
 }
 
@@ -187,42 +200,14 @@ func (st *Store) List(ctx context.Context, namespace string) ([]*agent.Session, 
 		return nil, err
 	}
 	defer rows.Close()
+
 	var sessions []*agent.Session
 	for rows.Next() {
-		var (
-			session      agent.Session
-			messagesJSON string
-			createdText  string
-			updatedText  string
-			modelStr     string
-			totalTokens  int
-			enabledStr   string
-			compactSoftLimit int
-		)
-		err := rows.Scan(&session.Namespace, &session.ID, &session.SystemPrompt, &messagesJSON, &createdText, &updatedText, &session.ClientCWD, &modelStr, &totalTokens, &session.Name, &enabledStr, &compactSoftLimit)
+		session, err := scanRow(rows)
 		if err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(messagesJSON), &session.Messages); err != nil {
-			return nil, fmt.Errorf("decode messages: %w", err)
-		}
-		if enabledStr != "" {
-			if err := json.Unmarshal([]byte(enabledStr), &session.EnabledTools); err != nil {
-				session.EnabledTools = nil
-			}
-		}
-		session.SetModel(modelStr)
-		session.SetTotalTokenUsage(totalTokens)
-		session.SetCompactSoftLimit(compactSoftLimit)
-		if err := session.CreatedAt.UnmarshalText([]byte(createdText)); err != nil {
-			return nil, fmt.Errorf("decode created_at: %w", err)
-		}
-		if updatedText != "" {
-			if err := session.UpdatedAt.UnmarshalText([]byte(updatedText)); err != nil {
-				return nil, fmt.Errorf("decode updated_at: %w", err)
-			}
-		}
-		sessions = append(sessions, &session)
+		sessions = append(sessions, session)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

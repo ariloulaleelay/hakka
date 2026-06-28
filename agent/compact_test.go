@@ -13,7 +13,7 @@ import (
 
 func makeCompactifyCall(sess *Session, ranges []compactRange) {
 	for _, r := range ranges {
-		callID := fmt.Sprintf("compactify-%d", len(sess.Messages))
+		callID := fmt.Sprintf("compactify-%d", len(sess.AllMessages()))
 		args, _ := json.Marshal(struct {
 			RangeStart int    `json:"range_start"`
 			RangeEnd   int    `json:"range_end"`

@@ -186,7 +186,7 @@ func (gw *TCPGateway) handle(ctx context.Context, conn net.Conn) {
 
 			session := agent.NewSession(gw.Handler.Namespace, gw.Handler.Conv.Sessions.SystemPrompt)
 			if initReq.Cwd != "" {
-				session.ClientCWD = initReq.Cwd
+				session.SetClientCWD(initReq.Cwd)
 			}
 			if initReq.Start {
 				// Enable all registered tools.
@@ -205,13 +205,14 @@ func (gw *TCPGateway) handle(ctx context.Context, conn net.Conn) {
 				continue
 			}
 
+			data := session.Read()
 			if flush.Write(FrameResponse{
 				Event:     "init",
-				SessionID: session.ID,
+				SessionID: data.ID,
 				Done:      true,
 				Data: map[string]any{
 					"model": gw.Handler.Conv.SessionModel(session),
-					"cwd":   session.ClientCWD,
+					"cwd":   data.ClientCWD,
 				},
 			}) != nil {
 				return

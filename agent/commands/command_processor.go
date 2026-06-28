@@ -70,10 +70,10 @@ func inheritCWD(ctx context.Context, sm *agent.SessionManager, ns, prevSessionID
 		return
 	}
 	prev, _, err := sm.Store.Get(ctx, ns, prevSessionID)
-	if err != nil || prev == nil || prev.ClientCWD == "" {
+	if err != nil || prev == nil || prev.Read().ClientCWD == "" {
 		return
 	}
-	session.ClientCWD = prev.ClientCWD
+	session.SetClientCWD(prev.Read().ClientCWD)
 }
 
 // ExecuteJSON handles a structured JSON command from a JSON-capable
@@ -294,7 +294,7 @@ func (cp *CommandProcessor) handleStart(ctx context.Context, sessionID string, p
 	return CommandResult{
 		Handled: true,
 		Action:  ActionSessionCreate,
-		Reply:   "started fresh session: " + session.ID + " with all tools enabled",
+		Reply:   "started fresh session: " + session.SessionID() + " with all tools enabled",
 		Session: session,
 	}
 }
@@ -396,16 +396,17 @@ func sessionToMap(s *agent.Session) map[string]any {
 	if s == nil {
 		return nil
 	}
+	d := s.Read()
 	return map[string]any{
-		"id":            s.ID,
-		"name":          s.Name,
-		"short_id":      shortID(s.ID),
-		"message_count": len(s.Messages),
+		"id":            d.ID,
+		"name":          d.Name,
+		"short_id":      shortID(d.ID),
+		"message_count": len(d.Messages),
 		"model":         s.GetModel(),
 		"total_tokens":  s.TotalTokenUsage(),
-		"client_cwd":    s.ClientCWD,
-		"created_at":    s.CreatedAt.Format(time.RFC3339),
-		"updated_at":    formatTime(s.UpdatedAt, s.CreatedAt),
+		"client_cwd":    d.ClientCWD,
+		"created_at":    d.CreatedAt.Format(time.RFC3339),
+		"updated_at":    formatTime(d.UpdatedAt, d.CreatedAt),
 	}
 }
 

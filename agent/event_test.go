@@ -87,7 +87,7 @@ func TestExecuteEvents_ToolLoop(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	eventCh, err := conv.Execute(context.Background(), session.ID, "say hi")
+	eventCh, err := conv.Execute(context.Background(), session.SessionID(), "say hi")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

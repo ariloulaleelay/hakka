@@ -133,8 +133,8 @@ func TestEngineChatNoTools(t *testing.T) {
 	if adapter.calls != 1 {
 		t.Fatalf("expected 1 LLM call, got %d", adapter.calls)
 	}
-	if len(session.Messages) != 2 {
-		t.Fatalf("expected 2 messages (user + assistant) in session, got %d", len(session.Messages))
+	if len(session.AllMessages()) != 2 {
+		t.Fatalf("expected 2 messages (user + assistant) in session, got %d", len(session.AllMessages()))
 	}
 	if adapter.lastMsgs[0].Role != RoleSystem {
 		t.Fatalf("system prompt not forwarded: %+v", adapter.lastMsgs[0])
@@ -266,7 +266,7 @@ func TestMessageUsageStored(t *testing.T) {
 
 	// Find the assistant message — it should have Usage set.
 	var found bool
-	for _, m := range session.Messages {
+	for _, m := range session.AllMessages() {
 		if m.Role == RoleAssistant && m.Content == "hi there" {
 			found = true
 			if m.Usage == nil {
@@ -351,7 +351,7 @@ func TestMessageUsageViaStream(t *testing.T) {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
 	var found bool
-	for _, m := range session.Messages {
+	for _, m := range session.AllMessages() {
 		if m.Role == RoleAssistant && m.Content == "streamed reply" {
 			found = true
 			if m.Usage == nil {
@@ -410,8 +410,8 @@ func TestStreamSession_AutoRename(t *testing.T) {
 
 	// Verify the session was renamed.
 	session, _ = sm.GetOrCreate(context.Background(), "testns", "stream-auto")
-	if session.Name != "My Test Session" {
-		t.Fatalf("BUG CONFIRMED: expected session.Name = %q after auto-rename via stream, got %q", "My Test Session", session.Name)
+	if session.SessionName() != "My Test Session" {
+		t.Fatalf("BUG CONFIRMED: expected session.SessionName() = %q after auto-rename via stream, got %q", "My Test Session", session.SessionName())
 	}
 	if !adapter.NamingRequested {
 		t.Fatal("BUG CONFIRMED: expected naming LLM call to have been made during streaming turn, but it was not")
@@ -450,7 +450,7 @@ func TestEngineChat_SaveFailurePropagatesToTurnFinished(t *testing.T) {
 	memStore := NewMemoryStore()
 	// Seed the session first so prepareWithInput succeeds.
 	seedSession := NewSession("testns", "sys")
-	seedSession.ID = "save-fail-test"
+	seedSession.SetID("save-fail-test")
 	if err := memStore.Put(context.Background(), "testns", seedSession); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestEngineChat_SaveFailureBeforeAutoRename(t *testing.T) {
 	memStore := NewMemoryStore()
 	// Seed the session with 2 user messages to enable auto-rename.
 	seedSession := NewSession("testns", "sys")
-	seedSession.ID = "auto-fail"
+	seedSession.SetID("auto-fail")
 	seedSession.Append(Message{Role: RoleUser, Content: "first"})
 	seedSession.Append(Message{Role: RoleAssistant, Content: "resp1"})
 	seedSession.Append(Message{Role: RoleUser, Content: "second"})
@@ -553,7 +553,7 @@ func TestConversationExecuteEmptyInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Execute: %v", err)
 	}
-	initialMsgCount := len(session.Messages)
+	initialMsgCount := len(session.AllMessages())
 
 	// Now resume — should NOT add a user message.
 	eventCh, err := conv.Execute(context.Background(), "resume-test", "")
@@ -578,10 +578,10 @@ func TestConversationExecuteEmptyInput(t *testing.T) {
 
 	// Verify no new user message was appended.
 	session, _ = conv.Sessions.GetOrCreate(context.Background(), "testns", "resume-test")
-	if len(session.Messages) != initialMsgCount+1 {
-		t.Fatalf("expected %d messages (initial + new assistant reply), got %d", initialMsgCount+1, len(session.Messages))
+	if len(session.AllMessages()) != initialMsgCount+1 {
+		t.Fatalf("expected %d messages (initial + new assistant reply), got %d", initialMsgCount+1, len(session.AllMessages()))
 	}
-	lastMsg := session.Messages[len(session.Messages)-1]
+	lastMsg := session.AllMessages()[len(session.AllMessages())-1]
 	if lastMsg.Role != RoleAssistant {
 		t.Fatalf("expected last message to be assistant, got %s", lastMsg.Role)
 	}
@@ -613,7 +613,7 @@ func TestStreamSessionExecuteEmptyInput(t *testing.T) {
 	// Count existing messages.
 	sm := streamer.conv.Sessions
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "stream-empty-test")
-	initialMsgCount := len(session.Messages)
+	initialMsgCount := len(session.AllMessages())
 
 	// Now execute with empty input — should NOT add a user message.
 	eventCh2, err := streamer.Execute(context.Background(), "stream-empty-test", "")
@@ -638,10 +638,10 @@ func TestStreamSessionExecuteEmptyInput(t *testing.T) {
 
 	// Verify no new user message was appended.
 	session, _ = sm.GetOrCreate(context.Background(), "testns", "stream-empty-test")
-	if len(session.Messages) != initialMsgCount+1 {
-		t.Fatalf("expected %d messages (initial + new assistant reply), got %d", initialMsgCount+1, len(session.Messages))
+	if len(session.AllMessages()) != initialMsgCount+1 {
+		t.Fatalf("expected %d messages (initial + new assistant reply), got %d", initialMsgCount+1, len(session.AllMessages()))
 	}
-	lastMsg := session.Messages[len(session.Messages)-1]
+	lastMsg := session.AllMessages()[len(session.AllMessages())-1]
 	if lastMsg.Role != RoleAssistant {
 		t.Fatalf("expected last message to be assistant, got %s", lastMsg.Role)
 	}

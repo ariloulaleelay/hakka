@@ -23,7 +23,7 @@ func estimateTokenCount(history []agent.Message) int {
 func shortestUniquePrefixes(sessions []*agent.Session) map[string]string {
 	ids := make([]string, len(sessions))
 	for i, s := range sessions {
-		ids[i] = s.ID
+		ids[i] = s.SessionID()
 	}
 	result := make(map[string]string, len(ids))
 	for _, id := range ids {
@@ -94,7 +94,7 @@ func (sc *SessionCommands) jsonSessionList(ctx context.Context, sessionID string
 	// Visible sessions (skip empty, except current)
 	var visible []*agent.Session
 	for _, s := range sessions {
-		if len(s.Messages) == 0 && s.ID != sessionID {
+		if len(s.AllMessages()) == 0 && s.SessionID() != sessionID {
 			continue
 		}
 		visible = append(visible, s)
@@ -104,14 +104,14 @@ func (sc *SessionCommands) jsonSessionList(ctx context.Context, sessionID string
 	list := make([]map[string]any, 0, len(visible))
 	for _, s := range visible {
 		entry := map[string]any{
-			"id":            s.ID,
-			"short_id":      shortIDs[s.ID],
-			"name":          s.Name,
-			"created":       s.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			"updated_at":    s.UpdatedAt.Format("2006-01-02T15:04:05Z"),
-			"message_count": len(s.Messages),
-			"current":       s.ID == sessionID,
-			"client_cwd":    s.ClientCWD,
+			"id":            s.SessionID(),
+			"short_id":      shortIDs[s.SessionID()],
+			"name":          s.SessionName(),
+			"created":       s.Read().CreatedAt.Format("2006-01-02T15:04:05Z"),
+			"updated_at":    s.Read().UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			"message_count": len(s.AllMessages()),
+			"current":       s.SessionID() == sessionID,
+			"client_cwd":    s.Read().ClientCWD,
 		}
 		list = append(list, entry)
 	}
@@ -130,10 +130,10 @@ func (sc *SessionCommands) jsonSessionCreate(ctx context.Context, prevSessionID 
 
 	data, _ := json.Marshal(map[string]any{
 		"session": map[string]any{
-			"id":         session.ID,
-			"short_id":   shortID(session.ID),
-			"name":       session.Name,
-			"client_cwd": session.ClientCWD,
+			"id":         session.SessionID(),
+			"short_id":   shortID(session.SessionID()),
+			"name":       session.SessionName(),
+			"client_cwd": session.Read().ClientCWD,
 		},
 	})
 	return CommandResult{
@@ -233,10 +233,10 @@ func (sc *SessionCommands) jsonSessionInfo(ctx context.Context, sessionID string
 
 	data, _ := json.Marshal(map[string]any{
 		"session": map[string]any{
-			"id":                session.ID,
+			"id":                session.SessionID(),
 			"name":              session.DisplayName(),
 			"model":             sc.modelName(session),
-			"message_count":     len(session.Messages),
+			"message_count":     len(session.AllMessages()),
 			"total_tokens":      session.TotalTokenUsage(),
 			"compact_soft_limit": session.GetCompactSoftLimit(),
 			"estimated_context": estimateTokenCount(session.History()),
@@ -263,7 +263,7 @@ func (sc *SessionCommands) jsonSessionRename(ctx context.Context, sessionID stri
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "session_rename", Error: err}
 	}
-	session.Name = p.Name
+	session.SetSessionName(p.Name)
 	if err := sc.Sessions.Save(ctx, ns, session); err != nil {
 		return CommandResult{Handled: true, Cmd: "session_rename", Error: err}
 	}
@@ -291,9 +291,9 @@ func (sc *SessionCommands) jsonSessionAutoRename(ctx context.Context, sessionID 
 
 	data, _ := json.Marshal(map[string]any{
 		"session": map[string]any{
-			"id":       session.ID,
+			"id":       session.SessionID(),
 			"name":     newName,
-			"short_id": shortID(session.ID),
+			"short_id": shortID(session.SessionID()),
 		},
 	})
 	return CommandResult{Handled: true, Cmd: "session_autorename", Data: data, Session: session}
@@ -336,12 +336,12 @@ func (sc *SessionCommands) handleSessionInfo(ctx context.Context, sessionID stri
 	if err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}
-	msgs := len(session.Messages)
+	msgs := len(session.AllMessages())
 	totalTokens := session.TotalTokenUsage()
 	contextTokens := estimateTokenCount(session.History())
 	displayName := session.DisplayName()
 	reply := fmt.Sprintf("Session ID: %s\nName: %s\nModel: %s\nMessages: %d\nCompact soft limit: %d tokens\nEst. Context Tokens: ~%d\nTotal Lifetime Tokens: %d",
-		session.ID, displayName, sc.modelName(session), msgs, session.GetCompactSoftLimit(), contextTokens, totalTokens)
+		session.SessionID(), displayName, sc.modelName(session), msgs, session.GetCompactSoftLimit(), contextTokens, totalTokens)
 	return CommandResult{Handled: true, Action: ActionReply, Reply: reply, Session: session}
 }
 
@@ -357,7 +357,7 @@ func (sc *SessionCommands) handleSessionList(ctx context.Context, sessionID stri
 
 	var visible []*agent.Session
 	for _, session := range sessions {
-		if len(session.Messages) == 0 && session.ID != sessionID {
+		if len(session.AllMessages()) == 0 && session.SessionID() != sessionID {
 			continue
 		}
 		visible = append(visible, session)
@@ -371,15 +371,15 @@ func (sc *SessionCommands) handleSessionList(ctx context.Context, sessionID stri
 	lines := []string{"available sessions:"}
 	for _, session := range visible {
 		mark := "  "
-		if session.ID == sessionID {
+		if session.SessionID() == sessionID {
 			mark = "* "
 		}
-		short := shortIDs[session.ID]
-		created := session.CreatedAt.Format("2006-01-02 15:04")
-		if session.Name != "" {
-			lines = append(lines, fmt.Sprintf("%s%s  %s [%s] <%s>", mark, created, session.Name, short, session.ID))
+		short := shortIDs[session.SessionID()]
+		created := session.Read().CreatedAt.Format("2006-01-02 15:04")
+		if session.SessionName() != "" {
+			lines = append(lines, fmt.Sprintf("%s%s  %s [%s] <%s>", mark, created, session.SessionName(), short, session.SessionID()))
 		} else {
-			lines = append(lines, fmt.Sprintf("%s%s  [%s] %s", mark, created, short, session.ID))
+			lines = append(lines, fmt.Sprintf("%s%s  [%s] %s", mark, created, short, session.SessionID()))
 		}
 	}
 	return CommandResult{Handled: true, Action: ActionReply, Reply: strings.Join(lines, "\n")}
@@ -435,7 +435,7 @@ func (sc *SessionCommands) handleSessionCreate(ctx context.Context, sessionID st
 		return CommandResult{Handled: true, Error: err}
 	}
 	inheritCWD(ctx, sc.Sessions, ns, sessionID, session)
-	return CommandResult{Handled: true, Action: ActionSessionCreate, Reply: "created and switched to session: " + session.ID, Session: session}
+	return CommandResult{Handled: true, Action: ActionSessionCreate, Reply: "created and switched to session: " + session.SessionID(), Session: session}
 }
 
 func (sc *SessionCommands) handleSessionRename(ctx context.Context, sessionID string, parts []string) CommandResult {
@@ -452,7 +452,7 @@ func (sc *SessionCommands) handleSessionRename(ctx context.Context, sessionID st
 	if err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}
-	session.Name = name
+	session.SetSessionName(name)
 	if err := sc.Sessions.Save(ctx, ns, session); err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}

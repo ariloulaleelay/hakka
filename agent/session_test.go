@@ -8,19 +8,19 @@ import (
 
 func TestNewSession(t *testing.T) {
 	s := NewSession("testns", "you are helpful")
-	if s.ID == "" {
+	if s.SessionID() == "" {
 		t.Fatal("expected non-empty ID")
 	}
-	if s.Namespace != "testns" {
-		t.Fatalf("expected namespace 'testns', got %q", s.Namespace)
+	if s.Read().Namespace != "testns" {
+		t.Fatalf("expected namespace 'testns', got %q", s.Read().Namespace)
 	}
-	if s.SystemPrompt != "you are helpful" {
-		t.Fatalf("unexpected system prompt: %q", s.SystemPrompt)
+	if s.Read().SystemPrompt != "you are helpful" {
+		t.Fatalf("unexpected system prompt: %q", s.Read().SystemPrompt)
 	}
-	if len(s.Messages) != 0 {
+	if len(s.AllMessages()) != 0 {
 		t.Fatal("new session must have no messages")
 	}
-	if s.CreatedAt.IsZero() {
+	if s.Read().CreatedAt.IsZero() {
 		t.Fatal("CreatedAt must be set")
 	}
 }
@@ -53,7 +53,7 @@ func TestSessionHistoryWithoutSystem(t *testing.T) {
 
 func TestSessionConcurrentAppend(t *testing.T) {
 	s := NewSession("testns", "")
-	s.ClientCWD = "" // clear default CWD for simplicity
+	s.SetClientCWD("") // clear default CWD for simplicity
 	var wg sync.WaitGroup
 	const N = 200
 	for i := 0; i < N; i++ {
@@ -71,14 +71,14 @@ func TestSessionConcurrentAppend(t *testing.T) {
 
 func TestSessionName_DefaultIsEmpty(t *testing.T) {
 	s := NewSession("testns", "sys")
-	if s.Name != "" {
-		t.Fatalf("expected empty Name by default, got %q", s.Name)
+	if s.SessionName() != "" {
+		t.Fatalf("expected empty Name by default, got %q", s.SessionName())
 	}
 }
 
 func TestSessionName_DisplayNameReturnsIDWhenEmpty(t *testing.T) {
 	s := NewSession("testns", "sys")
-	id := s.ID
+	id := s.SessionID()
 	if s.DisplayName() != id {
 		t.Fatalf("expected DisplayName() to return ID %q when Name is empty, got %q", id, s.DisplayName())
 	}
@@ -86,7 +86,7 @@ func TestSessionName_DisplayNameReturnsIDWhenEmpty(t *testing.T) {
 
 func TestSessionName_DisplayNameReturnsNameWhenSet(t *testing.T) {
 	s := NewSession("testns", "sys")
-	s.Name = "My Chat"
+	s.SetSessionName("My Chat")
 	if s.DisplayName() != "My Chat" {
 		t.Fatalf("expected DisplayName() to return %q, got %q", "My Chat", s.DisplayName())
 	}
@@ -151,30 +151,35 @@ func TestEnabledTools_JSONRoundTrip(t *testing.T) {
 	s.EnableTool("search")
 	s.DisableTool("shell")
 
-	data, err := json.Marshal(s)
+	// JSON round-trip through SessionData (used by stores).
+	data := s.Read()
+	encoded, err := json.Marshal(data)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	var restored Session
-	if err := json.Unmarshal(data, &restored); err != nil {
+	var decoded SessionData
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	if restored.IsToolEnabled("read_file") {
+	if decoded.EnabledTools == nil {
+		t.Fatal("expected non-nil EnabledTools after JSON round-trip")
+	}
+	if decoded.EnabledTools["read_file"] {
 		t.Fatal("expected read_file to be disabled after JSON round-trip")
 	}
-	if !restored.IsToolEnabled("search") {
+	if !decoded.EnabledTools["search"] {
 		t.Fatal("expected search to survive JSON round-trip")
 	}
-	if restored.IsToolEnabled("shell") {
+	if decoded.EnabledTools["shell"] {
 		t.Fatal("expected shell to remain disabled after JSON round-trip")
 	}
 }
 
 func TestEnabledTools_NewSessionHasNilMap(t *testing.T) {
 	s := NewSession("testns", "sys")
-	if s.EnabledTools != nil {
+	if s.Read().EnabledTools != nil {
 		t.Fatal("expected EnabledTools to be nil in new session (saves space)")
 	}
 }
@@ -182,10 +187,10 @@ func TestEnabledTools_NewSessionHasNilMap(t *testing.T) {
 func TestEnabledTools_FirstDisableCreatesMap(t *testing.T) {
 	s := NewSession("testns", "sys")
 	s.DisableTool("read_file")
-	if s.EnabledTools == nil {
+	if s.Read().EnabledTools == nil {
 		t.Fatal("expected EnabledTools to be non-nil after first DisableTool")
 	}
-	if len(s.EnabledTools) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(s.EnabledTools))
+	if len(s.Read().EnabledTools) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(s.Read().EnabledTools))
 	}
 }

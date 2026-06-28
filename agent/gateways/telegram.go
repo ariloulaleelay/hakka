@@ -380,9 +380,9 @@ func (gw *TelegramGateway) handleCommandResult(chatID int64, sessionID string, c
 	} else if cmdRes.Reply != "" {
 		gw.reply(chatID, cmdRes.Reply)
 	}
-	if cmdRes.Session != nil && cmdRes.Session.ID != sessionID {
+	if cmdRes.Session != nil && cmdRes.Session.SessionID() != sessionID {
 		gw.mu.Lock()
-		gw.activeSessions[chatID] = cmdRes.Session.ID
+		gw.activeSessions[chatID] = cmdRes.Session.SessionID()
 		gw.mu.Unlock()
 	}
 }
@@ -449,11 +449,11 @@ func (gw *TelegramGateway) getOrCreateSession(ctx context.Context, namespace str
 		latest := sessions[len(sessions)-1]
 		slog.Debug("telegram: reusing existing session after restart",
 			"chat_id", chatID,
-			"session_id", latest.ID,
+			"session_id", latest.SessionID(),
 			"sessions_found", len(sessions),
 		)
-		gw.activeSessions[chatID] = latest.ID
-		return latest.ID
+		gw.activeSessions[chatID] = latest.SessionID()
+		return latest.SessionID()
 	}
 
 	// No existing sessions found — create a new one in the chat's namespace.
@@ -466,8 +466,8 @@ func (gw *TelegramGateway) getOrCreateSession(ctx context.Context, namespace str
 	}
 	// Telegram sessions have no meaningful working directory, so
 	// ClientCWD remains empty and BuildContext won't inject it.
-	gw.activeSessions[chatID] = session.ID
-	return session.ID
+	gw.activeSessions[chatID] = session.SessionID()
+	return session.SessionID()
 }
 
 // convExecute is a convenience wrapper that consumes the event channel

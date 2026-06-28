@@ -168,12 +168,12 @@ func (h *TurnHandler) resolveSessionAndCWD(ctx context.Context, req FrameRequest
 	if err != nil || session == nil {
 		return req.SessionID
 	}
-	if session.ClientCWD != req.Cwd {
-		session.ClientCWD = req.Cwd
+	if session.Read().ClientCWD != req.Cwd {
+		session.SetClientCWD(req.Cwd)
 		if saveErr := h.Conv.Sessions.Save(ctx, h.Namespace, session); saveErr != nil {
 			slog.Warn("failed to persist session CWD",
-				"session", session.ID, "cwd", req.Cwd, "error", saveErr)
+				"session", session.SessionID(), "cwd", req.Cwd, "error", saveErr)
 		}
 	}
-	return session.ID
+	return session.SessionID()
 }

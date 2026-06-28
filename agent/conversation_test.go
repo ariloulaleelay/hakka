@@ -272,8 +272,8 @@ func TestAutoRename_NamesSessionAfterTwoUserMessages(t *testing.T) {
 
 	// Verify the session was renamed
 	session, _ = sm.GetOrCreate(context.Background(), "testns", "auto-session")
-	if session.Name != "My Test Session" {
-		t.Fatalf("expected session.Name = %q after auto-rename, got %q", "My Test Session", session.Name)
+	if session.SessionName() != "My Test Session" {
+		t.Fatalf("expected session.SessionName() = %q after auto-rename, got %q", "My Test Session", session.SessionName())
 	}
 	if !adapter.NamingRequested {
 		t.Fatal("expected naming LLM call to have been made")
@@ -295,7 +295,7 @@ func TestAutoRename_DoesNotRenameAlreadyNamedSession(t *testing.T) {
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "named-session")
-	session.Name = "Already Named"
+	session.SetSessionName("Already Named")
 	session.Append(Message{Role: RoleUser, Content: "first"})
 	session.Append(Message{Role: RoleAssistant, Content: "resp1"})
 	session.Append(Message{Role: RoleUser, Content: "second"})
@@ -311,8 +311,8 @@ func TestAutoRename_DoesNotRenameAlreadyNamedSession(t *testing.T) {
 		t.Fatal("expected no naming LLM call for already-named session")
 	}
 	session, _ = sm.GetOrCreate(context.Background(), "testns", "named-session")
-	if session.Name != "Already Named" {
-		t.Fatalf("expected name to remain %q, got %q", "Already Named", session.Name)
+	if session.SessionName() != "Already Named" {
+		t.Fatalf("expected name to remain %q, got %q", "Already Named", session.SessionName())
 	}
 }
 
@@ -602,7 +602,7 @@ func TestConversation_DefenseInDepth_DisabledToolReturnsError(t *testing.T) {
 	// The tool result should be in the session messages and contain "disabled"
 	session, _ = sm.GetOrCreate(context.Background(), "testns", "defense-session")
 	foundDisabledErr := false
-	for _, m := range session.Messages {
+	for _, m := range session.AllMessages() {
 		if m.Role == RoleTool && strings.Contains(m.Content, "disabled") {
 			foundDisabledErr = true
 			break

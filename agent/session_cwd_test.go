@@ -10,20 +10,20 @@ func TestSessionClientCWD(t *testing.T) {
 	s := NewSession("testns", "you are helpful")
 	// Default should be server's CWD
 	serverCWD, _ := os.Getwd()
-	if s.ClientCWD != serverCWD {
-		t.Fatalf("expected default ClientCWD=%q, got %q", serverCWD, s.ClientCWD)
+	if s.Read().ClientCWD != serverCWD {
+		t.Fatalf("expected default ClientCWD=%q, got %q", serverCWD, s.Read().ClientCWD)
 	}
 
 	// Can be overridden
-	s.ClientCWD = "/home/user/project"
-	if s.ClientCWD != "/home/user/project" {
-		t.Fatalf("expected /home/user/project, got %q", s.ClientCWD)
+	s.SetClientCWD("/home/user/project")
+	if s.Read().ClientCWD != "/home/user/project" {
+		t.Fatalf("expected /home/user/project, got %q", s.Read().ClientCWD)
 	}
 }
 
 func TestHistoryDoesNotIncludeCWD(t *testing.T) {
 	s := NewSession("testns", "you are helpful")
-	s.ClientCWD = "/home/user/project"
+	s.SetClientCWD("/home/user/project")
 	s.Append(Message{Role: RoleUser, Content: "hello"})
 
 	h := s.History()
@@ -44,7 +44,7 @@ func TestHistoryDoesNotIncludeCWD(t *testing.T) {
 
 func TestHistoryDoesNotIncludeCWDWhenEmpty(t *testing.T) {
 	s := NewSession("testns", "you are helpful")
-	s.ClientCWD = "" // explicitly clear it
+	s.SetClientCWD("") // explicitly clear it
 	s.Append(Message{Role: RoleUser, Content: "hello"})
 
 	h := s.History()
@@ -56,7 +56,7 @@ func TestHistoryDoesNotIncludeCWDWhenEmpty(t *testing.T) {
 
 func TestCWDMessageReturnsMessageWhenSet(t *testing.T) {
 	s := NewSession("testns", "sys prompt")
-	s.ClientCWD = "/workspace"
+	s.SetClientCWD("/workspace")
 
 	msg := s.CWDMessage()
 	if msg == nil {
@@ -75,7 +75,7 @@ func TestCWDMessageReturnsMessageWhenSet(t *testing.T) {
 
 func TestCWDMessageReturnsNilWhenEmpty(t *testing.T) {
 	s := NewSession("testns", "sys prompt")
-	s.ClientCWD = "" // explicitly clear
+	s.SetClientCWD("") // explicitly clear
 
 	msg := s.CWDMessage()
 	if msg != nil {
@@ -85,7 +85,7 @@ func TestCWDMessageReturnsNilWhenEmpty(t *testing.T) {
 
 func TestBuildContextIncludesCWD(t *testing.T) {
 	s := NewSession("testns", "sys prompt")
-	s.ClientCWD = "/workspace"
+	s.SetClientCWD("/workspace")
 	s.Append(Message{Role: RoleUser, Content: "hello"})
 
 	ctx := BuildContext(s)
@@ -105,7 +105,7 @@ func TestBuildContextIncludesCWD(t *testing.T) {
 
 func TestBuildContextWithoutCWD(t *testing.T) {
 	s := NewSession("testns", "sys prompt")
-	s.ClientCWD = "" // explicitly clear
+	s.SetClientCWD("") // explicitly clear
 	s.Append(Message{Role: RoleUser, Content: "hello"})
 
 	ctx := BuildContext(s)
@@ -117,7 +117,7 @@ func TestBuildContextWithoutCWD(t *testing.T) {
 
 func TestBuildContextWithoutSystemPrompt(t *testing.T) {
 	s := NewSession("testns", "")
-	s.ClientCWD = "/project"
+	s.SetClientCWD("/project")
 	s.Append(Message{Role: RoleUser, Content: "hi"})
 
 	ctx := BuildContext(s)
@@ -135,7 +135,7 @@ func TestBuildContextWithoutSystemPrompt(t *testing.T) {
 func TestNewSessionDoesNotSetSuppressCWD(t *testing.T) {
 	s := NewSession("testns", "helpful assistant")
 	// SuppressCWD was removed; just verify ClientCWD is set to server's cwd
-	if s.ClientCWD == "" {
+	if s.Read().ClientCWD == "" {
 		t.Fatal("expected ClientCWD to be set to server's CWD")
 	}
 }
