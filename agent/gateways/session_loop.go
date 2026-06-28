@@ -12,11 +12,18 @@ import (
 
 type frameWriter interface {
 	Write(FrameResponse) error
+	// ConnKey returns a unique identifier for the underlying transport
+	// connection (e.g. "tcp:0x14000123400" or "ws:0x14000567800").
+	// This is used by ReplaceSubscriber to deduplicate subscribers
+	// from the same connection when session_switch is called while a
+	// stream is in-flight.
+	ConnKey() string
 }
 
 type writerFunc func(FrameResponse) error
 
 func (fn writerFunc) Write(r FrameResponse) error { return fn(r) }
+func (fn writerFunc) ConnKey() string              { return "" }
 
 type gwClientWriter struct {
 	writer    frameWriter
@@ -34,6 +41,8 @@ func (g *gwClientWriter) WriteFrame(f event.Frame) error {
 	}
 	return g.writer.Write(resp)
 }
+
+func (g *gwClientWriter) ConnKey() string { return g.writer.ConnKey() }
 
 // writeCommandResult writes a CommandResult as a frame.
 // For JSON-capable clients (when the result has Data), it emits

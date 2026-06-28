@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -184,6 +185,10 @@ func (w *wsSyncWriter) Write(v FrameResponse) error {
 		return err
 	}
 	return w.conn.Write(w.ctx, websocket.MessageText, b)
+}
+
+func (w *wsSyncWriter) ConnKey() string {
+	return fmt.Sprintf("ws:%p", w.conn)
 }
 
 var _ Gateway = (*WebSocketGateway)(nil)

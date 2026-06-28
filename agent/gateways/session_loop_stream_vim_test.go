@@ -100,7 +100,7 @@ func TestStreamVimToolFlow(t *testing.T) {
 	defer conn.Close()
 	r := bufio.NewReader(conn)
 
-	if _, err := fmt.Fprintf(conn, `{"session_id":%q,"input":"check file","stream":true}`+"\n", session.ID); err != nil {
+	if _, err := fmt.Fprintf(conn, `{"session_id":%q,"input":"check file","stream":true}`+"\n", session.SessionID()); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))

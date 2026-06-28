@@ -90,8 +90,8 @@ func TestTCPGatewayInitHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
-	if session.ClientCWD != "/home/user" {
-		t.Fatalf("expected session.ClientCWD=/home/user, got %q", session.ClientCWD)
+	if session.Read().ClientCWD != "/home/user" {
+		t.Fatalf("expected session.Read().ClientCWD=/home/user, got %q", session.Read().ClientCWD)
 	}
 }
 
@@ -143,8 +143,8 @@ func TestTCPGatewaySetsCWDOnSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
-	if session.ClientCWD != "/client/project" {
-		t.Fatalf("expected ClientCWD=/client/project, got %q", session.ClientCWD)
+	if session.Read().ClientCWD != "/client/project" {
+		t.Fatalf("expected ClientCWD=/client/project, got %q", session.Read().ClientCWD)
 	}
 
 	// Check that BuildContext includes the CWD system message with the right phrasing
@@ -215,8 +215,8 @@ func TestTCPGatewayCWDSurvivesAcrossRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
-	if session.ClientCWD != "/workspace" {
-		t.Fatalf("expected ClientCWD=/workspace, got %q", session.ClientCWD)
+	if session.Read().ClientCWD != "/workspace" {
+		t.Fatalf("expected ClientCWD=/workspace, got %q", session.Read().ClientCWD)
 	}
 }
 
@@ -262,8 +262,8 @@ func TestTCPGatewayCWDCannotBeOverriddenByEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
-	if session.ClientCWD != "/project" {
-		t.Fatalf("expected CWD to remain /project, got %q", session.ClientCWD)
+	if session.Read().ClientCWD != "/project" {
+		t.Fatalf("expected CWD to remain /project, got %q", session.Read().ClientCWD)
 	}
 }
 
@@ -327,7 +327,7 @@ func TestWebSocketGatewaySetsCWDOnSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
-	if session.ClientCWD != "/ws/project" {
-		t.Fatalf("expected ClientCWD=/ws/project, got %q", session.ClientCWD)
+	if session.Read().ClientCWD != "/ws/project" {
+		t.Fatalf("expected ClientCWD=/ws/project, got %q", session.Read().ClientCWD)
 	}
 }

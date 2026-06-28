@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"sync"
 
@@ -11,6 +12,26 @@ import (
 	"github.com/ariloulaleelay/hakka/agent/commands"
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
+
+// tcpConnWriter writes frames to a TCP connection using a buffered
+// JSON encoder. It provides a unique ConnKey based on the connection
+// pointer so ReplaceSubscriber can distinguish different connections.
+type tcpConnWriter struct {
+	conn   net.Conn
+	writer *bufio.Writer
+	enc    *json.Encoder
+}
+
+func (w *tcpConnWriter) Write(v FrameResponse) error {
+	if err := w.enc.Encode(v); err != nil {
+		return err
+	}
+	return w.writer.Flush()
+}
+
+func (w *tcpConnWriter) ConnKey() string {
+	return fmt.Sprintf("tcp:%p", w.conn)
+}
 
 // syncFrameWriter wraps a frameWriter with a mutex to protect against
 // concurrent writes from the scanner loop (error/cancel/init frames) and
@@ -28,6 +49,8 @@ func (s *syncFrameWriter) Write(v FrameResponse) error {
 	defer s.mu.Unlock()
 	return s.w.Write(v)
 }
+
+func (s *syncFrameWriter) ConnKey() string { return s.w.ConnKey() }
 
 // TCPGateway speaks newline-delimited JSON. Designed for the Neovim
 // client: one request per line, one response per line.
@@ -100,12 +123,7 @@ func (gw *TCPGateway) handle(ctx context.Context, conn net.Conn) {
 
 	writer := bufio.NewWriter(conn)
 	enc := json.NewEncoder(writer)
-	rawFlush := writerFunc(func(v FrameResponse) error {
-		if err := enc.Encode(v); err != nil {
-			return err
-		}
-		return writer.Flush()
-	})
+	rawFlush := &tcpConnWriter{conn: conn, writer: writer, enc: enc}
 	flush := &syncFrameWriter{w: rawFlush}
 
 	responseReader := NewInProcessResponseReader()

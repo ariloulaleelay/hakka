@@ -255,7 +255,7 @@ func TestTCPGatewayStreamToolFallbackUsesStreamNotComplete(t *testing.T) {
 	defer conn.Close()
 	r := bufio.NewReader(conn)
 
-	if _, err := fmt.Fprintf(conn, `{"session_id":%q,"input":"hello","stream":true}`+"\n", session.ID); err != nil {
+	if _, err := fmt.Fprintf(conn, `{"session_id":%q,"input":"hello","stream":true}`+"\n", session.SessionID()); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -549,7 +549,7 @@ func TestWebSocketGatewayStreamToolFallbackUsesStreamNotComplete(t *testing.T) {
 	}
 	defer c.CloseNow()
 
-	if err := c.Write(ctx, websocket.MessageText, []byte(`{"session_id":"`+session.ID+`","input":"hello","stream":true}`)); err != nil {
+	if err := c.Write(ctx, websocket.MessageText, []byte(`{"session_id":"`+session.SessionID()+`","input":"hello","stream":true}`)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -764,8 +764,8 @@ func TestTCPGateway_InitFrameSetsCWDAndReturnsModel(t *testing.T) {
 	if lookupErr != nil {
 		t.Fatalf("GetOrCreate: %v", lookupErr)
 	}
-	if session.ClientCWD != "/home/user/project" {
-		t.Fatalf("expected session CWD %q, got: %q", "/home/user/project", session.ClientCWD)
+	if session.Read().ClientCWD != "/home/user/project" {
+		t.Fatalf("expected session CWD %q, got: %q", "/home/user/project", session.Read().ClientCWD)
 	}
 }
 

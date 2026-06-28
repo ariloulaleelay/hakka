@@ -33,8 +33,8 @@ func (ts *testSessionStore) Get(_ context.Context, namespace, id string) (*agent
 func (ts *testSessionStore) Put(_ context.Context, namespace string, s *agent.Session) error {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	s.Namespace = namespace
-	ts.sessions[namespace+":"+s.ID] = s
+	s.SetNamespace(namespace)
+	ts.sessions[namespace+":"+s.SessionID()] = s
 	return nil
 }
 
@@ -137,7 +137,7 @@ func TestSessionRename(t *testing.T) {
 	tool := SessionRename(sm)
 
 	sessions, _ := sm.List(context.Background(), ns)
-	sessionID := sessions[0].ID
+	sessionID := sessions[0].SessionID()
 
 	// Try renaming with just the full session ID
 	res := runPlainCtx(t, ctxWithNS(ns), tool.Handler, map[string]any{"session_id": sessionID, "name": "my-session"})
@@ -146,8 +146,8 @@ func TestSessionRename(t *testing.T) {
 	}
 
 	s, _, _ := sm.Store.Get(context.Background(), ns, sessionID)
-	if s.Name != "my-session" {
-		t.Fatalf("expected name 'my-session', got %q", s.Name)
+	if s.SessionName() != "my-session" {
+		t.Fatalf("expected name 'my-session', got %q", s.SessionName())
 	}
 }
 
@@ -177,7 +177,7 @@ func TestSessionInfo(t *testing.T) {
 	tool := SessionInfo(sm)
 
 	sessions, _ := sm.List(context.Background(), ns)
-	sessionID := sessions[0].ID
+	sessionID := sessions[0].SessionID()
 
 	res := runPlainCtx(t, ctxWithNS(ns), tool.Handler, map[string]any{"session_id": sessionID})
 	if !strings.Contains(res, sessionID) {
@@ -210,7 +210,7 @@ func TestSessionRead(t *testing.T) {
 	tool := SessionRead(sm)
 
 	sessions, _ := sm.List(context.Background(), ns)
-	sessionID := sessions[0].ID
+	sessionID := sessions[0].SessionID()
 
 	res := runPlainCtx(t, ctxWithNS(ns), tool.Handler, map[string]any{"session_id": sessionID})
 	if !strings.Contains(res, "user message 0") {
@@ -246,7 +246,7 @@ func TestSessionRead_LimitMessages(t *testing.T) {
 	_ = sm.Save(ctx, ns, s)
 
 	tool := SessionRead(sm)
-	res := runPlainCtx(t, ctxWithNS(ns), tool.Handler, map[string]any{"session_id": s.ID, "max_messages": 3})
+	res := runPlainCtx(t, ctxWithNS(ns), tool.Handler, map[string]any{"session_id": s.SessionID(), "max_messages": 3})
 	// Should show recent messages (last 3)
 	if !strings.Contains(res, "msg 7") {
 		t.Fatalf("expected 'msg 7' in recent output, got: %q", res)
@@ -334,7 +334,7 @@ func TestSessionDeleteTool(t *testing.T) {
 	tool := SessionDelete(sm)
 
 	sessions, _ := sm.List(context.Background(), ns)
-	target := sessions[1].ID
+	target := sessions[1].SessionID()
 
 	res := runPlainCtx(t, ctxWithNS(ns), tool.Handler, map[string]any{"session_id": target})
 	if !strings.Contains(res, "deleted") {
@@ -380,7 +380,7 @@ func TestSessionSummarize_NoRouter(t *testing.T) {
 
 	sessions, _ := sm.List(context.Background(), ns)
 
-	res := runPlainCtx(t, ctxWithNS(ns), tool.Handler, map[string]any{"session_id": sessions[0].ID})
+	res := runPlainCtx(t, ctxWithNS(ns), tool.Handler, map[string]any{"session_id": sessions[0].SessionID()})
 	if !strings.Contains(res, "User messages") && !strings.Contains(res, "message") {
 		t.Fatalf("expected a summary of messages, got: %q", res)
 	}
@@ -460,7 +460,7 @@ func TestSessionRead_RespectsNamespace(t *testing.T) {
 	ctx := ctxWithNS("beta")
 	tool := SessionRead(sm)
 
-	errMsg := runErrCtx(t, ctx, tool.Handler, map[string]any{"session_id": s1.ID})
+	errMsg := runErrCtx(t, ctx, tool.Handler, map[string]any{"session_id": s1.SessionID()})
 	if !strings.Contains(errMsg, "no session matching") {
 		t.Fatalf("expected 'no session matching' when reading from wrong namespace, got: %q", errMsg)
 	}
@@ -498,7 +498,7 @@ func TestSessionTools_TimeoutSafety(t *testing.T) {
 		SessionRead(sm),
 	}
 	for _, tool := range tools {
-		raw, _ := json.Marshal(map[string]any{"session_id": s.ID})
+		raw, _ := json.Marshal(map[string]any{"session_id": s.SessionID()})
 		_, err := tool.Handler(timeoutCtx, raw)
 		if err != nil {
 			t.Fatalf("tool %s failed: %v", tool.Schema.Name, err)
@@ -566,7 +566,7 @@ func TestSessionAskQuestion_Basic(t *testing.T) {
 
 	tool := SessionAskQuestion(sm, conv)
 	res := runPlainCtx(t, ctxWithNS(ns), tool.Handler, map[string]any{
-		"session_id": s.ID,
+		"session_id": s.SessionID(),
 		"question":   "What is this conversation about?",
 	})
 	if !strings.Contains(res, "European capitals") {
@@ -608,7 +608,7 @@ func TestSessionAskQuestion_StripsToolCalls(t *testing.T) {
 
 	tool := SessionAskQuestion(sm, conv)
 	res := runPlainCtx(t, ctxWithNS(ns), tool.Handler, map[string]any{
-		"session_id": s.ID,
+		"session_id": s.SessionID(),
 		"question":   "What happened?",
 	})
 	if !strings.Contains(res, "file contents") {
@@ -648,7 +648,7 @@ func TestSessionAskQuestion_MissingQuestion(t *testing.T) {
 
 	tool := SessionAskQuestion(sm, conv)
 	errMsg := runErrCtx(t, ctxWithNS(ns), tool.Handler, map[string]any{
-		"session_id": s.ID,
+		"session_id": s.SessionID(),
 	})
 	if !strings.Contains(errMsg, "question") && !strings.Contains(errMsg, "required") {
 		t.Fatalf("expected error about missing question, got: %q", errMsg)
@@ -739,7 +739,7 @@ func TestSessionAskQuestion_WithPrefix(t *testing.T) {
 
 	tool := SessionAskQuestion(sm, conv)
 	// Use prefix of s2
-	prefix := s2.ID[:8]
+	prefix := s2.SessionID()[:8]
 	res := runPlainCtx(t, ctxWithNS(ns), tool.Handler, map[string]any{
 		"session_id": prefix,
 		"question":   "What is this about?",

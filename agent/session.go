@@ -280,6 +280,12 @@ func (sess *Session) SetCompactSoftLimit(n int) {
 
 // --- Non-interface helpers ---
 
+func (sess *Session) SetNamespace(ns string) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.data.Namespace = ns
+}
+
 func (sess *Session) SetID(id string) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()

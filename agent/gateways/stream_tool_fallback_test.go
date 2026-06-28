@@ -50,7 +50,7 @@ func TestTCPGatewayStreamToolFallbackDeliversTextAsDelta(t *testing.T) {
 	defer conn.Close()
 	r := bufio.NewReader(conn)
 
-	if _, err := fmt.Fprintf(conn, `{"session_id":%q,"input":"hello","stream":true}`+"\n", session.ID); err != nil {
+	if _, err := fmt.Fprintf(conn, `{"session_id":%q,"input":"hello","stream":true}`+"\n", session.SessionID()); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -141,13 +141,13 @@ func TestTCPGatewayStreamWithRealToolCallsDeliversFinalTextAsDelta(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
-	defer sm.Drop(context.Background(), ns, session.ID)
+	defer sm.Drop(context.Background(), ns, session.SessionID())
 	session.EnableTool("reverse")
 	if err := sm.Save(context.Background(), ns, session); err != nil {
 		t.Fatalf("save session: %v", err)
 	}
 
-	if _, err := fmt.Fprintf(conn, `{"session_id":%q,"input":"reverse world","stream":true}`+"\n", session.ID); err != nil {
+	if _, err := fmt.Fprintf(conn, `{"session_id":%q,"input":"reverse world","stream":true}`+"\n", session.SessionID()); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))

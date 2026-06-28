@@ -101,7 +101,7 @@ func TestTCPGateway_DisconnectDoesNotCancelTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
-	sessionID := session.ID
+	sessionID := session.SessionID()
 
 	// Client A: connect and send a streaming request.
 	connA := dialRetry(t, addr)
@@ -207,7 +207,7 @@ func TestWebSocketGateway_DisconnectDoesNotCancelTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
-	sessionID := session.ID
+	sessionID := session.SessionID()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -317,7 +317,7 @@ func TestTCPGateway_MultipleSubscribersReceiveSameEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
-	sessionID := session.ID
+	sessionID := session.SessionID()
 
 	// Connect client A and start a streaming request.
 	connA := dialRetry(t, addr)
@@ -398,7 +398,7 @@ func TestWebSocketGateway_ReconnectSameSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
-	sessionID := session.ID
+	sessionID := session.SessionID()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
