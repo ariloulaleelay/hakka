@@ -191,7 +191,7 @@ func (r *turnRunner) runOneIteration(
 	// If the LLM only called context_compactify (no real tool calls),
 	// signal the caller to loop again so the newly-compacted context
 	// takes effect immediately.
-	if len(resp.toolCalls) == 1 && resp.toolCalls[0].Name == "context_compactify" {
+	if len(resp.toolCalls) == 1 && resp.toolCalls[0].Name == ContextCompactifyToolName {
 		return nil, needCompactify, nil
 	}
 
@@ -219,7 +219,7 @@ func (r *turnRunner) augmentSchemasWithCompactify(schemas []ToolSchema, needComp
 		return schemas
 	}
 	for _, s := range schemas {
-		if s.Name == "context_compactify" {
+		if s.Name == ContextCompactifyToolName {
 			return schemas // already present
 		}
 	}

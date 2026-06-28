@@ -352,21 +352,33 @@ func (tc *ToolCommands) handleToolList(ctx context.Context, sessionID string) Co
 		return CommandResult{Handled: true, Error: err}
 	}
 	if tc.Tools == nil {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "no tool registry configured", Session: session}
+		data, _ := json.Marshal(map[string]any{"tools": []any{}})
+		return CommandResult{Handled: true, Action: ActionReply, Reply: "no tool registry configured", Data: data, Session: session}
 	}
 	allTools := tc.Tools.Schemas()
 	if len(allTools) == 0 {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "no tools available", Session: session}
+		data, _ := json.Marshal(map[string]any{"tools": []any{}})
+		return CommandResult{Handled: true, Action: ActionReply, Reply: "no tools available", Data: data, Session: session}
 	}
 	sorted := make([]agent.ToolSchema, len(allTools))
 	copy(sorted, allTools)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+
+	// Build structured data and text reply in one pass.
+	toolsList := make([]map[string]any, 0, len(sorted))
 	lines := make([]string, 0, len(sorted)+1)
 	lines = append(lines, "available tools:")
 	for _, ts := range sorted {
 		tool, _ := tc.Tools.Get(ts.Name)
+		enabled := session.IsToolEnabled(ts.Name)
+		toolsList = append(toolsList, map[string]any{
+			"name":        ts.Name,
+			"description": ts.Description,
+			"enabled":     enabled,
+			"tags":        tool.Tags,
+		})
 		status := "[disabled]"
-		if session.IsToolEnabled(ts.Name) {
+		if enabled {
 			status = "[enabled] "
 		}
 		tagStr := ""
@@ -375,5 +387,7 @@ func (tc *ToolCommands) handleToolList(ctx context.Context, sessionID string) Co
 		}
 		lines = append(lines, fmt.Sprintf("  %-25s %s%s", ts.Name, status, tagStr))
 	}
-	return CommandResult{Handled: true, Action: ActionReply, Reply: strings.Join(lines, "\n"), Session: session}
+
+	data, _ := json.Marshal(map[string]any{"tools": toolsList})
+	return CommandResult{Handled: true, Cmd: "tool_list", Action: ActionReply, Reply: strings.Join(lines, "\n"), Data: data, Session: session}
 }

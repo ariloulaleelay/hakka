@@ -112,7 +112,7 @@ func (ex *toolExecutor) runSingleTool(ctx context.Context, session SessionView, 
 	// Defense-in-depth: check if the tool is enabled for this session.
 	// Even if the LLM somehow calls a disabled tool (e.g. from context window),
 	// we reject it here without invoking the handler.
-	if session != nil && !session.IsToolEnabled(call.Name) && call.Name != "context_compactify" {
+	if session != nil && !session.IsToolEnabled(call.Name) && call.Name != ContextCompactifyToolName {
 		res := event.ErrorResult(errors.New("tool '" + call.Name + "' is disabled for this session"))
 		fireToolCall(hooks, session.SessionID(), call)
 		sendEngineEvent(events, event.ToolCallStarted{SessionID: session.SessionID(), ID: call.ID, Name: call.Name, Arguments: call.Arguments})

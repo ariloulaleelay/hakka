@@ -167,8 +167,8 @@ func (sess *Session) Append(msg Message) {
 }
 
 func (sess *Session) History() []Message {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
+	sess.mu.RLock()
+	defer sess.mu.RUnlock()
 	out := make([]Message, 0, len(sess.data.Messages)+1)
 	if sess.data.SystemPrompt != "" {
 		out = append(out, Message{Role: RoleSystem, Content: sess.data.SystemPrompt})

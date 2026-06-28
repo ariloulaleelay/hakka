@@ -45,9 +45,10 @@ func (g *gwClientWriter) WriteFrame(f event.Frame) error {
 func (g *gwClientWriter) ConnKey() string { return g.writer.ConnKey() }
 
 // writeCommandResult writes a CommandResult as a frame.
-// For JSON-capable clients (when the result has Data), it emits
-// event: "command_result" with structured payload.
-// For text-only clients (Telegram, TCP nc), it falls back to Reply text.
+// When the result has structured Data (e.g. tool_list, session_list),
+// it emits event: "command_result" with structured payload, regardless
+// of the isJSON flag — TCP and WebSocket clients can render this.
+// For text-only clients (Telegram), it falls back to Reply text.
 func writeCommandResult(w frameWriter, res commands.CommandResult, stream bool, isJSON bool) (handled, ok bool) {
 	if !res.Handled {
 		return false, true
@@ -67,8 +68,13 @@ func writeCommandResult(w frameWriter, res commands.CommandResult, stream bool, 
 		return true, true
 	}
 
-	// JSON-capable clients get structured data.
-	if isJSON && res.Data != nil {
+	// Structured data path: emit as event: "command_result" whenever
+	// the result has Data. This works for both JSON-capable clients
+	// (Neovim, web UI) and text-based gateways (TCP, WebSocket) that
+	// receive text slash commands — they all understand event frames.
+	// Telegram is unaffected because it has its own command handler
+	// and never calls writeCommandResult.
+	if res.Data != nil {
 		resp.Event = "command_result"
 		resp.Cmd = res.Cmd
 		json.Unmarshal(res.Data, &resp.Data)

@@ -15,7 +15,7 @@ import (
 // The tool is always registered so Execute() can find it, but it only
 // appears in schemas when BuildCompactContext signals needCompactify.
 func Compactify() agent.Tool {
-	return NewTool("context_compactify", "Compress [range_start, range_end] message range using [N] indexes to free context. Provide a summary of what was compacted.").
+	return NewTool(agent.ContextCompactifyToolName, "Compress [range_start, range_end] message range using [N] indexes to free context. Provide a summary of what was compacted.").
 		IntParam("range_start", "Start index of the message range to compact (inclusive)", true).
 		IntParam("range_end", "End index of the message range to compact (inclusive)", true).
 		StringParam("summary", "Summary of what the compacted range contained", false).

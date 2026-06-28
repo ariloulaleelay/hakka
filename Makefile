@@ -16,8 +16,11 @@ test:
 cover:
 	go test -cover ./...
 
-run: build
+debug-run: build
 	$(BIN) --llm-debug logs --log-level debug --config hakka.json $(if $(DB),--db $(DB),)
+
+run: build
+	$(BIN) --log-level info --config hakka.json $(if $(DB),--db $(DB),)
 
 lint:
 	go vet ./...

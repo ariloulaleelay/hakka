@@ -7,6 +7,13 @@ import (
 	"strings"
 )
 
+// ContextCompactifyToolName is the canonical name of the meta-tool used by
+// the engine to request context compaction from the LLM. It is always
+// registered in the tool registry but only added to schemas when the
+// soft token limit is exceeded (see augmentSchemasWithCompactify).
+const ContextCompactifyToolName = "context_compactify"
+
+
 // compactRange describes an inclusive range of message indices to compact,
 // along with an optional summary provided by the LLM.
 type compactRange struct {
@@ -23,7 +30,7 @@ func extractCompactifyRanges(messages []Message) []compactRange {
 	for _, m := range messages {
 		if m.Role == RoleAssistant {
 			for _, tc := range m.ToolCalls {
-				if tc.Name == "context_compactify" {
+				if tc.Name == ContextCompactifyToolName {
 					var args struct {
 						RangeStart int    `json:"range_start"`
 						RangeEnd   int    `json:"range_end"`
@@ -81,12 +88,12 @@ func isMessageCompressible(m Message) bool {
 // tool call (assistant with only context_compactify tool calls) or a
 // context_compactify tool result.
 func isCompactifyMessage(m Message) bool {
-	if m.Role == RoleTool && m.Name == "context_compactify" {
+	if m.Role == RoleTool && m.Name == ContextCompactifyToolName {
 		return true
 	}
 	if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
 		for _, tc := range m.ToolCalls {
-			if tc.Name != "context_compactify" {
+			if tc.Name != ContextCompactifyToolName {
 				return false
 			}
 		}
@@ -101,7 +108,7 @@ func isCompactifyMessage(m Message) bool {
 func stripCompactifyCalls(calls []ToolCall) []ToolCall {
 	filtered := make([]ToolCall, 0, len(calls))
 	for _, tc := range calls {
-		if tc.Name != "context_compactify" {
+		if tc.Name != ContextCompactifyToolName {
 			filtered = append(filtered, tc)
 		}
 	}
@@ -273,11 +280,11 @@ func collectCompactedSpan(rawMsgs []Message, inRange []bool, summaryAt []string,
 		}
 		msgCount++
 		for _, tc := range rawMsgs[i].ToolCalls {
-			if tc.Name != "context_compactify" {
+			if tc.Name != ContextCompactifyToolName {
 				toolSet[tc.Name] = true
 			}
 		}
-		if rawMsgs[i].Role == RoleTool && rawMsgs[i].Name != "" && rawMsgs[i].Name != "context_compactify" {
+		if rawMsgs[i].Role == RoleTool && rawMsgs[i].Name != "" && rawMsgs[i].Name != ContextCompactifyToolName {
 			toolSet[rawMsgs[i].Name] = true
 		}
 		i++
@@ -445,7 +452,7 @@ func messageTokens(m Message) int {
 // meta-tool. It is conditionally added to schemas when the soft limit
 // triggers, prompting the LLM to compact unneeded history.
 var contextCompactifySchema = ToolSchema{
-	Name:        "context_compactify",
+	Name:        ContextCompactifyToolName,
 	Description: "Compress [range_start, range_end] message range using [N] indexes to free context. Provide a summary of what was compacted.",
 	Parameters: map[string]any{
 		"type": "object",
