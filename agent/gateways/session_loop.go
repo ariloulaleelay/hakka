@@ -218,7 +218,7 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 	case event.ClientRequestSent:
 		return writeFrame(w, FrameResponse{
 			SessionID: e.SessionID,
-			Event:     "vim_request",
+			Event:     "client_request",
 			ClientReq: &event.ClientRequest{
 				RequestID: e.RequestID,
 				Command:   e.Command,

@@ -2,12 +2,8 @@
 
 local M = {}
 
---- Escape characters within user-supplied snippet text so that the bracket
---- structure of tool event lines is preserved and newlines do not break the
---- single-line markdown format.
----
---- @param s string|nil
---- @return string
+--- Escape markdown special characters to prevent them from being interpreted
+--- as formatting when the snippet is displayed outside backticks (plain text).
 function M.escape_snippet(s)
   if not s then return "" end
   -- Replace literal newlines with the escaped representation "\n" so the
@@ -16,10 +12,11 @@ function M.escape_snippet(s)
   -- Replace literal tabs with the escaped representation "\t" so the
   -- snippet displays consistently (tab = 1 char).
   s = s:gsub("\t", "\\t")
-  -- Escape markdown special characters [ and ] to preserve the bracket
-  -- structure of tool event lines.
+  -- Escape markdown special characters [ and ] to prevent link formatting.
   s = s:gsub("%[", "\\["):gsub("%]", "\\]")
-  -- Escape backticks so they don't break the `name(args)` inline code format.
+  -- Escape underscores and asterisks so they don't trigger italic/bold.
+  s = s:gsub("_", "\\_"):gsub("%*", "\\*")
+  -- Escape backticks so they don't create unintended inline code spans.
   s = s:gsub("`", "\\`")
   return s
 end

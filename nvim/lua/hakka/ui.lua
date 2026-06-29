@@ -393,21 +393,22 @@ function M.append_tool_event(name, status, snippet, data)
     win_width = vim.api.nvim_win_get_width(state.win)
   end
   local max_line = math.min(100, win_width)
-  local snippet_max = math.max(10, max_line - #name - 4)
+  -- Overhead: backtick(1) + name + backtick(1) + space(1) = 3 + len(name)
+  local snippet_max = math.max(10, max_line - #name - 3)
 
   -- Escape then shorten.
   local safe = util.shorten_snippet(util.escape_snippet(snippet), snippet_max)
 
   if status == "start" then
     ensure_new_line()
-    append(state.buf, "`" .. name .. "(" .. safe .. ")`")
+    append(state.buf, "`" .. name .. "` " .. safe)
     if streaming then
       ensure_new_line()
     end
   else
     -- On completion, find the matching pending line and update its snippet.
     local all = lines(state.buf)
-    local line_prefix = "`" .. name .. "("
+    local line_prefix = "`" .. name .. "` "
     local found = false
     -- result omitted: LLM response stream shows it
 
@@ -415,7 +416,7 @@ function M.append_tool_event(name, status, snippet, data)
       if all[i]:sub(1, #line_prefix) == line_prefix then
         -- Show only the tool name and snippet -- result is visible
         -- in the LLM response stream, no need to duplicate it.
-        all[i] = "`" .. name .. "(" .. safe .. ")`"
+        all[i] = "`" .. name .. "` " .. safe
         found = true
         break
       end
@@ -426,7 +427,7 @@ function M.append_tool_event(name, status, snippet, data)
     else
       -- Fallback: append a new completed line
       ensure_new_line()
-      append(state.buf, "`" .. name .. "(" .. safe .. ")`")
+      append(state.buf, "`" .. name .. "` " .. safe)
       if streaming then
         ensure_new_line()
       end

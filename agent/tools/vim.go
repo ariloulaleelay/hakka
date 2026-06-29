@@ -82,7 +82,7 @@ func sendClientRequest(ctx context.Context, command string) (json.RawMessage, er
 	slog.Debug("vim tool: sending request", "requestID", requestID, "command", agent.Truncate(command, 80))
 
 	if err := cw.WriteFrame(event.Frame{
-		Event: "vim_request",
+		Event: "client_request",
 		ClientReq: &event.ClientRequest{
 			RequestID: requestID,
 			Command:   command,

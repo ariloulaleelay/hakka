@@ -156,11 +156,18 @@ assert_eq(util.escape_snippet("a\tb\tc"),        "a\\tb\\tc",       "multiple ta
 assert_eq(util.escape_snippet("a\n\tb"),         "a\\n\\tb",        "newline + tab")
 assert_eq(util.escape_snippet("\t\n"),           "\\t\\n",          "tab then newline")
 
--- Backtick escaping (needed for `name(args)` inline code format)
+-- Backtick escaping (needed for `name` plain+backtick format)
 assert_eq(util.escape_snippet("`code`"),       "\\`code\\`",      "backticks escaped")
 assert_eq(util.escape_snippet("a`b"),          "a\\`b",           "single backtick")
 assert_eq(util.escape_snippet("``double``"),   "\\`\\`double\\`\\`", "double backticks")
 assert_eq(util.escape_snippet("`[test]`"),     "\\`\\[test\\]\\`", "backticks + brackets")
+
+-- Markdown italic/bold escaping (snippet is now outside backticks)
+assert_eq(util.escape_snippet("_italic_"),     "\\_italic\\_",    "underscores escaped")
+assert_eq(util.escape_snippet("*bold*"),       "\\*bold\\*",      "asterisks escaped")
+assert_eq(util.escape_snippet("_*both*_"),     "\\_\\*both\\*\\_", "underscores + asterisks")
+assert_eq(util.escape_snippet("normal_text"),  "normal\\_text",   "underscore mid-word")
+assert_eq(util.escape_snippet("path/to/file_*"), "path/to/file\\_\\*", "mixed path chars")
 
 -- Ordering: escape_snippet should be applied BEFORE shorten_snippet so that
 -- the truncation accounts for the actual display length (escape adds chars).
@@ -642,13 +649,13 @@ do
 end
 
 -- ──────────────────────────────────────────
-heading("ui.append_tool_event format — no brackets")
+heading("ui.append_tool_event format — backtick name plus plain snippet")
 
 do
   local ui = fresh_ui()
   pcall(ui.open, function() end)
 
-  -- Start a tool call — should produce "name(args)" (no symbols)
+  -- Start a tool call — should produce "`name` snippet" (no brackets)
   ui.append_tool_event("read_file", "start", "foo.txt")
 
   -- Find the hakka buffer
@@ -668,12 +675,12 @@ do
 
   local found_new = false
   for _, l in ipairs(buf_lines) do
-    -- Format: `read_file(foo.txt)` (backticks, no symbol)
-    if l:find("^`read_file%(foo%.txt%)`$") then
+    -- Format: `read_file` foo.txt (backtick name, then plain snippet)
+    if l:find("^`read_file` foo%.txt$") then
       found_new = true
     end
   end
-  assert_eq(found_new, true, "tool start line uses backtick format: `name(args)`")
+  assert_eq(found_new, true, "tool start line uses `name` snippet format")
 
   -- Complete the tool call
   ui.append_tool_event("read_file", "ok", "foo.txt")
@@ -693,12 +700,12 @@ do
 
   local found_ok = false
   for _, l in ipairs(buf_lines) do
-    -- Same format: `read_file(foo.txt)` — no symbol
-    if l:find("^`read_file%(foo%.txt%)`$") then
+    -- Same format: `read_file` foo.txt — no symbol
+    if l:find("^`read_file` foo%.txt$") then
       found_ok = true
     end
   end
-  assert_eq(found_ok, true, "tool completed line still uses `name(args)` format (no symbol)")
+  assert_eq(found_ok, true, "tool completed line still uses `name` snippet format (no symbol)")
 end
 
 -- ──────────────────────────────────────────
@@ -713,12 +720,12 @@ do
   ui.close()
 
   -- In headless mode, vim.o.columns = 80. max_line = min(100, 80) = 80.
-  -- Overhead = backtick(1) + ( + ) + backtick = 4 chars.
-  -- snippet_max = max(10, 80 - 2 - 4) = 74.
-  -- Verify that a 74-char snippet fits.
+  -- Overhead = backtick(1) + backtick(1) + space(1) = 3 chars.
+  -- snippet_max = max(10, 80 - 2 - 3) = 75.
+  -- Verify that a 75-char snippet fits.
   local tname = "rd"
-  local snippet_74 = string.rep("x", 74)
-  ui.append_tool_event(tname, "start", snippet_74)
+  local snippet_75 = string.rep("x", 75)
+  ui.append_tool_event(tname, "start", snippet_75)
 
   local buf_lines = {}
   for _, b in ipairs(vim.api.nvim_list_bufs()) do
@@ -736,13 +743,13 @@ do
 
   local found = false
   for _, l in ipairs(buf_lines) do
-    -- 74 x's should fit exactly (no symbol suffix)
-    if l:find("^`" .. tname .. "%(" .. string.rep("x", 74) .. "%)`$") then
+    -- 75 x's should fit exactly (overhead = 3: backtick + backtick + space)
+    if l:find("^`" .. tname .. "` " .. string.rep("x", 75) .. "$") then
       found = true
     end
   end
   assert_eq(found, true,
-    "74-char snippet fits (overhead 4, no symbol)")
+    "75-char snippet fits (overhead 3, no symbol)")
 end
 
 -- ──────────────────────────────────────────
@@ -772,12 +779,12 @@ do
 
   local found = false
   for _, l in ipairs(buf_lines) do
-    -- Fallback format: `zz_fallback(no-start)` (no symbol)
-    if l:find("^`" .. tname .. "%(no%-start%)`$") then
+    -- Fallback format: `zz_fallback` no-start (backtick name, then plain snippet)
+    if l:find("^`" .. tname .. "` no%-start$") then
       found = true
     end
   end
-  assert_eq(found, true, "fallback tool line uses backtick format (no symbol)")
+  assert_eq(found, true, "fallback tool line uses `name` snippet format (no symbol)")
 end
 
 -- ──────────────────────────────────────────
@@ -888,7 +895,7 @@ do
   for _, b in ipairs(vim.api.nvim_list_bufs()) do
     local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
     for _, l in ipairs(lines) do
-      if l:find("`read_file%(some%-file%.txt%)`") then
+      if l:find("`read_file` some%-file%.txt") then
         vim.api.nvim_buf_delete(b, { force = true })
         break
       end
@@ -1030,7 +1037,7 @@ assert_eq(has_cancel_cmd, true, ":HakkaCancel command exists")
 heading("ui.append_tool_event result NOT displayed — name and snippet only")
 
 -- When data.result is present, the tool completion line should show only
--- `name(snippet)`, NOT `name(snippet) → result`. The result is visible in
+-- `name` snippet, NOT `name` snippet → result. The result is visible in
 -- the LLM's response text, which the assistant streams separately.
 do
   local ui = fresh_ui()
@@ -1062,7 +1069,7 @@ do
   local only_name_snippet = false
   for _, l in ipairs(buf_lines) do
     -- Expected: `grep(README.md)` WITHOUT `→ found 42 matches`
-    if l:find("^`grep%(README%.md%)`$") then
+    if l:find("^`grep` README%.md$") then
       only_name_snippet = true
     end
     -- This would be the OLD buggy format with result appended
@@ -1072,7 +1079,7 @@ do
   end
 
   assert_eq(has_result, false, "tool completion line does NOT contain result data")
-  assert_eq(only_name_snippet, true, "tool completion line shows only `name(snippet)`")
+  assert_eq(only_name_snippet, true, "tool completion line shows only `name` snippet")
 end
 
 -- ──────────────────────────────────────────
@@ -1106,7 +1113,7 @@ do
   local has_result = false
   local only_name_snippet = false
   for _, l in ipairs(buf_lines) do
-    if l:find("^`http_get%(https://example%.com%)`$") then
+    if l:find("^`http_get` https://example%.com$") then
       only_name_snippet = true
     end
     if l:find("connection refused") then
@@ -1115,7 +1122,7 @@ do
   end
 
   assert_eq(has_result, false, "err tool line does NOT contain result data")
-  assert_eq(only_name_snippet, true, "err tool line shows only `name(snippet)`")
+  assert_eq(only_name_snippet, true, "err tool line shows only `name` snippet")
 end
 if not ok then
   io.stderr:write("SOME TESTS FAILED\n")

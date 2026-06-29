@@ -62,7 +62,7 @@ func runVim(t *testing.T, ctx context.Context, args any) (string, error) {
 	return VimRunCommand().Handler(ctx, raw)
 }
 
-// awaitFrameAndRespond blocks until the client has sent a vim_request frame,
+// awaitFrameAndRespond blocks until the client has sent a client_request frame,
 // then delivers the given result via the response reader. Returns the
 // request_id that was used.
 func awaitFrameAndRespond(t *testing.T, client *vimTestClient, rr *gateways.InProcessResponseReader, result string) string {
@@ -82,7 +82,7 @@ func awaitFrameAndRespond(t *testing.T, client *vimTestClient, rr *gateways.InPr
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatal("timed out waiting for vim_request frame")
+	t.Fatal("timed out waiting for client_request frame")
 	return ""
 }
 
@@ -104,7 +104,7 @@ func awaitFrameAndRespondErr(t *testing.T, client *vimTestClient, rr *gateways.I
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatal("timed out waiting for vim_request frame")
+	t.Fatal("timed out waiting for client_request frame")
 	return ""
 }
 
@@ -147,8 +147,8 @@ func TestVimRunCommand_ReadBuffer(t *testing.T) {
 	if len(frames) != 1 {
 		t.Fatalf("expected 1 sent frame, got %d", len(frames))
 	}
-	if frames[0].Event != "vim_request" {
-		t.Fatalf("expected event=vim_request, got %q", frames[0].Event)
+	if frames[0].Event != "client_request" {
+		t.Fatalf("expected event=client_request, got %q", frames[0].Event)
 	}
 	if frames[0].ClientReq == nil {
 		t.Fatal("expected ClientReq to be set")
@@ -484,8 +484,8 @@ func TestVimListBuffers_Success(t *testing.T) {
 	if len(frames) != 1 {
 		t.Fatalf("expected 1 sent frame, got %d", len(frames))
 	}
-	if frames[0].Event != "vim_request" {
-		t.Fatalf("expected event=vim_request, got %q", frames[0].Event)
+	if frames[0].Event != "client_request" {
+		t.Fatalf("expected event=client_request, got %q", frames[0].Event)
 	}
 	if frames[0].ClientReq == nil {
 		t.Fatal("expected ClientReq to be set")
@@ -576,8 +576,8 @@ func TestVimReadBuffer_Success(t *testing.T) {
 	if len(frames) != 1 {
 		t.Fatalf("expected 1 sent frame, got %d", len(frames))
 	}
-	if frames[0].Event != "vim_request" {
-		t.Fatalf("expected event=vim_request, got %q", frames[0].Event)
+	if frames[0].Event != "client_request" {
+		t.Fatalf("expected event=client_request, got %q", frames[0].Event)
 	}
 	if frames[0].ClientReq == nil {
 		t.Fatal("expected ClientReq to be set")

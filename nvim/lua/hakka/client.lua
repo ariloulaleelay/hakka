@@ -40,8 +40,8 @@ local function connect_and_send(url, payload, on_frame, on_done)
       return
     end
 
-    if parsed.event == "vim_request" and parsed.vim_request then
-      local req = parsed.vim_request
+    if parsed.event == "client_request" and parsed.client_request then
+      local req = parsed.client_request
       vim.schedule(function()
         local result, err = execute_vim_command(req.command)
         local resp = {
