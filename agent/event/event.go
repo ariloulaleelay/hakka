@@ -7,6 +7,7 @@ package event
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -47,10 +48,13 @@ type ToolCallFinished struct {
 func (ToolCallFinished) engineEvent() {}
 
 // UsageInfo carries token usage information for a single LLM call.
+// Duration is the wall-clock time of the LLM call (nanoseconds),
+// set by the engine as an informational metric.
 type UsageInfo struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	Duration         time.Duration
 }
 
 // UsageReported is emitted after every successful LLM call (including

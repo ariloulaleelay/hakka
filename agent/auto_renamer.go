@@ -161,6 +161,7 @@ func recordLLMResponse(session SessionView, resp *llmStepResult, hooks Hooks, ev
 				PromptTokens:     resp.usage.PromptTokens,
 				CompletionTokens: resp.usage.CompletionTokens,
 				TotalTokens:      resp.usage.TotalTokens,
+				Duration:         resp.usage.Duration,
 			},
 		})
 	}

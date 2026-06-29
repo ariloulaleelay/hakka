@@ -184,14 +184,18 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 			},
 		})
 	case event.UsageReported:
+		data := map[string]any{
+			"prompt_tokens":     e.Usage.PromptTokens,
+			"completion_tokens": e.Usage.CompletionTokens,
+			"total_tokens":      e.Usage.TotalTokens,
+		}
+		if d := e.Usage.Duration; d > 0 {
+			data["duration_ns"] = d.Nanoseconds()
+		}
 		return writeFrame(w, FrameResponse{
 			SessionID: e.SessionID,
 			Event:     "meta",
-			Data: map[string]any{
-				"prompt_tokens":     e.Usage.PromptTokens,
-				"completion_tokens": e.Usage.CompletionTokens,
-				"total_tokens":      e.Usage.TotalTokens,
-			},
+			Data:      data,
 		})
 	case event.ContextEstimated:
 		return writeFrame(w, FrameResponse{

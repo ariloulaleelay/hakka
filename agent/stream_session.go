@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
@@ -76,6 +77,7 @@ func (ss *StreamSession) Execute(ctx context.Context, sessionID, userInput strin
 // engine can execute them and iterate again.
 func (ss *StreamSession) streamStep(session SessionView) stepFunc {
 	return func(ctx context.Context, msgs []Message, schemas []ToolSchema, events eventSender) (*llmStepResult, error) {
+		start := time.Now()
 		resultCh, err := ss.conv.Router.Adapter(session).Stream(ctx, msgs, schemas, ss.conv.Config.Options)
 		if err != nil {
 			return nil, err
@@ -105,6 +107,10 @@ func (ss *StreamSession) streamStep(session SessionView) stepFunc {
 			case result.Done:
 				usage = result.Usage
 			}
+		}
+
+		if usage != nil {
+			usage.Duration = time.Since(start)
 		}
 
 		return &llmStepResult{

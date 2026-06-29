@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"time"
 )
 
 // CompleteOptions carries per-request knobs. Adapters may ignore fields
@@ -12,10 +13,13 @@ type CompleteOptions struct {
 }
 
 // Usage represents the token consumption of an LLM generation.
+// Duration is the wall-clock time of the LLM call in nanoseconds,
+// set by the engine as an informational metric.
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	Duration         time.Duration `json:"duration_ns,omitempty"`
 }
 
 // LLMResponse is the normalized result of a single completion call.

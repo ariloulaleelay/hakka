@@ -287,8 +287,12 @@ All frames share the base fields in `FrameResponse`:
 
 *Token usage (after every LLM call):*
 ```json
-{"session_id": "<uuid>", "event": "meta", "data": {"prompt_tokens": 1234, "completion_tokens": 56, "total_tokens": 1290}}
+{"session_id": "<uuid>", "event": "meta", "data": {"prompt_tokens": 1234, "completion_tokens": 56, "total_tokens": 1290, "duration_ns": 1234567890}}
 ```
+
+The `duration_ns` field reports the wall-clock time of the LLM call in nanoseconds.
+It is available on every assistant message's `usage` field.
+Use `completion_tokens / (duration_ns / 1e9)` to compute tokens/second throughput.
 
 *Estimated context size (before every LLM call):*
 ```json
@@ -333,10 +337,16 @@ All frames share the base fields in `FrameResponse`:
     "session": {"id": "<uuid>", "short_id": "a1b2c3d4", "name": "Bug hunt", "message_count": 42, "model": "deepseek", "total_tokens": 5000, "estimated_context_tokens": 52000},
     "messages": [
       {"role": "user", "content": "What is a segmentation fault?"},
-      {"role": "assistant", "content": "A segmentation fault is..."}
+      {"role": "assistant", "content": "A segmentation fault is...", "usage": {"PromptTokens": 50, "CompletionTokens": 42, "TotalTokens": 92, "duration_ns": 1234567890}}
     ]
   }
 }
+```
+
+Each assistant message carries a `usage` field with token counts and `duration_ns` — the
+wall-clock time of the LLM call in nanoseconds. Duration is zero for messages stored before
+this metric was introduced. Use `completion_tokens / (duration_ns / 1e9)` to compute
+tokens/second throughput.
 ```
 
 *Session created event:*

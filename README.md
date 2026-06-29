@@ -15,7 +15,7 @@
 - **Concurrent Tool Execution** — Tools run in parallel when independent, speeding up complex workflows.
 - **Transport Agnostic** — WebSocket, Telegram — the engine is fully isolated from how users connect.
 - **Neovim Integration** — First-class plugin turns Neovim into an interactive agent IDE with status bars, session fetching, and buffer inspection.
-- **Persistent Sessions** — SQLite-backed (CGO-free via `modernc.org/sqlite`) or in-memory store with session history, token tracking, and metadata.
+- **Persistent Sessions** — SQLite-backed (CGO-free via `modernc.org/sqlite`) or in-memory store with session history, token tracking, LLM latency measurement, and metadata.
 - **Cooperative Streaming** — Stream tokens by default; transparently falls back to tool loop when the model requests tools mid-stream.
 - **Rich Tool System** — Built-in file, shell, search, HTTP, session management, and MCP server tools. Enable/disable per-session.
 - **Runtime Model Switching** — Change the active model per-session with slash commands — no restart needed.

@@ -22,6 +22,145 @@ type fakeAdapter struct {
 	lastTools []ToolSchema
 }
 
+// ---------------------------------------------------------------------------
+// LLM response duration tracking — informational metric
+// ---------------------------------------------------------------------------
+
+// TestUsageDurationIsMeasured verifies that the Duration field on the
+// assistant message's Usage is populated after a non-streaming turn.
+func TestUsageDurationIsMeasured(t *testing.T) {
+	conv, _, _, _ := newTestComponents(t, []LLMResponse{
+		{
+			Message:      Message{Role: RoleAssistant, Content: "measured reply"},
+			FinishReason: "stop",
+			Usage:        &Usage{PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5},
+		},
+	})
+	session, _, err := executeSync(conv, context.Background(), "duration-test", "hello")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var found bool
+	for _, m := range session.AllMessages() {
+		if m.Role == RoleAssistant && m.Content == "measured reply" {
+			found = true
+			if m.Usage == nil {
+				t.Fatal("BUG CONFIRMED: assistant message has nil Usage — duration not stored")
+			}
+			if m.Usage.Duration <= 0 {
+				t.Fatalf("BUG CONFIRMED: expected Duration > 0, got %v", m.Usage.Duration)
+			}
+			t.Logf("OK: Duration = %v", m.Usage.Duration)
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected assistant message not found in session")
+	}
+}
+
+// TestUsageDurationTrackedInEvent verifies that the Duration is reported
+// in the UsageReported event emitted during a turn.
+func TestUsageDurationTrackedInEvent(t *testing.T) {
+	conv, _, _, _ := newTestComponents(t, []LLMResponse{
+		{
+			Message:      Message{Role: RoleAssistant, Content: "event duration"},
+			FinishReason: "stop",
+			Usage:        &Usage{PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5},
+		},
+	})
+	eventCh, err := conv.Execute(context.Background(), "duration-event-test", "hello")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var foundUsage bool
+	for evt := range eventCh {
+		if ur, ok := evt.(event.UsageReported); ok {
+			foundUsage = true
+			if ur.Usage.Duration <= 0 {
+				t.Fatalf("BUG CONFIRMED: expected Duration > 0 in UsageReported event, got %v", ur.Usage.Duration)
+			}
+			t.Logf("OK: UsageReported Duration = %v", ur.Usage.Duration)
+		}
+	}
+	if !foundUsage {
+		t.Fatal("BUG CONFIRMED: expected UsageReported event to be emitted")
+	}
+}
+
+// TestUsageDurationJSONRoundTrip verifies that Duration survives JSON
+// serialization/deserialization (relevant for SQLite store).
+func TestUsageDurationJSONRoundTrip(t *testing.T) {
+	msg := Message{
+		Role:    RoleAssistant,
+		Content: "hello world",
+		Usage:   &Usage{PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5, Duration: 1234567890}, // ~1.23 seconds
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var restored Message
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if restored.Usage == nil {
+		t.Fatal("BUG CONFIRMED: Usage lost after JSON round-trip")
+	}
+	if restored.Usage.Duration != 1234567890 {
+		t.Fatalf("expected Duration=1234567890, got %v", restored.Usage.Duration)
+	}
+}
+
+// TestUsageDurationViaStream verifies that the Duration field is populated
+// when using the streaming path (StreamSession.Execute).
+func TestUsageDurationViaStream(t *testing.T) {
+	_, streamer, _, _ := newTestComponents(t, []LLMResponse{
+		{
+			Message:      Message{Role: RoleAssistant, Content: "stream duration"},
+			FinishReason: "stop",
+			Usage:        &Usage{PromptTokens: 7, CompletionTokens: 4, TotalTokens: 11},
+		},
+	})
+	eventCh, err := streamer.Execute(context.Background(), "stream-duration", "hi")
+	if err != nil {
+		t.Fatalf("StreamSession.Execute: %v", err)
+	}
+	for evt := range eventCh {
+		if te, ok := evt.(event.TurnFinished); ok {
+			if te.Err != nil {
+				t.Fatalf("TurnFinished error: %v", te.Err)
+			}
+		}
+	}
+
+	// Retrieve the session and check the assistant message has duration set.
+	sm := streamer.conv.Sessions
+	session, err := sm.GetOrCreate(context.Background(), "testns", "stream-duration")
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	var found bool
+	for _, m := range session.AllMessages() {
+		if m.Role == RoleAssistant && m.Content == "stream duration" {
+			found = true
+			if m.Usage == nil {
+				t.Fatal("BUG CONFIRMED: streaming assistant message has nil Usage")
+			}
+			if m.Usage.Duration <= 0 {
+				t.Fatalf("BUG CONFIRMED: expected Duration > 0 for streaming path, got %v", m.Usage.Duration)
+			}
+			t.Logf("OK: Stream Duration = %v", m.Usage.Duration)
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected streaming assistant message not found in session")
+	}
+}
+
 func (f *fakeAdapter) Complete(_ context.Context, msgs []Message, tools []ToolSchema, _ CompleteOptions) (*LLMResponse, error) {
 	f.lastMsgs = msgs
 	f.lastTools = tools

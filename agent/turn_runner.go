@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
@@ -179,9 +180,13 @@ func emitSessionRenamedIfNeeded(events eventSender, session SessionView, oldName
 func (r *turnRunner) defaultStep(session SessionView) stepFunc {
 	return func(ctx context.Context, msgs []Message, schemas []ToolSchema, _ eventSender) (*llmStepResult, error) {
 		adapter := r.router.Adapter(session)
+		start := time.Now()
 		resp, err := adapter.Complete(ctx, msgs, schemas, r.config.Options)
 		if err != nil {
 			return nil, err
+		}
+		if resp.Usage != nil {
+			resp.Usage.Duration = time.Since(start)
 		}
 		return &llmStepResult{
 			content:   resp.Message.Content,
