@@ -39,8 +39,8 @@ func RegisterProcessTools(r *agent.ToolRegistry, pm *ProcessManager) {
 
 // RegisterSessionTools registers session-control tools on the given
 // registry. These tools read the current namespace from the Go context
-// (set by the gateway per-request) to enforce isolation — e.g. a TCP
-// client can only see "tcp" sessions, a Telegram chat only sees its own
+// (set by the gateway per-request) to enforce isolation — e.g. a WebSocket
+// client can only see "default" sessions, a Telegram chat only sees its own
 // "tg:<chat_id>" sessions.
 //
 // The conv parameter is optional; when non-nil, session_summarize can

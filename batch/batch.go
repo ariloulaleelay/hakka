@@ -1,6 +1,6 @@
 // Package batch provides a reusable API for running Hakka in batch mode —
 // a single autonomous task that runs to completion without any interactive
-// transport (TCP, WebSocket, or Telegram).
+// transport (WebSocket or Telegram).
 //
 // Usage:
 //

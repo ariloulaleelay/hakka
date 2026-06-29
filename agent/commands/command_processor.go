@@ -88,6 +88,8 @@ func (cp *CommandProcessor) ExecuteJSON(ctx context.Context, sessionID, cmd stri
 		return cp.execHelp(ctx, sessionID)
 	case "continue":
 		return CommandResult{Handled: true, Action: ActionContinue, Cmd: cmd}
+	case "cwd_set":
+		return cp.execCWDSet(ctx, sessionID, params)
 	case "start":
 		return cp.execStart(ctx, sessionID)
 	case "compact":
@@ -180,6 +182,8 @@ func (cp *CommandProcessor) Execute(ctx context.Context, sessionID, input string
 		return cp.handleHelp(ctx, sessionID, parts)
 	case "/continue":
 		return cp.handleContinue(ctx, sessionID, parts)
+	case "/cwd_set":
+		return cp.handleCWDSet(ctx, sessionID, parts)
 	case "/start":
 		return cp.handleStart(ctx, sessionID, parts)
 	case "/compact":
@@ -228,6 +232,7 @@ func (cp *CommandProcessor) handleHelp(_ context.Context, _ string, _ []string) 
   /tool list                    - List available tools with status
   /tool allow <name-or-#tag>... - Allow (and enable) a tool or all tools with a #tag
   /tool deny <name-or-#tag>...  - Deny (hide) a tool or all tools with a #tag
+  /cwd_set <path>               - Set working directory for the session
   /compact <n>                  - Set context soft limit in tokens (default 150000)`
 	return CommandResult{Handled: true, Action: ActionReply, Reply: helpText}
 }
@@ -299,6 +304,48 @@ func (cp *CommandProcessor) handleStart(ctx context.Context, sessionID string, p
 	}
 }
 
+// --- CWD set ---
+
+func (cp *CommandProcessor) handleCWDSet(ctx context.Context, sessionID string, parts []string) CommandResult {
+	ns := event.NamespaceFromContext(ctx)
+	if len(parts) < 2 {
+		return CommandResult{Handled: true, Action: ActionReply, Reply: "usage: /cwd_set <path> — please specify a path"}
+	}
+	path := strings.Join(parts[1:], " ")
+	session, err := cp.Sessions.GetOrCreate(ctx, ns, sessionID)
+	if err != nil {
+		return CommandResult{Handled: true, Error: err}
+	}
+	session.SetClientCWD(path)
+	if err := cp.Sessions.Save(ctx, ns, session); err != nil {
+		return CommandResult{Handled: true, Error: err}
+	}
+	return CommandResult{Handled: true, Action: ActionReply, Reply: "cwd set to: " + path, Session: session}
+}
+
+func (cp *CommandProcessor) execCWDSet(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
+	ns := event.NamespaceFromContext(ctx)
+	var p struct {
+		CWD string `json:"cwd"`
+	}
+	if params != nil {
+		json.Unmarshal(params, &p)
+	}
+	if p.CWD == "" {
+		return CommandResult{Handled: true, Cmd: "cwd_set", Reply: "error: please specify a path in 'cwd' field"}
+	}
+	session, err := cp.Sessions.GetOrCreate(ctx, ns, sessionID)
+	if err != nil {
+		return CommandResult{Handled: true, Cmd: "cwd_set", Error: err}
+	}
+	session.SetClientCWD(p.CWD)
+	if err := cp.Sessions.Save(ctx, ns, session); err != nil {
+		return CommandResult{Handled: true, Cmd: "cwd_set", Error: err}
+	}
+	data, _ := json.Marshal(map[string]any{"cwd": p.CWD, "session_id": session.SessionID()})
+	return CommandResult{Handled: true, Cmd: "cwd_set", Data: data, Session: session}
+}
+
 // --- JSON handlers ---
 
 func (cp *CommandProcessor) execHelp(ctx context.Context, sessionID string) CommandResult {
@@ -312,6 +359,7 @@ func (cp *CommandProcessor) execHelp(ctx context.Context, sessionID string) Comm
 			{Cmd: "help", Desc: "Show this help menu"},
 			{Cmd: "continue", Desc: "Continue the conversation (LLM responds without new input)"},
 			{Cmd: "start", Desc: "Start a fresh session with all tools enabled"},
+			{Cmd: "cwd_set", Desc: "Set working directory for the session", Params: map[string]string{"cwd": "/path/to/dir"}},
 			{Cmd: "compact", Desc: "Set context soft limit in tokens", Params: map[string]string{"n": "int (0=off)"}},
 			{Cmd: "session_list", Desc: "List all sessions"},
 			{Cmd: "session_create", Desc: "Create a new session"},

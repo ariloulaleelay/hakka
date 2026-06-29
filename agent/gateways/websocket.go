@@ -31,7 +31,7 @@ func NewWebSocketGateway(conv *agent.Conversation, streamer *agent.StreamSession
 	}
 	ns := conv.Namespace
 	if ns == "" {
-		ns = "ws"
+		ns = "default"
 	}
 	return &WebSocketGateway{
 		Handler: NewTurnHandler(conv, streamer, cmd, ns),
@@ -146,53 +146,10 @@ func (gw *WebSocketGateway) handle(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Handle init handshake (same logic as TCP gateway).
-		if env.Type == "init" {
-			var initReq struct {
-				Cwd   string `json:"cwd"`
-				Start bool   `json:"start"`
-			}
-			if err := json.Unmarshal(frameData, &initReq); err != nil {
-				writer := wsWriter(readCtx, wsConn)
-				if writer.Write(FrameResponse{Error: "invalid init frame: " + err.Error()}) != nil {
-					return
-				}
-				continue
-			}
-
-			session := agent.NewSession(gw.Handler.Namespace, gw.Handler.Conv.Sessions.SystemPrompt)
-			if initReq.Cwd != "" {
-				session.SetClientCWD(initReq.Cwd)
-			}
-			if initReq.Start {
-				if gw.Handler.Conv.Tools != nil {
-					for _, schema := range gw.Handler.Conv.Tools.Schemas() {
-						session.EnableTool(schema.Name)
-					}
-				}
-			}
-
-			if saveErr := gw.Handler.Conv.Sessions.Save(readCtx, gw.Handler.Namespace, session); saveErr != nil {
-				writer := wsWriter(readCtx, wsConn)
-				if writer.Write(FrameResponse{Error: saveErr.Error()}) != nil {
-					return
-				}
-				continue
-			}
-
-			data := session.Read()
+		// Handle list_sessions — session discovery without a session.
+		if env.Type == "list_sessions" {
 			writer := wsWriter(readCtx, wsConn)
-			if writer.Write(FrameResponse{
-				Event:     "init",
-				SessionID: data.ID,
-				Done:      true,
-				Data: map[string]any{
-					"model": gw.Handler.Conv.SessionModel(session),
-					"cwd":   data.ClientCWD,
-				},
-			}) != nil {
-				return
-			}
+			gw.handleListSessions(readCtx, writer)
 			continue
 		}
 
@@ -210,6 +167,25 @@ func (gw *WebSocketGateway) handle(w http.ResponseWriter, r *http.Request) {
 			gw.Handler.HandleRequest(readCtx, req, writer, responseReader)
 		}(frameData)
 	}
+}
+
+// handleListSessions responds with a command_result frame containing all
+// sessions in the gateway's namespace. This allows clients to discover
+// existing sessions before joining one.
+func (gw *WebSocketGateway) handleListSessions(ctx context.Context, w frameWriter) {
+	nsCtx := event.ContextWithNamespace(ctx, gw.Handler.Namespace)
+
+	// Use the command processor to build the session list response.
+	if gw.Handler.Cmd == nil {
+		if w.Write(FrameResponse{Error: "no command processor configured"}) != nil {
+			return
+		}
+		return
+	}
+
+	// Execute session_list command with an empty session ID (no active session).
+	cmdRes := gw.Handler.Cmd.ExecuteJSON(nsCtx, "", "session_list", nil)
+	writeCommandResult(w, cmdRes, false, true)
 }
 
 // wsWriter adapts a websocket.Conn to frameWriter. Returns a
@@ -242,4 +218,3 @@ func (w *wsSyncWriter) ConnKey() string {
 }
 
 var _ Gateway = (*WebSocketGateway)(nil)
-

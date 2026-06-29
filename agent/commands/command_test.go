@@ -1431,3 +1431,72 @@ func TestHelpIncludesContinue(t *testing.T) {
 		t.Fatalf("expected /help to mention /continue, got: %q", res.Reply)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// /cwd_set command tests
+// ---------------------------------------------------------------------------
+
+func TestCWDSet_SetsSessionCWD(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	sess, _ := sm.GetOrCreate(context.Background(), "testns", "sid")
+	sess.SetClientCWD("/old/path")
+
+	res := cmd.Execute(context.Background(), "sid", "/cwd_set /new/path")
+	if !res.Handled || res.Error != nil {
+		t.Fatalf("handle: %v %v", res.Handled, res.Error)
+	}
+	if !strings.Contains(res.Reply, "/new/path") {
+		t.Fatalf("expected cwd in reply, got: %q", res.Reply)
+	}
+
+	got, _ := sm.GetOrCreate(context.Background(), "testns", "sid")
+	if got.Read().ClientCWD != "/new/path" {
+		t.Fatalf("expected CWD /new/path, got %q", got.Read().ClientCWD)
+	}
+}
+
+func TestCWDSet_MissingPath(t *testing.T) {
+	_, cmd, _ := newCommandComponents(t)
+	res := cmd.Execute(context.Background(), "sid", "/cwd_set")
+	if !res.Handled || res.Error != nil {
+		t.Fatalf("handle: %v %v", res.Handled, res.Error)
+	}
+	if !strings.Contains(res.Reply, "specify") {
+		t.Fatalf("expected error about missing path, got: %q", res.Reply)
+	}
+}
+
+func TestHelpIncludesCWDSet(t *testing.T) {
+	_, cmd, _ := newCommandComponents(t)
+	res := cmd.Execute(context.Background(), "sid", "/help")
+	if !res.Handled {
+		t.Fatal("expected /help to be handled")
+	}
+	if !strings.Contains(res.Reply, "/cwd_set") {
+		t.Fatalf("expected /help to mention /cwd_set, got: %q", res.Reply)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// session_switch to non-existent session should fail
+// ---------------------------------------------------------------------------
+
+func TestSessionSwitch_NonExistentFails(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
+
+	res := cmd.Execute(context.Background(), "session1", "/session switch nonexistent")
+	if !res.Handled || res.Error == nil {
+		// Should be handled (not passed to LLM) and must return an error or error reply
+	}
+	if res.Reply == "" && res.Error == nil {
+		t.Fatal("expected error when switching to non-existent session, got no error and no reply")
+	}
+	if res.Error == nil && !strings.Contains(res.Reply, "not found") && !strings.Contains(res.Reply, "no session matching") {
+		t.Fatalf("expected 'not found' or 'no session matching' error, got: %q", res.Reply)
+	}
+	// Must not have created a new session
+	if res.Session != nil {
+		t.Fatal("expected nil session when switch fails, got a session back")
+	}
+}

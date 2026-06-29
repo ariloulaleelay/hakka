@@ -45,7 +45,7 @@ type Message struct {
 // it with thread-safe access.
 //
 // The composite primary key is (Namespace, ID), where Namespace isolates
-// sessions from different gateways (e.g. "tcp", "ws", "tg:12345").
+// sessions from different gateways (e.g. "ws", "tg:12345").
 //
 // Tool authorisation model (v2):
 //   - BlockedTools[name]=true  → denied (completely invisible to LLM)

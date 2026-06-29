@@ -13,7 +13,7 @@ import (
 type frameWriter interface {
 	Write(FrameResponse) error
 	// ConnKey returns a unique identifier for the underlying transport
-	// connection (e.g. "tcp:0x14000123400" or "ws:0x14000567800").
+	// connection (e.g. "ws:0x14000567800").
 	// This is used by ReplaceSubscriber to deduplicate subscribers
 	// from the same connection when session_switch is called while a
 	// stream is in-flight.
@@ -47,7 +47,7 @@ func (g *gwClientWriter) ConnKey() string { return g.writer.ConnKey() }
 // writeCommandResult writes a CommandResult as a frame.
 // When the result has structured Data (e.g. tool_list, session_list),
 // it emits event: "command_result" with structured payload, regardless
-// of the isJSON flag — TCP and WebSocket clients can render this.
+// of the isJSON flag — WebSocket clients can render this.
 // For text-only clients (Telegram), it falls back to Reply text.
 func writeCommandResult(w frameWriter, res commands.CommandResult, stream bool, isJSON bool) (handled, ok bool) {
 	if !res.Handled {
@@ -70,7 +70,7 @@ func writeCommandResult(w frameWriter, res commands.CommandResult, stream bool, 
 
 	// Structured data path: emit as event: "command_result" whenever
 	// the result has Data. This works for both JSON-capable clients
-	// (Neovim, web UI) and text-based gateways (TCP, WebSocket) that
+	// (Neovim, web UI) and WebSocket gateways that
 	// receive text slash commands — they all understand event frames.
 	// Telegram is unaffected because it has its own command handler
 	// and never calls writeCommandResult.
@@ -107,7 +107,7 @@ func writeCommandResult(w frameWriter, res commands.CommandResult, stream bool, 
 		// For non-JSON clients, fall through to send the text reply.
 	}
 
-	// Text fallback for non-JSON clients (Telegram, TCP).
+	// Text fallback for non-JSON clients (Telegram).
 	if stream {
 		if res.Reply != "" {
 			if err := w.Write(FrameResponse{SessionID: resp.SessionID, Delta: res.Reply}); err != nil {

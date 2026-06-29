@@ -163,7 +163,13 @@ func (sc *SessionCommands) jsonSessionSwitch(ctx context.Context, sessionID stri
 		return CommandResult{Handled: true, Cmd: "session_switch", Reply: err.Error()}
 	}
 
-	session, err := sc.Sessions.GetOrCreate(ctx, ns, target)
+	session, ok, err := sc.Sessions.Get(ctx, ns, target)
+	if err != nil {
+		return CommandResult{Handled: true, Cmd: "session_switch", Error: err}
+	}
+	if !ok {
+		return CommandResult{Handled: true, Cmd: "session_switch", Reply: fmt.Sprintf("session not found: %s", p.ID)}
+	}
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "session_switch", Error: err}
 	}
@@ -421,7 +427,13 @@ func (sc *SessionCommands) handleSessionSwitch(ctx context.Context, sessionID st
 	if err != nil {
 		return CommandResult{Handled: true, Action: ActionReply, Reply: err.Error()}
 	}
-	session, err := sc.Sessions.GetOrCreate(ctx, ns, target)
+	session, ok, err := sc.Sessions.Get(ctx, ns, target)
+	if err != nil {
+		return CommandResult{Handled: true, Error: err}
+	}
+	if !ok {
+		return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("session not found: %s", parts[2])}
+	}
 	if err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}

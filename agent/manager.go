@@ -20,6 +20,16 @@ func NewSessionManager(store SessionStore, systemPrompt string) *SessionManager 
 	return &SessionManager{Store: store, SystemPrompt: systemPrompt}
 }
 
+// Get fetches a session without creating it. Returns (nil, false, nil) if
+// the session does not exist. Use this when the caller needs to distinguish
+// between "not found" and "needs creation" (e.g. session_switch).
+func (sm *SessionManager) Get(ctx context.Context, namespace, id string) (*Session, bool, error) {
+	if id == "" {
+		return nil, false, nil
+	}
+	return sm.Store.Get(ctx, namespace, id)
+}
+
 func (sm *SessionManager) GetOrCreate(ctx context.Context, namespace, id string) (*Session, error) {
 	if id != "" {
 		if session, ok, err := sm.Store.Get(ctx, namespace, id); err != nil {

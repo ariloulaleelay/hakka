@@ -38,7 +38,7 @@ type TurnExecutor interface {
 //   - Compaction limit resolution and schema augmentation
 //
 // Namespace is used to isolate sessions from different gateways
-// (e.g. "tcp", "ws", "tg:12345"). All store operations from this
+// (e.g. "default", "tg:12345"). All store operations from this
 // Conversation use this namespace, unless overridden via the context
 // (see resolveNamespace). Gateways that serve multiple isolated namespaces
 // (e.g. Telegram per-chat) should set the namespace in the context via

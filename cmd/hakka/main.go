@@ -25,7 +25,6 @@ import (
 
 type appConfig struct {
 	configPath        string
-	tcpAddr           string
 	wsAddr            string
 	dbPath            string
 	logLevel          string
@@ -42,7 +41,6 @@ type appConfig struct {
 func main() {
 	var cfg appConfig
 	flag.StringVar(&cfg.configPath, "config", "hakka.json", "Path to model config JSON")
-	flag.StringVar(&cfg.tcpAddr, "tcp-addr", "127.0.0.1:9876", "TCP gateway bind address")
 	flag.StringVar(&cfg.wsAddr, "ws-addr", ":8765", "WebSocket gateway bind address")
 	flag.StringVar(&cfg.dbPath, "db", "", "Optional SQLite session DB path (default: in-memory)")
 	flag.StringVar(&cfg.logLevel, "log-level", "info", "Log level: debug, info, warn, error")
@@ -221,7 +219,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 		Tools:        tools,
 		SystemPrompt: systemPrompt,
 		EngineCfg:    engineCfg,
-	}, cfg.tcpAddr, cfg.wsAddr, cfg.telegramToken, cfg.telegramWhitelist, cfg.telegramSOCKS5)
+	}, cfg.wsAddr, cfg.telegramToken, cfg.telegramWhitelist, cfg.telegramSOCKS5)
 	if err != nil {
 		return fmt.Errorf("build gateways: %w", err)
 	}
@@ -229,7 +227,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	if err := startGateways(ctx, gws); err != nil {
 		return fmt.Errorf("gateway start failed: %w", err)
 	}
-	logger.Info("hakka up", "tcp", cfg.tcpAddr, "ws", cfg.wsAddr)
+	logger.Info("hakka up", "ws", cfg.wsAddr)
 
 	<-ctx.Done()
 	logger.Info("shutting down")
@@ -280,7 +278,7 @@ type gatewayParams struct {
 	EngineCfg    agent.EngineConfig
 }
 
-func buildGateways(p gatewayParams, tcpAddr, wsAddr, telegramToken, telegramWhitelist, telegramSOCKS5 string) ([]gateways.Gateway, error) {
+func buildGateways(p gatewayParams, wsAddr, telegramToken, telegramWhitelist, telegramSOCKS5 string) ([]gateways.Gateway, error) {
 	tools := p.Tools
 	if tools == nil {
 		tools = agent.NewToolRegistry()
@@ -288,17 +286,16 @@ func buildGateways(p gatewayParams, tcpAddr, wsAddr, telegramToken, telegramWhit
 		hakkatools.RegisterMeta(tools)
 	}
 
-	// Register session-control tools on the main (TCP/WS) tool registry.
+	// Register session-control tools on the main tool registry.
 	// These tools let the LLM manage sessions within its own namespace.
 	hakkatools.RegisterSessionTools(tools, p.Sessions, nil)
 
-	// TCP and WebSocket gateways serve clients (e.g. Neovim) that can
+	// The WebSocket gateway serves clients (e.g. Neovim) that can
 	// receive client-bound requests from tools. Install a decorator so
 	// those requests flow through the engine event loop and stay
 	// serialised on a single writer goroutine.
 	clientDecorator := agent.EngineChannelClientDecorator()
 
-	tcpGw := buildTCPGateway(p, tools, clientDecorator, tcpAddr)
 	wsGw := buildWebSocketGateway(p, tools, clientDecorator, wsAddr)
 
 	tgGw, err := buildTelegramGateway(p, telegramToken, telegramWhitelist, telegramSOCKS5)
@@ -306,26 +303,15 @@ func buildGateways(p gatewayParams, tcpAddr, wsAddr, telegramToken, telegramWhit
 		return nil, err
 	}
 
-	gws := []gateways.Gateway{tcpGw, wsGw}
+	gws := []gateways.Gateway{wsGw}
 	if tgGw != nil {
 		gws = append(gws, tgGw)
 	}
 	return gws, nil
 }
 
-// buildTCPGateway wires the TCP gateway with full tool access and
-// a client communication decorator for Neovim integration.
-func buildTCPGateway(p gatewayParams, tools *agent.ToolRegistry, clientDecorator agent.ToolContextDecorator, addr string) *gateways.TCPGateway {
-	conv := agent.NewConversation(p.Sessions, p.Router, tools, "tcp", p.EngineCfg)
-	conv.SetToolContext(clientDecorator)
-	streamer := agent.NewStreamSession(conv, "tcp")
-	cmd := commands.New(p.Sessions, conv, p.SystemPrompt, "tcp")
-	cmd.SetTools(tools)
-	return gateways.NewTCPGateway(conv, streamer, cmd, addr)
-}
-
 // buildWebSocketGateway wires the WebSocket gateway, sharing the same
-// tool registry as TCP but with its own conversation namespace.
+// tool registry but with its own conversation namespace.
 func buildWebSocketGateway(p gatewayParams, tools *agent.ToolRegistry, clientDecorator agent.ToolContextDecorator, addr string) *gateways.WebSocketGateway {
 	conv := agent.NewConversation(p.Sessions, p.Router, tools, "ws", p.EngineCfg)
 	conv.SetToolContext(clientDecorator)

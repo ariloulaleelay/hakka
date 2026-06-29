@@ -5,7 +5,7 @@
 [![Build Status](https://img.shields.io/github/actions/workflow/status/ariloulaleelay/hakka/ci.yml?branch=main&logo=github)](https://github.com/ariloulaleelay/hakka/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Hakka** is a minimal, modular, extensible LLM agent core framework written in Go. It provides an orchestration engine that drives the LLM ↔ tool iteration loop, with pluggable model providers, persistent sessions, and transport-agnostic gateways (TCP, WebSocket, Telegram). It ships with a first-class [Neovim plugin](nvim/hakka.nvim) that turns Neovim into an interactive agent IDE.
+**Hakka** is a minimal, modular, extensible LLM agent core framework written in Go. It provides an orchestration engine that drives the LLM ↔ tool iteration loop, with pluggable model providers, persistent sessions, and transport-agnostic gateways (WebSocket, Telegram). It ships with a first-class [Neovim plugin](nvim/hakka.nvim) that turns Neovim into an interactive agent IDE.
 
 ---
 
@@ -13,7 +13,7 @@
 
 - **Pluggable Architecture** — Every component (LLM provider, persistence, tool, transport) is a Go interface. Swap or extend without touching core logic.
 - **Concurrent Tool Execution** — Tools run in parallel when independent, speeding up complex workflows.
-- **Transport Agnostic** — TCP, WebSocket, Telegram — the engine is fully isolated from how users connect.
+- **Transport Agnostic** — WebSocket, Telegram — the engine is fully isolated from how users connect.
 - **Neovim Integration** — First-class plugin turns Neovim into an interactive agent IDE with status bars, session switching, and buffer inspection.
 - **Persistent Sessions** — SQLite-backed (CGO-free via `modernc.org/sqlite`) or in-memory store with session history, token tracking, and metadata.
 - **Cooperative Streaming** — Stream tokens by default; transparently falls back to tool loop when the model requests tools mid-stream.
@@ -74,15 +74,6 @@ export DEEPSEEK_API_KEY="sk-your-key-here"
 ./bin/hakka --config hakka.example.json --db ~/.hakka.db
 ```
 
-### Chat via TCP
-
-```sh
-echo '{"input":"Hello! What time is it?"}' | nc 127.0.0.1 9876
-
-# Stream mode (token by token)
-echo '{"input":"Count to 5","stream":true}' | nc 127.0.0.1 9876
-```
-
 ### Chat via WebSocket (used by Neovim plugin)
 
 ```sh
@@ -99,7 +90,6 @@ websocat ws://127.0.0.1:8765/ws
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config` | `hakka.json` | Model registry configuration file |
-| `--tcp-addr` | `127.0.0.1:9876` | TCP gateway bind address |
 | `--ws-addr` | `:8765` | WebSocket gateway bind address |
 | `--db` | *(in-memory)* | SQLite database file path |
 | `--log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
@@ -248,7 +238,7 @@ MCP tools are automatically discovered on startup and registered in the tool reg
 
 ## Wire Protocol
 
-**Request** (TCP newline-JSON or WebSocket frame):
+**Request** (WebSocket frame):
 
 ```json
 { "session_id": "<uuid>", "input": "...", "stream": true }
@@ -283,7 +273,7 @@ If the model requests tools mid-stream, the gateway transparently falls back to 
 ```
                          ┌─────────────────────────────────────┐
                          │           GATEWAYS                  │
-                         │  TCP · WebSocket · Telegram         │
+                         │  WebSocket · Telegram               │
                          └──────────┬──────────────────────────┘
                                     │
                          ┌──────────▼──────────────────────────┐
@@ -322,7 +312,7 @@ Using [lazy.nvim](https://github.com/folke/lazy.nvim):
 
 ```lua
 {
-  dir = "/path/to/hakka/nvim/hakka.nvim",
+  dir = "/path/to/hakka/nvim",
   config = function()
     require("hakka").setup({
       addr = "ws://127.0.0.1:8765/ws",

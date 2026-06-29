@@ -803,6 +803,104 @@ assert_eq(cfg_f.is_user_shortcut("<C-x>"), true, "<C-x> is user shortcut")
 assert_eq(cfg_f.is_default_shortcut("<C-c>"), true, "<C-c> still default")
 
 -- ──────────────────────────────────────────
+heading("ui.prompt_start — no accumulated # Me after multiple turns")
+
+-- Simulate the conversation cycle: user sends → assistant responds → prompt appears.
+-- Verify that old # Me headers don't accumulate.
+do
+  local ui = fresh_ui()
+  pcall(ui.open, function() end)
+
+  -- Helper to get lines from our test buffer (identified by unique content marker)
+  local function get_test_lines()
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+      for _, l in ipairs(lines) do
+        if l == "MARKER_TURN1" or l == "MARKER_TURN2" or l == "MARKER_TURN3" then
+          return lines
+        end
+      end
+    end
+    return {}
+  end
+
+  local function count_me_in(lines)
+    local count = 0
+    for _, l in ipairs(lines) do
+      if l == "# Me" then count = count + 1 end
+    end
+    return count
+  end
+
+  -- Turn 1: user says "MARKER_TURN1", assistant responds "turn1 response"
+  ui.append_user("MARKER_TURN1")
+  ui.begin_assistant_stream()
+  ui.append_delta("turn1 response")
+  ui.end_assistant_stream()
+
+  local lines1 = get_test_lines()
+  local count1 = count_me_in(lines1)
+  -- After turn 1: 1 # Me label for MARKER_TURN1 + 1 # Me prompt = 2
+  assert_eq(count1, 2,
+    "after turn 1: exactly 2 '# Me' (1 label + 1 prompt), got " .. count1 ..
+    ", lines: " .. vim.inspect(lines1))
+
+  -- Turn 2
+  ui.append_user("MARKER_TURN2")
+  ui.begin_assistant_stream()
+  ui.append_delta("turn2 response")
+  ui.end_assistant_stream()
+
+  local lines2 = get_test_lines()
+  local count2 = count_me_in(lines2)
+  -- After turn 2: 2 labels + 1 prompt = 3
+  assert_eq(count2, 3,
+    "after turn 2: exactly 3 '# Me' (2 labels + 1 prompt), got " .. count2 ..
+    ", lines: " .. vim.inspect(lines2))
+
+  -- Turn 3
+  ui.append_user("MARKER_TURN3")
+  ui.begin_assistant_stream()
+  ui.append_delta("turn3 response")
+  ui.end_assistant_stream()
+
+  local lines3 = get_test_lines()
+  local count3 = count_me_in(lines3)
+  -- After turn 3: 3 labels + 1 prompt = 4
+  assert_eq(count3, 4,
+    "after turn 3: exactly 4 '# Me' (3 labels + 1 prompt), got " .. count3 ..
+    ", lines: " .. vim.inspect(lines3))
+end
+
+-- ──────────────────────────────────────────
+heading("ui.append_tool_event after close — no crash")
+
+-- When the user closes the chat window while a tool call is in flight,
+-- the completion event should not crash (buffer may be invalid).
+do
+  local ui = fresh_ui()
+  pcall(ui.open, function() end)
+
+  -- Start a tool call
+  ui.append_tool_event("read_file", "start", "some-file.txt")
+
+  -- Simulate buffer deletion (e.g. user explicitly wipes the buffer)
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+    for _, l in ipairs(lines) do
+      if l:find("`read_file%(some%-file%.txt%)`") then
+        vim.api.nvim_buf_delete(b, { force = true })
+        break
+      end
+    end
+  end
+
+  -- Tool completion event arrives after buffer deleted — should not error
+  local ok, err = pcall(ui.append_tool_event, "read_file", "ok", "some-file.txt")
+  assert_eq(ok, true, "tool ok after delete: no crash, got err=" .. tostring(err))
+end
+
+-- ──────────────────────────────────────────
 heading("init.cancel")
 
 -- Test the M.cancel function in isolation
@@ -810,6 +908,103 @@ local init = require("hakka.init")
 
 -- Verify cancel function exists
 assert_eq(type(init.cancel), "function", "M.cancel is a function")
+
+-- ──────────────────────────────────────────
+heading("ui.append_user preserves # Me header")
+
+-- Verify that append_user does NOT remove the # Me label from the buffer.
+-- Bug: a misguided fix for double-# Me removed the existing # Me header,
+-- causing the first user message to appear without a label.
+do
+  local ui = fresh_ui()
+  pcall(ui.open, function() end)
+
+  -- Helper: find our test buffer by searching for marker text
+  local function get_buf_lines()
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+      for _, l in ipairs(lines) do
+        if l == "hello world" then
+          return lines
+        end
+      end
+    end
+    return {}
+  end
+
+  -- User types and submits "hello world"
+  ui.append_user("hello world")
+
+  local lines = get_buf_lines()
+  assert_eq(#lines >= 1, true, "buffer found with user text")
+  -- The # Me header should still be there as the user message label
+  assert_eq(lines[1], "# Me", "append_user preserves '# Me' header")
+  -- The user text should be after the # Me
+  local found_user_text = false
+  for _, l in ipairs(lines) do
+    if l == "hello world" then found_user_text = true end
+  end
+  assert_eq(found_user_text, true, "user text present in buffer after append_user")
+end
+
+-- ──────────────────────────────────────────
+heading("ui.append_assistant not stream-safe — documents the bug")
+
+-- append_assistant() is a convenience function for non-stream output: it
+-- prepends "# Hakka" and calls reset_prompt (# Me). Calling it during an
+-- active stream (as handle_command_result does) causes a second # Hakka
+-- header and an extra # Me prompt. Use append_delta for stream output.
+do
+  local ui = fresh_ui()
+  pcall(ui.open, function() end)
+
+  -- First turn: normal user → assistant cycle (marker ensures unique buffer search)
+  ui.append_user("first msg turn2")
+  ui.begin_assistant_stream()
+  ui.append_delta("first response turn2")
+  ui.end_assistant_stream()
+
+  -- Find our test buffer by searching for the turn2 marker
+  local function get_test_lines()
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+      for _, l in ipairs(lines) do
+        if l == "first msg turn2" then
+          return lines
+        end
+      end
+    end
+    return {}
+  end
+
+  -- Now simulate a JSON command: begin stream → call append_assistant
+  -- (buggy pattern from handle_command_result) → end stream
+  ui.append_user("/session list")
+  ui.begin_assistant_stream()
+  ui.append_assistant("list output here")  -- BUG: not stream-safe!
+  ui.end_assistant_stream()
+
+  local lines = get_test_lines()
+
+  -- Count headers
+  local me_count = 0
+  local hakka_count = 0
+  for _, l in ipairs(lines) do
+    if l == "# Me" then me_count = me_count + 1 end
+    if l == "# Hakka" then hakka_count = hakka_count + 1 end
+  end
+
+  -- append_assistant during stream adds a SECOND # Hakka header
+  -- (one from begin_assistant_stream, one from append_assistant)
+  -- and both # Me are doubled too.
+  -- This test documents the broken behavior. The fix is in init.lua:
+  -- handle_command_result must use append_delta, not append_assistant,
+  -- when called during a stream.
+  assert_eq(hakka_count >= 2, true,
+    "append_assistant during stream causes >=2 # Hakka (duplicate header)")
+  assert_eq(me_count >= 3, true,
+    "append_assistant during stream causes >=3 # Me (duplicate prompt)")
+end
 
 -- ──────────────────────────────────────────
 heading("plugin.HakkaCancel command")
@@ -830,9 +1025,102 @@ assert_eq(has_cancel_cmd, true, ":HakkaCancel command exists")
 
 -- ──────────────────────────────────────────
 
+
+-- ──────────────────────────────────────────
+heading("ui.append_tool_event result NOT displayed — name and snippet only")
+
+-- When data.result is present, the tool completion line should show only
+-- `name(snippet)`, NOT `name(snippet) → result`. The result is visible in
+-- the LLM's response text, which the assistant streams separately.
+do
+  local ui = fresh_ui()
+  pcall(ui.open, function() end)
+
+  -- Start a tool call
+  ui.append_tool_event("grep", "start", "README.md")
+
+  -- Complete with data.result present (this is what the server sends)
+  ui.append_tool_event("grep", "ok", "README.md", { result = "found 42 matches" })
+
+  -- Find the buffer and inspect the line
+  local buf_lines = {}
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+    for _, l in ipairs(lines) do
+      if l:find("grep") then
+        buf_lines = lines
+        break
+      end
+    end
+    if #buf_lines > 0 then break end
+  end
+
+  assert_eq(#buf_lines > 0, true, "buffer has tool event line for grep")
+
+  -- The line should NOT contain the result
+  local has_result = false
+  local only_name_snippet = false
+  for _, l in ipairs(buf_lines) do
+    -- Expected: `grep(README.md)` WITHOUT `→ found 42 matches`
+    if l:find("^`grep%(README%.md%)`$") then
+      only_name_snippet = true
+    end
+    -- This would be the OLD buggy format with result appended
+    if l:find("→") or l:find("found 42 matches") then
+      has_result = true
+    end
+  end
+
+  assert_eq(has_result, false, "tool completion line does NOT contain result data")
+  assert_eq(only_name_snippet, true, "tool completion line shows only `name(snippet)`")
+end
+
+-- ──────────────────────────────────────────
+heading("ui.append_tool_event err result NOT displayed — name and snippet only")
+
+-- Same for error status: no result should be shown.
+do
+  local ui = fresh_ui()
+  pcall(ui.open, function() end)
+
+  -- Start a tool call
+  ui.append_tool_event("http_get", "start", "https://example.com")
+
+  -- Complete with error result
+  ui.append_tool_event("http_get", "err", "https://example.com", { result = "Error: connection refused" })
+
+  local buf_lines = {}
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+    for _, l in ipairs(lines) do
+      if l:find("http_get") then
+        buf_lines = lines
+        break
+      end
+    end
+    if #buf_lines > 0 then break end
+  end
+
+  assert_eq(#buf_lines > 0, true, "buffer has tool event line for http_get")
+
+  local has_result = false
+  local only_name_snippet = false
+  for _, l in ipairs(buf_lines) do
+    if l:find("^`http_get%(https://example%.com%)`$") then
+      only_name_snippet = true
+    end
+    if l:find("connection refused") then
+      has_result = true
+    end
+  end
+
+  assert_eq(has_result, false, "err tool line does NOT contain result data")
+  assert_eq(only_name_snippet, true, "err tool line shows only `name(snippet)`")
+end
 if not ok then
   io.stderr:write("SOME TESTS FAILED\n")
   vim.cmd("cquit")  -- exit with non-zero status
 else
   vim.cmd("qall!")  -- exit cleanly
 end
+

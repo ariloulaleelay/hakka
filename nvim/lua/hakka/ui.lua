@@ -18,6 +18,24 @@ local function lines(buf)
   return vim.api.nvim_buf_get_lines(buf, 0, -1, false)
 end
 
+--- Safely set buffer lines, handling strings that contain embedded newlines.
+--- Neovim's nvim_buf_set_lines rejects elements with \n, so we split them.
+--- @param buf number Buffer handle
+--- @param arr table Array of strings (any element may contain \n)
+local function set_lines(buf, arr)
+  local flat = {}
+  for _, line in ipairs(arr) do
+    if type(line) == "string" and line:find("\n") then
+      for _, part in ipairs(vim.split(line, "\n", { plain = true })) do
+        table.insert(flat, part)
+      end
+    else
+      table.insert(flat, line)
+    end
+  end
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, flat)
+end
+
 --- Append text to the buffer. The buffer must be modifiable.
 --- The first incoming line is concatenated to the last existing line (which
 --- is expected to be a blank placeholder). Subsequent lines are appended.
@@ -307,7 +325,7 @@ function M.append_user(text)
   for _, line in ipairs(incoming) do
     table.insert(all, line)
   end
-  vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, all)
+  set_lines(state.buf, all)
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     vim.api.nvim_win_set_cursor(state.win, { #all, 0 })
   end
@@ -331,7 +349,7 @@ function M.begin_assistant_stream()
   end
   table.insert(all, "# Hakka")
   table.insert(all, "")
-  vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, all)
+  set_lines(state.buf, all)
   if state.win and vim.api.nvim_win_is_valid(state.win) then
     vim.api.nvim_win_set_cursor(state.win, { #all, 0 })
   end
@@ -339,13 +357,13 @@ function M.begin_assistant_stream()
 end
 
 function M.append_delta(text)
-  if not state.buf or not streaming then return end
+  if not state.buf or not streaming or not vim.api.nvim_buf_is_valid(state.buf) then return end
   append(state.buf, text)
 end
 
 function M.end_assistant_stream()
   streaming = false
-  if not state.buf then return end
+  if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then return end
   reset_prompt(state.buf)
 end
 
@@ -354,7 +372,7 @@ local function ensure_new_line()
   local all = lines(state.buf)
   if #all == 0 or all[#all] ~= "" then
     table.insert(all, "")
-    vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, all)
+    set_lines(state.buf, all)
   end
 end
 
@@ -366,7 +384,7 @@ local util = require("hakka.util")
 --- @param snippet string Human-readable exec snippet (e.g. 'read_file("/tmp/foo.txt")')
 --- @param data table|nil Optional data from server, may contain "result" with tool output
 function M.append_tool_event(name, status, snippet, data)
-  if not state.buf then return end
+  if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then return end
   vim.api.nvim_buf_set_option(state.buf, "modifiable", true)
 
   -- Compute dynamic max length for the snippet.
@@ -391,34 +409,24 @@ function M.append_tool_event(name, status, snippet, data)
     local all = lines(state.buf)
     local line_prefix = "`" .. name .. "("
     local found = false
-    local result_text = ""
-    if data and data.result then
-      result_text = tostring(data.result)
-    end
+    -- result omitted: LLM response stream shows it
 
     for i = #all, 1, -1 do
       if all[i]:sub(1, #line_prefix) == line_prefix then
-        -- Append result to the tool line if available
-        if result_text ~= "" and result_text ~= "null" then
-          all[i] = "`" .. name .. "(" .. safe .. ")` → " .. result_text
-        else
-          all[i] = "`" .. name .. "(" .. safe .. ")`"
-        end
+        -- Show only the tool name and snippet -- result is visible
+        -- in the LLM response stream, no need to duplicate it.
+        all[i] = "`" .. name .. "(" .. safe .. ")`"
         found = true
         break
       end
     end
 
     if found then
-      vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, all)
+      set_lines(state.buf, all)
     else
       -- Fallback: append a new completed line
       ensure_new_line()
-      if result_text ~= "" and result_text ~= "null" then
-        append(state.buf, "`" .. name .. "(" .. safe .. ")` → " .. result_text)
-      else
-        append(state.buf, "`" .. name .. "(" .. safe .. ")`")
-      end
+      append(state.buf, "`" .. name .. "(" .. safe .. ")`")
       if streaming then
         ensure_new_line()
       end
@@ -434,7 +442,7 @@ function M.append_meta_event(data)
 end
 
 function M.append_error(text)
-  if not state.buf then return end
+  if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then return end
   append(state.buf, "_error: " .. text .. "_")
   reset_prompt(state.buf)
 end
@@ -512,19 +520,19 @@ function M.load_history(messages)
   end
 
   -- Set the rendered history in the buffer
-  vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
+  set_lines(state.buf, lines)
 
   -- Add a fresh user prompt after history.
   if last_role == "user" then
     table.insert(lines, "")
-    vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
+    set_lines(state.buf, lines)
     state.prompt_start = #lines
   else
     state.prompt_start = #lines + 2
     table.insert(lines, "")
     table.insert(lines, "# Me")
     table.insert(lines, "")
-    vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
+    set_lines(state.buf, lines)
   end
 
   if state.win and vim.api.nvim_win_is_valid(state.win) then

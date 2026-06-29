@@ -220,26 +220,26 @@ local function handle_command_result(frame)
       if s.compact_soft_limit then
         table.insert(lines, string.format("  Compact:     %d tokens", s.compact_soft_limit))
       end
-      ui.append_assistant(table.concat(lines, "\n"))
+      ui.append_delta(table.concat(lines, "\n"))
     end
   elseif cmd == "session_rename" then
     if data.session then
       session_name = data.session.name
       ui.set_session_id(data.session.id)
-      ui.append_assistant("Session renamed to: " .. (data.session.name or ""))
+      ui.append_delta("Session renamed to: " .. (data.session.name or ""))
     end
   elseif cmd == "session_autorename" then
     if data.session and data.session.name then
       session_name = data.session.name
       ui.set_session_id(data.session.id)
-      ui.append_assistant("Session renamed to: " .. data.session.name)
+      ui.append_delta("Session renamed to: " .. data.session.name)
     end
   elseif cmd == "session_delete" then
     if data.deleted then
       if data.active_cleared then
-        ui.append_assistant("Session " .. data.deleted .. " deleted (active session cleared)")
+        ui.append_delta("Session " .. data.deleted .. " deleted (active session cleared)")
       else
-        ui.append_assistant("Session " .. data.deleted .. " deleted")
+        ui.append_delta("Session " .. data.deleted .. " deleted")
       end
     end
   elseif cmd == "session_list" then
@@ -251,9 +251,9 @@ local function handle_command_result(frame)
         local count = s.message_count or 0
         table.insert(lines, string.format("%s%-20s [%d msgs] %s", mark, name, count, s.id))
       end
-      ui.append_assistant(table.concat(lines, "\n"))
+      ui.append_delta(table.concat(lines, "\n"))
     else
-      ui.append_assistant("No sessions found.")
+      ui.append_delta("No sessions found.")
     end
   elseif cmd == "model_switch" then
     if data.model then
@@ -266,7 +266,7 @@ local function handle_command_result(frame)
         local mark = m.current and "* " or "  "
         table.insert(lines, mark .. m.name)
       end
-      ui.append_assistant(table.concat(lines, "\n"))
+      ui.append_delta(table.concat(lines, "\n"))
     end
   elseif cmd == "tool_list" then
     if data.tools then
@@ -279,15 +279,15 @@ local function handle_command_result(frame)
         end
         table.insert(lines, string.format("  %-25s %s%s", t.name, status, tags))
       end
-      ui.append_assistant(table.concat(lines, "\n"))
+      ui.append_delta(table.concat(lines, "\n"))
     end
   elseif cmd == "tool_enable" then
     if data.enabled then
-      ui.append_assistant("enabled: " .. table.concat(data.enabled, ", "))
+      ui.append_delta("enabled: " .. table.concat(data.enabled, ", "))
     end
   elseif cmd == "tool_disable" then
     if data.disabled then
-      ui.append_assistant("disabled: " .. table.concat(data.disabled, ", "))
+      ui.append_delta("disabled: " .. table.concat(data.disabled, ", "))
     end
   elseif cmd == "help" then
     if data.commands then
@@ -303,11 +303,11 @@ local function handle_command_result(frame)
         end
         table.insert(lines, string.format("  %-20s %s%s", c.cmd, c.desc, extra))
       end
-      ui.append_assistant(table.concat(lines, "\n"))
+      ui.append_delta(table.concat(lines, "\n"))
     end
   elseif cmd == "compact" then
     if data.compact_soft_limit then
-      ui.append_assistant("compact soft limit: " .. data.compact_soft_limit)
+      ui.append_delta("compact soft limit: " .. data.compact_soft_limit)
     end
   end
 end

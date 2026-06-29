@@ -98,7 +98,7 @@ func (SessionRenamed) engineEvent() {}
 // (e.g. Neovim) and receive responses over the same connection.
 //
 // These types are intentionally transport-agnostic. A "client" is any
-// entity that connects to the engine through a gateway (TCP, WebSocket,
+// entity that connects to the engine through a gateway (WebSocket,
 // etc.) — it may be Neovim, a REPL, a web UI, or any other frontend.
 // ---------------------------------------------------------------------------
 
@@ -118,7 +118,7 @@ type ClientResponse struct {
 }
 
 // ClientWriter is the interface that lets tools send frames back to the
-// client (e.g. over the TCP/WS connection). It is the tool's only channel
+// client (e.g. over the WebSocket connection). It is the tool's only channel
 // to the outside world.
 type ClientWriter interface {
 	// WriteFrame sends an event frame to the client. Not all transports
@@ -171,7 +171,7 @@ func CWDFromContext(ctx context.Context) string {
 
 // ContextWithNamespace stores the session namespace in the context so
 // session-control tools can scope their operations to the correct
-// isolated namespace (e.g. "tcp", "tg:12345").
+// isolated namespace (e.g. "default", "tg:12345").
 func ContextWithNamespace(ctx context.Context, ns string) context.Context {
 	return context.WithValue(ctx, sessionNamespaceKey{}, ns)
 }
