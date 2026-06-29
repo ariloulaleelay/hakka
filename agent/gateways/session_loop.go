@@ -260,7 +260,7 @@ func clientCtx(ctx context.Context, w frameWriter, responseReader *InProcessResp
 func enrichCtxWithCWD(ctx context.Context, conv *agent.Conversation, req FrameRequest) context.Context {
 	cwd := req.Cwd
 	if cwd == "" && req.SessionID != "" && conv != nil {
-		session, err := conv.Sessions.GetOrCreate(ctx, conv.Namespace, req.SessionID)
+		session, err := conv.Sessions().GetOrCreate(ctx, conv.Namespace(), req.SessionID)
 		if err == nil && session != nil && session.Read().ClientCWD != "" {
 			cwd = session.Read().ClientCWD
 		}

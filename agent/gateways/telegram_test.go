@@ -661,7 +661,7 @@ func TestTelegramGateway_GroupChatIgnoresWhenNotMentioned(t *testing.T) {
 
 	// Verify the message was appended to session history.
 	// Look up the session by listing all sessions in the namespace.
-	sessions := th.gateway.Conv.Sessions
+	sessions := th.gateway.Conv.Sessions()
 	sessionList, err := sessions.List(context.Background(), "tg:1001")
 	if err != nil {
 		t.Fatalf("failed to list sessions: %v", err)

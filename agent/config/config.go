@@ -237,9 +237,12 @@ func buildAdapter(name string, modelCfg ModelConfig, client *http.Client, llmDeb
 	case "openai":
 		cfg := openai.DefaultConfig("dummy-key")
 		cfg.BaseURL = modelCfg.BaseURL
+		// Wrap transport to inject extra body fields (e.g. session_id for OpenRouter).
+		client.Transport = adapters.WrapTransport(client.Transport, modelCfg.Extra)
 		cfg.HTTPClient = client
 		adapter := adapters.NewOpenAIAdapter(openai.NewClientWithConfig(cfg), modelCfg.Model)
 		adapter.LLMDebugDir = llmDebugDir
+		adapter.Extra = modelCfg.Extra
 		return adapter, nil
 	case "anthropic":
 		adapter := adapters.NewAnthropicAdapter(client, modelCfg.BaseURL, modelCfg.Model)

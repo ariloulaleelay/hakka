@@ -40,12 +40,12 @@ func (mc *ModelCommands) jsonModelList(ctx context.Context, sessionID string) Co
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "model_list", Error: err}
 	}
-	if mc.Conv == nil || mc.Conv.Router == nil {
+	if mc.Conv == nil || mc.Conv.Router() == nil {
 		return CommandResult{Handled: true, Cmd: "model_list", Reply: "no router configured", Session: session}
 	}
 
 	current := mc.modelName(session)
-	names := mc.Conv.Router.Models()
+	names := mc.Conv.Router().Models()
 	models := make([]map[string]any, 0, len(names))
 	for _, n := range names {
 		models = append(models, map[string]any{

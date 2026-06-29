@@ -213,13 +213,13 @@ func (h *TurnHandler) resolveSessionAndCWD(ctx context.Context, req FrameRequest
 	if req.Cwd == "" || h.Conv == nil {
 		return req.SessionID
 	}
-	session, err := h.Conv.Sessions.GetOrCreate(ctx, h.Namespace, req.SessionID)
+	session, err := h.Conv.Sessions().GetOrCreate(ctx, h.Namespace, req.SessionID)
 	if err != nil || session == nil {
 		return req.SessionID
 	}
 	if session.Read().ClientCWD != req.Cwd {
 		session.SetClientCWD(req.Cwd)
-		if saveErr := h.Conv.Sessions.Save(ctx, h.Namespace, session); saveErr != nil {
+		if saveErr := h.Conv.Sessions().Save(ctx, h.Namespace, session); saveErr != nil {
 			slog.Warn("failed to persist session CWD",
 				"session", session.SessionID(), "cwd", req.Cwd, "error", saveErr)
 		}

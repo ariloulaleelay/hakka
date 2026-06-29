@@ -84,12 +84,12 @@ func TestExecuteEvents_ToolLoop(t *testing.T) {
 	})
 
 	// Pre-create session and enable the "greet" tool
-	session, err := conv.Sessions.GetOrCreate(context.Background(), "testns", "")
+	session, err := conv.sessions.GetOrCreate(context.Background(), "testns", "")
 	if err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
 	session.EnableTool("greet")
-	if err := conv.Sessions.Save(context.Background(), "testns", session); err != nil {
+	if err := conv.sessions.Save(context.Background(), "testns", session); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 

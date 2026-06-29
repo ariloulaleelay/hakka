@@ -50,13 +50,13 @@ func NewStreamSession(conv *Conversation, namespace string) *StreamSession {
 // append user message) uses StreamSession.Namespace directly, while the
 // tool loop and event emission use the shared runTurnWithStep.
 func (ss *StreamSession) Execute(ctx context.Context, sessionID, userInput string) (<-chan event.EngineEvent, error) {
-	session, err := ss.conv.Sessions.GetOrCreate(ctx, ss.Namespace, sessionID)
+	session, err := ss.conv.sessions.GetOrCreate(ctx, ss.Namespace, sessionID)
 	if err != nil {
 		return nil, err
 	}
 	if userInput != "" {
 		session.Append(Message{Role: RoleUser, Content: userInput})
-		if err := ss.conv.Sessions.Save(ctx, ss.Namespace, session); err != nil {
+		if err := ss.conv.sessions.Save(ctx, ss.Namespace, session); err != nil {
 			return nil, err
 		}
 	}
@@ -78,7 +78,7 @@ func (ss *StreamSession) Execute(ctx context.Context, sessionID, userInput strin
 func (ss *StreamSession) streamStep(session SessionView) stepFunc {
 	return func(ctx context.Context, msgs []Message, schemas []ToolSchema, events eventSender) (*llmStepResult, error) {
 		start := time.Now()
-		resultCh, err := ss.conv.Router.Adapter(session).Stream(ctx, msgs, schemas, ss.conv.Config.Options)
+		resultCh, err := ss.conv.router.Adapter(session).Stream(ctx, msgs, schemas, ss.conv.config.Options)
 		if err != nil {
 			return nil, err
 		}

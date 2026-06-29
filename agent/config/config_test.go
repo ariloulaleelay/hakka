@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ariloulaleelay/hakka/agent/adapters"
 )
 
 const sample = `{
@@ -244,6 +246,59 @@ func TestExpandEnvInMCPServerConfig(t *testing.T) {
 	}
 	if mcpCfg.Headers["X-API-Key"] != "sk-abc123" {
 		t.Errorf("headers[X-API-Key]: got %q, want %q", mcpCfg.Headers["X-API-Key"], "sk-abc123")
+	}
+}
+
+func TestBuildRegistryOpenAIExtra(t *testing.T) {
+	os.Setenv("HAKKA_TOKEN", "test-token")
+	defer os.Unsetenv("HAKKA_TOKEN")
+
+	const cfgWithExtra = `{
+	  "default": "openrouter",
+	  "models": {
+		"openrouter": {
+		  "dialect": "openai",
+		  "base_url": "https://openrouter.ai/api/v1",
+		  "model": "anthropic/claude-3.5-sonnet",
+		  "headers": {"Authorization": "Bearer ${env: HAKKA_TOKEN}"},
+		  "extra": {"session_id": "$session_id", "provider": "openrouter"}
+		}
+	  }
+	}`
+
+	p := filepath.Join(t.TempDir(), "config_extra.json")
+	if err := os.WriteFile(p, []byte(cfgWithExtra), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := Load(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	reg, err := BuildRegistry(f, "")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	ad, ok := reg.Get("openrouter")
+	if !ok {
+		t.Fatal("adapter 'openrouter' not found")
+	}
+
+	oa, ok := ad.(*adapters.OpenAIAdapter)
+	if !ok {
+		t.Fatalf("expected *adapters.OpenAIAdapter, got %T", ad)
+	}
+
+	if oa.Extra == nil {
+		t.Fatal("expected Extra to be set")
+	}
+	if oa.Extra["session_id"] != "$session_id" {
+		t.Errorf("extra.session_id: got %v, want $session_id", oa.Extra["session_id"])
+	}
+	if oa.Extra["provider"] != "openrouter" {
+		t.Errorf("extra.provider: got %v, want openrouter", oa.Extra["provider"])
 	}
 }
 

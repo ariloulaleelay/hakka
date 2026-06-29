@@ -181,7 +181,9 @@ func (r *turnRunner) defaultStep(session SessionView) stepFunc {
 	return func(ctx context.Context, msgs []Message, schemas []ToolSchema, _ eventSender) (*llmStepResult, error) {
 		adapter := r.router.Adapter(session)
 		start := time.Now()
-		resp, err := adapter.Complete(ctx, msgs, schemas, r.config.Options)
+		opts := r.config.Options
+		opts.SessionID = session.SessionID()
+		resp, err := adapter.Complete(ctx, msgs, schemas, opts)
 		if err != nil {
 			return nil, err
 		}

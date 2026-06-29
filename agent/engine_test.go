@@ -137,7 +137,7 @@ func TestUsageDurationViaStream(t *testing.T) {
 	}
 
 	// Retrieve the session and check the assistant message has duration set.
-	sm := streamer.conv.Sessions
+	sm := streamer.conv.sessions
 	session, err := sm.GetOrCreate(context.Background(), "testns", "stream-duration")
 	if err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
@@ -232,7 +232,7 @@ func executeSync(conv *Conversation, ctx context.Context, sessionID, input strin
 	if returnedSessionID == "" {
 		returnedSessionID = sessionID
 	}
-	session, lookupErr := conv.Sessions.GetOrCreate(ctx, conv.Namespace, returnedSessionID)
+	session, lookupErr := conv.sessions.GetOrCreate(ctx, conv.namespace, returnedSessionID)
 	if lookupErr != nil {
 		return nil, reply, lookupErr
 	}
@@ -241,14 +241,14 @@ func executeSync(conv *Conversation, ctx context.Context, sessionID, input strin
 
 func executeSyncWithTools(t *testing.T, conv *Conversation, ctx context.Context, sessionID, input string, toolNames ...string) (*Session, string, error) {
 	t.Helper()
-	session, err := conv.Sessions.GetOrCreate(ctx, conv.Namespace, sessionID)
+	session, err := conv.sessions.GetOrCreate(ctx, conv.namespace, sessionID)
 	if err != nil {
 		return nil, "", err
 	}
 	for _, name := range toolNames {
 		session.EnableTool(name)
 	}
-	if err := conv.Sessions.Save(ctx, conv.Namespace, session); err != nil {
+	if err := conv.sessions.Save(ctx, conv.namespace, session); err != nil {
 		return nil, "", err
 	}
 	return executeSync(conv, ctx, sessionID, input)
@@ -484,7 +484,7 @@ func TestMessageUsageViaStream(t *testing.T) {
 	}
 
 	// Retrieve the session and check the assistant message has usage.
-	sm := streamer.conv.Sessions
+	sm := streamer.conv.sessions
 	session, err := sm.GetOrCreate(context.Background(), "testns", "stream-usage")
 	if err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
@@ -716,7 +716,7 @@ func TestConversationExecuteEmptyInput(t *testing.T) {
 	}
 
 	// Verify no new user message was appended.
-	session, _ = conv.Sessions.GetOrCreate(context.Background(), "testns", "resume-test")
+	session, _ = conv.sessions.GetOrCreate(context.Background(), "testns", "resume-test")
 	if len(session.AllMessages()) != initialMsgCount+1 {
 		t.Fatalf("expected %d messages (initial + new assistant reply), got %d", initialMsgCount+1, len(session.AllMessages()))
 	}
@@ -750,7 +750,7 @@ func TestStreamSessionExecuteEmptyInput(t *testing.T) {
 	}
 
 	// Count existing messages.
-	sm := streamer.conv.Sessions
+	sm := streamer.conv.sessions
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "stream-empty-test")
 	initialMsgCount := len(session.AllMessages())
 

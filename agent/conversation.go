@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
@@ -50,23 +51,33 @@ type TurnExecutor interface {
 // interleave events on a shared writer. Different turns (even on different
 // sessions) run independently and do not block each other.
 //
+// All exported fields are unexported to prevent external mutation. Accessor
+// methods (Sessions, Router, Config, Namespace, Tools) provide safe read
+// access for external packages. SetToolContext must be called before any
+// Execute call — it is not safe for concurrent use with running turns.
+//
 // Conversation depends on SessionView (not the concrete Session type)
 // to decouple orchestration policy from session data structures
 // (Dependency Inversion Principle). Where possible, internal helpers
 // accept narrower interfaces (e.g. BuildContext takes SessionHistory)
 // to follow the Interface Segregation Principle.
 type Conversation struct {
-	Router    *Router
-	Sessions  *SessionManager
-	Tools     *ToolRegistry
-	Config    EngineConfig
-	Namespace string
+	router    *Router
+	sessions  *SessionManager
+	tools     *ToolRegistry
+	config    EngineConfig
+	namespace string
 
-	// ToolContext optionally enriches the context passed to every tool
+	// toolContext optionally enriches the context passed to every tool
 	// invocation. Gateways set this when their tools need a transport-
 	// aware ClientWriter (e.g. to talk back to Neovim). When nil, the
 	// context is forwarded to handlers unchanged.
-	ToolContext ToolContextDecorator
+	toolContext ToolContextDecorator
+
+	// mu guards the mutable fields below (toolExec, turnRunner) when
+	// SetToolContext is called concurrently with Execute. In practice
+	// SetToolContext is called once at startup, so contention is zero.
+	mu sync.Mutex
 
 	// turnRunner is the extracted orchestration core that handles the
 	// LLM ↔ tool iteration loop. Created by NewConversation and
@@ -79,6 +90,21 @@ type Conversation struct {
 	// SetToolContext.
 	toolExec *toolExecutor
 }
+
+// Sessions returns the SessionManager used by this conversation.
+func (conv *Conversation) Sessions() *SessionManager { return conv.sessions }
+
+// Router returns the Router used by this conversation.
+func (conv *Conversation) Router() *Router { return conv.router }
+
+// Config returns a copy of the engine configuration.
+func (conv *Conversation) Config() EngineConfig { return conv.config }
+
+// Namespace returns the namespace used by this conversation.
+func (conv *Conversation) Namespace() string { return conv.namespace }
+
+// Tools returns the ToolRegistry used by this conversation.
+func (conv *Conversation) Tools() *ToolRegistry { return conv.tools }
 
 // NewConversation builds a Conversation. Zero-valued config fields are
 // filled from DefaultEngineConfig() — the single source of truth for
@@ -95,11 +121,11 @@ func NewConversation(sm *SessionManager, router *Router, tools *ToolRegistry, na
 		cfg.CompactSoftLimit = def.CompactSoftLimit
 	}
 	conv := &Conversation{
-		Router:    router,
-		Sessions:  sm,
-		Tools:     tools,
-		Config:    cfg,
-		Namespace: namespace,
+		router:    router,
+		sessions:  sm,
+		tools:     tools,
+		config:    cfg,
+		namespace: namespace,
 		toolExec:  newToolExecutor(tools, nil, cfg.Hooks),
 	}
 	conv.turnRunner = newTurnRunner(tools, conv.toolExec, cfg, router, cfg.Logger)
@@ -113,10 +139,10 @@ func (conv *Conversation) EnsureDefaultModel(ctx context.Context, session Sessio
 	if session.GetModel() != "" {
 		return
 	}
-	if conv.Router == nil {
+	if conv.router == nil {
 		return
 	}
-	defaultModel := conv.Router.Current(session)
+	defaultModel := conv.router.Current(session)
 	if defaultModel == "" {
 		return
 	}
@@ -128,12 +154,20 @@ func (conv *Conversation) EnsureDefaultModel(ctx context.Context, session Sessio
 // for Neovim communication). It rebuilds both toolExec and turnRunner
 // so the decorator takes effect immediately.
 //
+// Thread safety: SetToolContext acquires the internal mutex so it is
+// safe to call concurrently with any accessor method. However, calling
+// it while a turn is running (Execute in-flight) will race on the
+// toolExec and turnRunner pointers. In practice gateways call this
+// once at startup before any Execute call.
+//
 // Gateways that need a ToolContextDecorator should call this after
-// NewConversation instead of setting the exported field directly.
+// NewConversation instead of mutating internal fields directly.
 func (conv *Conversation) SetToolContext(tc ToolContextDecorator) {
-	conv.ToolContext = tc
-	conv.toolExec = newToolExecutor(conv.Tools, tc, conv.Config.Hooks)
-	conv.turnRunner = newTurnRunner(conv.Tools, conv.toolExec, conv.Config, conv.Router, conv.Config.Logger)
+	conv.mu.Lock()
+	defer conv.mu.Unlock()
+	conv.toolContext = tc
+	conv.toolExec = newToolExecutor(conv.tools, tc, conv.config.Hooks)
+	conv.turnRunner = newTurnRunner(conv.tools, conv.toolExec, conv.config, conv.router, conv.config.Logger)
 }
 
 // resolveNamespace returns the namespace to use for store operations.
@@ -160,7 +194,7 @@ func (conv *Conversation) resolveNamespace(ctx context.Context) string {
 // Implements TurnExecutor.
 func (conv *Conversation) Execute(ctx context.Context, sessionID, userInput string) (<-chan event.EngineEvent, error) {
 	if event.NamespaceFromContext(ctx) == "" {
-		ctx = event.ContextWithNamespace(ctx, conv.Namespace)
+		ctx = event.ContextWithNamespace(ctx, conv.namespace)
 	}
 	session, err := conv.prepareWithInput(ctx, sessionID, userInput)
 	if err != nil {
@@ -173,14 +207,14 @@ func (conv *Conversation) Execute(ctx context.Context, sessionID, userInput stri
 // it appends a user message and persists. Returns the session as SessionView.
 func (conv *Conversation) prepareWithInput(ctx context.Context, sessionID, userInput string) (SessionView, error) {
 	ns := conv.resolveNamespace(ctx)
-	session, err := conv.Sessions.GetOrCreate(ctx, ns, sessionID)
+	session, err := conv.sessions.GetOrCreate(ctx, ns, sessionID)
 	if err != nil {
 		return nil, err
 	}
 	conv.EnsureDefaultModel(ctx, session)
 	if userInput != "" {
 		session.Append(Message{Role: RoleUser, Content: userInput})
-		if err := conv.Sessions.Save(ctx, ns, session); err != nil {
+		if err := conv.sessions.Save(ctx, ns, session); err != nil {
 			return nil, err
 		}
 	}
@@ -210,7 +244,7 @@ func (conv *Conversation) runTurnWithStep(ctx context.Context, session SessionVi
 
 		if err == nil {
 			if saveErr := saveFn(ctx, session); saveErr != nil {
-				conv.Config.Logger.Error("failed to save session after turn",
+				conv.config.Logger.Error("failed to save session after turn",
 					"session", session.SessionID(), "error", saveErr)
 				err = fmt.Errorf("save session: %w", saveErr)
 			} else {
@@ -241,30 +275,30 @@ func (conv *Conversation) runTurnWithStep(ctx context.Context, session SessionVi
 // session, or the registry default if none is set. Returns "" if no
 // Router is configured.
 func (conv *Conversation) SessionModel(s SessionView) string {
-	if conv.Router == nil {
+	if conv.router == nil {
 		return ""
 	}
-	return conv.Router.Current(s)
+	return conv.router.Current(s)
 }
 
 // BindSessionModel records the named model as the preferred one for the
 // given session and persists the session.
 func (conv *Conversation) BindSessionModel(ctx context.Context, sessionID, name string) (*Session, error) {
-	if conv.Router == nil {
+	if conv.router == nil {
 		return nil, errNoRouter
 	}
 	if event.NamespaceFromContext(ctx) == "" {
-		ctx = event.ContextWithNamespace(ctx, conv.Namespace)
+		ctx = event.ContextWithNamespace(ctx, conv.namespace)
 	}
 	ns := conv.resolveNamespace(ctx)
-	sess, err := conv.Sessions.GetOrCreate(ctx, ns, sessionID)
+	sess, err := conv.sessions.GetOrCreate(ctx, ns, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	if err := conv.Router.Bind(sess, name); err != nil {
+	if err := conv.router.Bind(sess, name); err != nil {
 		return sess, err
 	}
-	if err := conv.Sessions.Save(ctx, ns, sess); err != nil {
+	if err := conv.sessions.Save(ctx, ns, sess); err != nil {
 		return sess, err
 	}
 	return sess, nil
@@ -318,7 +352,7 @@ func buildContext(session SessionHistory, tools *ToolRegistry) []Message {
 
 // finishTurn persists the session.
 func (conv *Conversation) finishTurn(ctx context.Context, session SessionView) error {
-	return conv.Sessions.Save(ctx, conv.resolveNamespace(ctx), session)
+	return conv.sessions.Save(ctx, conv.resolveNamespace(ctx), session)
 }
 
 // ---------------------------------------------------------------------------
@@ -333,12 +367,12 @@ func (conv *Conversation) finishTurn(ctx context.Context, session SessionView) e
 //
 // This is the public entry point used by the /session autorename command.
 func (conv *Conversation) AutoRename(ctx context.Context, session SessionView) (string, error) {
-	adapter := conv.Router.Adapter(session)
+	adapter := conv.router.Adapter(session)
 	if adapter == nil {
 		return "", fmt.Errorf("no LLM adapter available for this session")
 	}
 
-	name, err := generateName(ctx, adapter, session, conv.Config.Logger)
+	name, err := generateName(ctx, adapter, session, conv.config.Logger)
 	if err != nil {
 		return "", fmt.Errorf("LLM call failed: %w", err)
 	}
@@ -347,12 +381,12 @@ func (conv *Conversation) AutoRename(ctx context.Context, session SessionView) (
 	}
 
 	session.SetSessionName(name)
-	if saveErr := conv.Sessions.Save(ctx, conv.resolveNamespace(ctx), session); saveErr != nil {
-		conv.Config.Logger.Warn("session auto-rename save failed",
+	if saveErr := conv.sessions.Save(ctx, conv.resolveNamespace(ctx), session); saveErr != nil {
+		conv.config.Logger.Warn("session auto-rename save failed",
 			"session", session.SessionID(), "error", saveErr)
 		return "", fmt.Errorf("save failed: %w", saveErr)
 	}
-	conv.Config.Logger.Info("session auto-renamed",
+	conv.config.Logger.Info("session auto-renamed",
 		"session", session.SessionID(), "name", name)
 	return name, nil
 }
@@ -376,14 +410,14 @@ func (conv *Conversation) autoRenameIfNeeded(ctx context.Context, session Sessio
 		return // not enough conversation history yet
 	}
 
-	adapter := conv.Router.Adapter(session)
+	adapter := conv.router.Adapter(session)
 	if adapter == nil {
 		return
 	}
 
-	name, err := generateName(ctx, adapter, session, conv.Config.Logger)
+	name, err := generateName(ctx, adapter, session, conv.config.Logger)
 	if err != nil {
-		conv.Config.Logger.Warn("session auto-rename failed",
+		conv.config.Logger.Warn("session auto-rename failed",
 			"session", session.SessionID(), "error", err)
 		return
 	}
@@ -392,10 +426,10 @@ func (conv *Conversation) autoRenameIfNeeded(ctx context.Context, session Sessio
 	}
 
 	session.SetSessionName(name)
-	if saveErr := conv.Sessions.Save(ctx, conv.resolveNamespace(ctx), session); saveErr != nil {
-		conv.Config.Logger.Warn("session auto-rename save failed",
+	if saveErr := conv.sessions.Save(ctx, conv.resolveNamespace(ctx), session); saveErr != nil {
+		conv.config.Logger.Warn("session auto-rename save failed",
 			"session", session.SessionID(), "error", saveErr)
 	}
-	conv.Config.Logger.Info("session auto-renamed",
+	conv.config.Logger.Info("session auto-renamed",
 		"session", session.SessionID(), "name", name)
 }

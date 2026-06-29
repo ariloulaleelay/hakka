@@ -1,11 +1,13 @@
 package adapters
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -23,6 +25,115 @@ type OpenAIAdapter struct {
 	Client      *openai.Client
 	Model       string
 	LLMDebugDir string // when non-empty, request/response payloads are logged here
+
+	// Extra carries static body fields to inject into every LLM request.
+	// Values may contain placeholders like "$session_id" that are resolved
+	// at request time using values from CompleteOptions.
+	Extra map[string]any
+}
+
+// ---------------------------------------------------------------------------
+// Extra body injection via a custom RoundTripper
+//
+// The extraRoundTripper wraps the HTTP transport used by the go-openai client.
+// It intercepts every outgoing request, reads the JSON body, merges extra
+// fields (static + per-request), resolves placeholders, and forwards.
+// ---------------------------------------------------------------------------
+
+type ctxKey string
+
+const (
+	ctxExtraPerReq ctxKey = "extra_per_req"
+	ctxSessionID   ctxKey = "session_id"
+)
+
+// extraRoundTripper wraps an http.RoundTripper and injects extra fields
+// into the JSON request body before forwarding.
+type extraRoundTripper struct {
+	base  http.RoundTripper
+	extra map[string]any // static extras from config (may contain placeholders)
+}
+
+// RoundTrip intercepts the request, merges extras into the body, and forwards.
+func (t *extraRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	perReqExtra, _ := req.Context().Value(ctxExtraPerReq).(map[string]any)
+	sessionID, _ := req.Context().Value(ctxSessionID).(string)
+
+	merged := mergeExtra(t.extra, perReqExtra, sessionID)
+	if len(merged) == 0 {
+		return t.base.RoundTrip(req)
+	}
+
+	// Read the existing JSON body
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	req.Body.Close()
+
+	var bodyMap map[string]any
+	if err := json.Unmarshal(body, &bodyMap); err != nil {
+		return nil, err
+	}
+
+	// Merge extra fields
+	for k, v := range merged {
+		bodyMap[k] = v
+	}
+
+	newBody, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, err
+	}
+
+	// Clone request with new body
+	newReq := req.Clone(req.Context())
+	newReq.Body = io.NopCloser(bytes.NewReader(newBody))
+	newReq.ContentLength = int64(len(newBody))
+	return t.base.RoundTrip(newReq)
+}
+
+// mergeExtra combines static extras (with placeholder resolution) and
+// per-request extras. Per-request extras take precedence.
+func mergeExtra(static, perReq map[string]any, sessionID string) map[string]any {
+	result := make(map[string]any, len(static)+len(perReq))
+	for k, v := range static {
+		result[k] = resolvePlaceholder(v, sessionID)
+	}
+	for k, v := range perReq {
+		result[k] = v
+	}
+	return result
+}
+
+// resolvePlaceholder replaces "$session_id" in string values with the
+// actual session ID. Non-string values are returned unchanged.
+func resolvePlaceholder(v any, sessionID string) any {
+	if s, ok := v.(string); ok {
+		return strings.ReplaceAll(s, "$session_id", sessionID)
+	}
+	return v
+}
+
+// ContextWithExtras returns a context annotated with per-request extras
+// and session ID for the extraRoundTripper to pick up.
+func ContextWithExtras(ctx context.Context, sessionID string, perReqExtra map[string]any) context.Context {
+	if sessionID != "" {
+		ctx = context.WithValue(ctx, ctxSessionID, sessionID)
+	}
+	if len(perReqExtra) > 0 {
+		ctx = context.WithValue(ctx, ctxExtraPerReq, perReqExtra)
+	}
+	return ctx
+}
+
+// WrapTransport wraps an http.RoundTripper with extra-body injection.
+// If extras is empty, the base transport is returned unchanged.
+func WrapTransport(base http.RoundTripper, extra map[string]any) http.RoundTripper {
+	if len(extra) == 0 {
+		return base
+	}
+	return &extraRoundTripper{base: base, extra: extra}
 }
 
 func NewOpenAIAdapter(client *openai.Client, model string) *OpenAIAdapter {
@@ -107,6 +218,11 @@ func (ad *OpenAIAdapter) buildRequest(msgs []agent.Message, tools []agent.ToolSc
 }
 
 func (ad *OpenAIAdapter) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (*agent.LLMResponse, error) {
+	// Inject extras into context for the transport to pick up.
+	if opts.SessionID != "" || len(opts.Extra) > 0 {
+		ctx = ContextWithExtras(ctx, opts.SessionID, opts.Extra)
+	}
+
 	req := ad.buildRequest(msgs, tools, opts)
 	resp, err := retryOpenAI(ctx, req, func() (openai.ChatCompletionResponse, error) {
 		dumpDebugJSON(ad.LLMDebugDir, "openai", "req", req)
@@ -205,6 +321,11 @@ func sleepOpenAIRetry(ctx context.Context, attempt int) error {
 }
 
 func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (<-chan agent.StreamResult, error) {
+	// Inject extras into context for the transport to pick up.
+	if opts.SessionID != "" || len(opts.Extra) > 0 {
+		ctx = ContextWithExtras(ctx, opts.SessionID, opts.Extra)
+	}
+
 	req := ad.buildRequest(msgs, tools, opts)
 	req.Stream = true
 	req.StreamOptions = &openai.StreamOptions{IncludeUsage: true}

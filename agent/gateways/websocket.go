@@ -29,7 +29,7 @@ func NewWebSocketGateway(conv *agent.Conversation, streamer *agent.StreamSession
 	if addr == "" {
 		addr = ":8765"
 	}
-	ns := conv.Namespace
+	ns := conv.Namespace()
 	if ns == "" {
 		ns = "default"
 	}
@@ -55,8 +55,8 @@ func (gw *WebSocketGateway) Start(ctx context.Context) error {
 	}
 	go func() {
 		if err := gw.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			if gw.Handler.Conv != nil && gw.Handler.Conv.Config.Logger != nil {
-				gw.Handler.Conv.Config.Logger.Error("websocket serve error", "err", err)
+			if gw.Handler.Conv != nil && gw.Handler.Conv.Config().Logger != nil {
+				gw.Handler.Conv.Config().Logger.Error("websocket serve error", "err", err)
 			}
 		}
 	}()

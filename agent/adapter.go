@@ -10,6 +10,12 @@ import (
 type CompleteOptions struct {
 	Temperature *float32
 	MaxTokens   *int
+	// Extra carries additional body fields to inject into the LLM request.
+	// Adapters that support it merge these into the outgoing JSON payload.
+	Extra map[string]any
+	// SessionID is the current hakka session UUID. Adapters can use it to
+	// resolve placeholders like "$session_id" in their Extra configuration.
+	SessionID string
 }
 
 // Usage represents the token consumption of an LLM generation.

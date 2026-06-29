@@ -471,8 +471,8 @@ func SessionSummarize(sm *agent.SessionManager, conv *agent.Conversation) agent.
 
 			// If we have a Conversation with an LLM adapter, use it for a
 			// proper summary.
-			if conv != nil && conv.Router != nil {
-				adapter := conv.Router.Adapter(s)
+			if conv != nil && conv.Router() != nil {
+				adapter := conv.Router().Adapter(s)
 				if adapter != nil {
 					summary, err := generateLLMSummary(ctx, adapter, s, args.MaxTokens)
 					if err == nil {
@@ -676,17 +676,17 @@ func SessionAskQuestion(sm *agent.SessionManager, conv *agent.Conversation) agen
 				return "", err
 			}
 
-			if conv == nil || conv.Router == nil {
+			if conv == nil || conv.Router() == nil {
 				return "", fmt.Errorf("session_ask_question: no LLM router available")
 			}
-			adapter := conv.Router.Adapter(s)
+			adapter := conv.Router().Adapter(s)
 			if adapter == nil {
 				return "", fmt.Errorf("session_ask_question: no LLM adapter available for session %s", s.SessionID()[:8])
 			}
 
 			msgs := buildAskQuestionMessages(s, args.Question)
 
-			resp, err := adapter.Complete(ctx, msgs, nil, conv.Config.Options)
+			resp, err := adapter.Complete(ctx, msgs, nil, conv.Config().Options)
 			if err != nil {
 				return "", fmt.Errorf("session_ask_question: LLM call failed: %w", err)
 			}

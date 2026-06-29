@@ -399,7 +399,7 @@ func (gw *TelegramGateway) dispatch(ctx context.Context, upd tgbotapi.Update) {
 	inputText := gw.buildInputText(upd, isGroup)
 
 	sessionID := gw.getOrCreateSession(ctx, namespace, chatID)
-	session, err := gw.Conv.Sessions.GetOrCreate(ctx, namespace, sessionID)
+	session, err := gw.Conv.Sessions().GetOrCreate(ctx, namespace, sessionID)
 	if err != nil {
 		slog.Warn("telegram: failed to get session",
 			"chat_id", chatID, "session_id", sessionID, "error", err)
@@ -486,7 +486,7 @@ func (gw *TelegramGateway) appendUnmentioned(
 	slog.Debug("telegram: appending unmentioned message to history",
 		"chat_id", chatID, "session_id", session.SessionID())
 	session.Append(agent.Message{Role: agent.RoleUser, Content: inputText})
-	_ = gw.Conv.Sessions.Save(ctx, namespace, session)
+	_ = gw.Conv.Sessions().Save(ctx, namespace, session)
 }
 
 // resetSession clears the active session for a chat (used by /start).
@@ -751,7 +751,7 @@ func (gw *TelegramGateway) getOrCreateSession(ctx context.Context, namespace str
 
 	// Cache miss: look up existing sessions in the store before creating
 	// a new one. This preserves session continuity across server restarts.
-	sessions, err := gw.Conv.Sessions.List(ctx, namespace)
+	sessions, err := gw.Conv.Sessions().List(ctx, namespace)
 	if err != nil {
 		slog.Warn("telegram: failed to list sessions for namespace, creating new",
 			"namespace", namespace,
@@ -770,7 +770,7 @@ func (gw *TelegramGateway) getOrCreateSession(ctx context.Context, namespace str
 	}
 
 	// No existing sessions found — create a new one in the chat's namespace.
-	session, err := gw.Conv.Sessions.GetOrCreate(ctx, namespace, "")
+	session, err := gw.Conv.Sessions().GetOrCreate(ctx, namespace, "")
 	if err != nil {
 		// Fallback: use chat ID as session ID
 		sid := strconv.FormatInt(chatID, 10)
