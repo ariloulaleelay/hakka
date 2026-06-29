@@ -64,6 +64,14 @@ func (cp *CommandProcessor) SetTools(tools *agent.ToolRegistry) {
 	cp.toolHandler = NewToolCommands(cp.Sessions, tools, cp.Namespace)
 }
 
+// SetSessionActiveChecker sets the active checker on the session handler,
+// allowing session_list to report whether each session has an in-flight turn.
+func (cp *CommandProcessor) SetSessionActiveChecker(fn SessionActiveChecker) {
+	if cp.sessionHandler != nil {
+		cp.sessionHandler.ActiveChecker = fn
+	}
+}
+
 func inheritCWD(ctx context.Context, sm *agent.SessionManager, ns, prevSessionID string, session *agent.Session) {
 	if prevSessionID == "" {
 		return

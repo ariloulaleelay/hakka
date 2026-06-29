@@ -51,11 +51,17 @@ func shortestUniquePrefix(id string, allIDs []string) string {
 	return id
 }
 
+// SessionActiveChecker returns true if the given session ID has an
+// active (in-flight) turn running. This is wired from the TurnTracker
+// in the gateway layer so that session_list can report the in_flight flag.
+type SessionActiveChecker func(sessionID string) bool
+
 // SessionCommands handles session-related commands.
 type SessionCommands struct {
-	Sessions *agent.SessionManager
-	Conv     *agent.Conversation
-	NS       string
+	Sessions           *agent.SessionManager
+	Conv               *agent.Conversation
+	NS                 string
+	ActiveChecker      SessionActiveChecker
 }
 
 func NewSessionCommands(sm *agent.SessionManager, conv *agent.Conversation, ns string) *SessionCommands {
@@ -102,10 +108,15 @@ func (sc *SessionCommands) jsonSessionList(ctx context.Context, sessionID string
 	shortIDs := shortestUniquePrefixes(sessions)
 	list := make([]map[string]any, 0, len(visible))
 	for _, s := range visible {
+		inFlight := false
+		if sc.ActiveChecker != nil {
+			inFlight = sc.ActiveChecker(s.SessionID())
+		}
 		entry := map[string]any{
 			"id":            s.SessionID(),
 			"short_id":      shortIDs[s.SessionID()],
 			"name":          s.SessionName(),
+			"in_flight":     inFlight,
 			"created":       s.Read().CreatedAt.Format("2006-01-02T15:04:05Z"),
 			"updated_at":    s.Read().UpdatedAt.Format("2006-01-02T15:04:05Z"),
 			"message_count": len(s.AllMessages()),

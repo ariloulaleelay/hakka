@@ -54,6 +54,78 @@ func TestSessionModelPersistsAcrossLookups(t *testing.T) {
 	}
 }
 
+// --- Session list in_flight tests ---
+
+func TestSessionList_ReportsInFlight(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	s1, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
+	s1.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
+	sm.Save(context.Background(), "testns", s1)
+
+	// Without active checker — in_flight should be false
+	res := cmd.ExecuteJSON(context.Background(), "session1", "session_list", nil)
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+	var data struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := json.Unmarshal(res.Data, &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, s := range data.Sessions {
+		inflight, ok := s["in_flight"]
+		if !ok {
+			t.Fatal("expected in_flight field in session list entry")
+		}
+		if inflight != false {
+			t.Fatalf("expected in_flight=false without checker, got %v", inflight)
+		}
+	}
+}
+
+func TestSessionList_InFlightChecker(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	s1, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
+	s1.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
+	sm.Save(context.Background(), "testns", s1)
+
+	s2, _ := sm.GetOrCreate(context.Background(), "testns", "session-other")
+	s2.Append(agent.Message{Role: agent.RoleUser, Content: "world"})
+	sm.Save(context.Background(), "testns", s2)
+
+	// Set checker: session1 is in flight, session-other is not
+	cmd.SetSessionActiveChecker(func(sessionID string) bool {
+		return sessionID == "session1"
+	})
+
+	res := cmd.ExecuteJSON(context.Background(), "session1", "session_list", nil)
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+	var data struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := json.Unmarshal(res.Data, &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	for _, s := range data.Sessions {
+		id, _ := s["id"].(string)
+		inflight, _ := s["in_flight"].(bool)
+		switch id {
+		case "session1":
+			if !inflight {
+				t.Errorf("expected session1 to be in_flight=true")
+			}
+		case "session-other":
+			if inflight {
+				t.Errorf("expected session-other to be in_flight=false")
+			}
+		}
+	}
+}
+
 // --- Session list tests ---
 
 func TestSessionList_ReturnsSessions(t *testing.T) {

@@ -44,13 +44,21 @@ type TurnHandler struct {
 }
 
 // NewTurnHandler builds a TurnHandler from the standard engine components.
+// It also wires the session active checker on the command processor so that
+// session_list can report in-flight sessions via the turn tracker.
 func NewTurnHandler(conv *agent.Conversation, streamer *agent.StreamSession, cmd *commands.CommandProcessor, namespace string) *TurnHandler {
+	tt := &turnTracker{}
+	if cmd != nil {
+		cmd.SetSessionActiveChecker(func(sessionID string) bool {
+			return tt.Get(sessionID) != nil
+		})
+	}
 	return &TurnHandler{
-		Conv:     conv,
-		Streamer: streamer,
-		Cmd:      cmd,
+		Conv:      conv,
+		Streamer:  streamer,
+		Cmd:       cmd,
 		Namespace: namespace,
-		turns:    &turnTracker{},
+		turns:     tt,
 	}
 }
 

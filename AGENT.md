@@ -315,6 +315,7 @@ All frames share the base fields in `FrameResponse`:
       "name": "Bug hunt",
       "message_count": 42,
       "current": true,
+      "in_flight": false,
       "client_cwd": "/home/user/project",
       "created": "2025-01-15T10:30:00Z",
       "updated_at": "2025-01-15T14:22:00Z"
