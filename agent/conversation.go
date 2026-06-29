@@ -106,6 +106,23 @@ func NewConversation(sm *SessionManager, router *Router, tools *ToolRegistry, na
 	return conv
 }
 
+// EnsureDefaultModel sets the registry default model on the session if
+// none is set yet. This ensures every session has a meaningful model
+// from creation, so GetModel() never returns "".
+func (conv *Conversation) EnsureDefaultModel(ctx context.Context, session SessionView) {
+	if session.GetModel() != "" {
+		return
+	}
+	if conv.Router == nil {
+		return
+	}
+	defaultModel := conv.Router.Current(session)
+	if defaultModel == "" {
+		return
+	}
+	session.SetModel(defaultModel)
+}
+
 // SetToolContext installs a transport-aware decorator used to enrich the
 // context passed to every tool invocation (e.g. to install a ClientWriter
 // for Neovim communication). It rebuilds both toolExec and turnRunner
@@ -160,6 +177,7 @@ func (conv *Conversation) prepareWithInput(ctx context.Context, sessionID, userI
 	if err != nil {
 		return nil, err
 	}
+	conv.EnsureDefaultModel(ctx, session)
 	if userInput != "" {
 		session.Append(Message{Role: RoleUser, Content: userInput})
 		if err := conv.Sessions.Save(ctx, ns, session); err != nil {

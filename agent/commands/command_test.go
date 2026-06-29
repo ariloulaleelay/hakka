@@ -318,6 +318,54 @@ func TestSessionDelete_ExactMatchPreferred(t *testing.T) {
 	}
 }
 
+func TestGetSession_ReturnsDefaultModelAndEstimatedTokens(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	session, _ := sm.GetOrCreate(context.Background(), "testns", "model-test-session")
+	// Simulate a turn setting estimated_context_tokens
+	session.SetEstimatedContextTokens(12345)
+	session.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
+	sm.Save(context.Background(), "testns", session)
+
+	res := cmd.ExecuteJSON(context.Background(), "model-test-session", "get_session", params(map[string]any{"id": "model-test-session"}))
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+	if res.Data == nil {
+		t.Fatal("expected data in result")
+	}
+	var data struct {
+		Session  map[string]any   `json:"session"`
+		Messages []agent.Message  `json:"messages"`
+	}
+	if err := json.Unmarshal(res.Data, &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Check model is not empty — should resolve to the registry default ("alpha")
+	model, _ := data.Session["model"].(string)
+	if model != "alpha" {
+		t.Fatalf("expected model 'alpha' (registry default), got %q", model)
+	}
+
+	// Check estimated_context_tokens is preserved
+	est, _ := data.Session["estimated_context_tokens"].(float64)
+	if int(est) != 12345 {
+		t.Fatalf("expected estimated_context_tokens=12345, got %v", est)
+	}
+
+	// Verify that session_info returns the same model
+	infoRes := cmd.ExecuteJSON(context.Background(), "model-test-session", "session_info", nil)
+	var infoData struct {
+		Session map[string]any `json:"session"`
+	}
+	json.Unmarshal(infoRes.Data, &infoData)
+	infoModel, _ := infoData.Session["model"].(string)
+	if infoModel != "alpha" {
+		t.Fatalf("expected session_info model 'alpha', got %q", infoModel)
+	}
+}
+
 // --- Session info tests ---
 
 func TestSessionInfo_ShowsDetails(t *testing.T) {

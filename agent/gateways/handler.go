@@ -164,6 +164,14 @@ func (h *TurnHandler) handleJSONCommand(ctx context.Context, req FrameRequest, w
 			active.ReplaceSubscriber(ctx, w)
 		}
 	}
+
+	// Continue command: trigger the LLM without adding a user message.
+	// The command processor returns ActionContinue but doesn't invoke
+	// the LLM — that's the handler's responsibility.
+	// Only start a turn if we have a session to continue.
+	if cmdRes.Action == commands.ActionContinue && sessionID != "" {
+		h.startNewTurn(ctx, w, responseReader, req, sessionID, "")
+	}
 }
 
 // handleWithEngine runs a turn using the given executor, registers it

@@ -194,6 +194,9 @@ func (cp *CommandProcessor) execStart(ctx context.Context, sessionID string) Com
 	if err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}
+	if cp.Conv != nil {
+		cp.Conv.EnsureDefaultModel(ctx, session)
+	}
 	inheritCWD(ctx, cp.Sessions, ns, sessionID, session)
 	if cp.Tools != nil {
 		for _, schema := range cp.Tools.Schemas() {

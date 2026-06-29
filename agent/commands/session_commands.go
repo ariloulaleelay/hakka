@@ -125,6 +125,9 @@ func (sc *SessionCommands) jsonSessionCreate(ctx context.Context, prevSessionID 
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "session_create", Error: err}
 	}
+	if sc.Conv != nil {
+		sc.Conv.EnsureDefaultModel(ctx, session)
+	}
 	inheritCWD(ctx, sc.Sessions, ns, prevSessionID, session)
 
 	data, _ := json.Marshal(map[string]any{
@@ -171,6 +174,14 @@ func (sc *SessionCommands) jsonGetSession(ctx context.Context, sessionID string,
 	}
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "get_session", Error: err}
+	}
+
+	// Ensure the session has a default model set. This handles both
+	// new sessions created before the model was set at creation time
+	// and sessions restored from DB before the model persistence fix.
+	if sc.Conv != nil {
+		sc.Conv.EnsureDefaultModel(ctx, session)
+		sc.Sessions.Save(ctx, ns, session)
 	}
 
 	data, _ := json.Marshal(map[string]any{
@@ -234,6 +245,10 @@ func (sc *SessionCommands) jsonSessionInfo(ctx context.Context, sessionID string
 	session, err := sc.Sessions.GetOrCreate(ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "session_info", Error: err}
+	}
+	if sc.Conv != nil {
+		sc.Conv.EnsureDefaultModel(ctx, session)
+		sc.Sessions.Save(ctx, ns, session)
 	}
 
 	data, _ := json.Marshal(map[string]any{

@@ -40,6 +40,7 @@ func Open(path string) (*Store, error) {
 	runMigration(db, `ALTER TABLE sessions ADD COLUMN blocked_tools TEXT NOT NULL DEFAULT ''`)
 	runMigration(db, `ALTER TABLE sessions ADD COLUMN compact_soft_limit INTEGER NOT NULL DEFAULT 200000`)
 	runMigration(db, `ALTER TABLE sessions ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`)
+	runMigration(db, `ALTER TABLE sessions ADD COLUMN estimated_context_tokens INTEGER NOT NULL DEFAULT 0`)
 	return &Store{db: db}, nil
 }
 
@@ -73,6 +74,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	enabled_tools TEXT NOT NULL DEFAULT '',
 	blocked_tools TEXT NOT NULL DEFAULT '',
 	compact_soft_limit INTEGER NOT NULL DEFAULT 200000,
+	estimated_context_tokens INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY (namespace, id)
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);
@@ -81,21 +83,23 @@ CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);
 // scanRow scans a SQL row into a *agent.Session via SessionData.
 func scanRow(scanner interface{ Scan(dest ...any) error }) (*agent.Session, error) {
 	var (
-		data            agent.SessionData
-		messagesJSON    string
-		createdText     string
-		updatedText     string
-		modelStr        string
-		totalTokens     int
-		enabledStr      string
-		blockedStr      string
-		compactSoftLim  int
+		data                  agent.SessionData
+		messagesJSON          string
+		createdText           string
+		updatedText           string
+		modelStr              string
+		totalTokens           int
+		enabledStr            string
+		blockedStr            string
+		compactSoftLim        int
+		estimatedContextTokens int
 	)
 	err := scanner.Scan(
 		&data.Namespace, &data.ID, &data.SystemPrompt,
 		&messagesJSON, &createdText, &updatedText,
 		&data.ClientCWD, &modelStr, &totalTokens,
 		&data.Name, &enabledStr, &blockedStr, &compactSoftLim,
+		&estimatedContextTokens,
 	)
 	if err != nil {
 		return nil, err
@@ -116,6 +120,7 @@ func scanRow(scanner interface{ Scan(dest ...any) error }) (*agent.Session, erro
 	data.Model = modelStr
 	data.TotalTokens = totalTokens
 	data.CompactSoftLimit = compactSoftLim
+	data.EstimatedContextTokens = estimatedContextTokens
 	if err := data.CreatedAt.UnmarshalText([]byte(createdText)); err != nil {
 		return nil, fmt.Errorf("decode created_at: %w", err)
 	}
@@ -129,7 +134,7 @@ func scanRow(scanner interface{ Scan(dest ...any) error }) (*agent.Session, erro
 
 func (st *Store) Get(ctx context.Context, namespace, id string) (*agent.Session, bool, error) {
 	row := st.db.QueryRowContext(ctx,
-		`SELECT namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit FROM sessions WHERE namespace = ? AND id = ?`, namespace, id)
+		`SELECT namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens FROM sessions WHERE namespace = ? AND id = ?`, namespace, id)
 
 	session, err := scanRow(row)
 	if err == sql.ErrNoRows {
@@ -185,8 +190,8 @@ func (st *Store) Put(ctx context.Context, namespace string, session *agent.Sessi
 	}
 
 	_, err = st.db.ExecContext(ctx, `
-		INSERT INTO sessions (namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(namespace, id) DO UPDATE SET
 			system_prompt = excluded.system_prompt,
 			messages      = excluded.messages,
@@ -197,9 +202,11 @@ func (st *Store) Put(ctx context.Context, namespace string, session *agent.Sessi
 			name          = excluded.name,
 			enabled_tools = excluded.enabled_tools,
 			blocked_tools = excluded.blocked_tools,
-			compact_soft_limit = excluded.compact_soft_limit
+			compact_soft_limit = excluded.compact_soft_limit,
+			estimated_context_tokens = excluded.estimated_context_tokens
 	`, namespace, data.ID, data.SystemPrompt, string(messagesJSON), string(createdText), string(updatedText),
-		data.ClientCWD, data.Model, data.TotalTokens, data.Name, enabledJSON, blockedJSON, data.CompactSoftLimit)
+		data.ClientCWD, data.Model, data.TotalTokens, data.Name, enabledJSON, blockedJSON, data.CompactSoftLimit,
+		data.EstimatedContextTokens)
 
 	session.Update(func(d *agent.SessionData) {
 		d.Namespace = namespace
@@ -215,7 +222,7 @@ func (st *Store) Delete(ctx context.Context, namespace, id string) error {
 }
 
 func (st *Store) List(ctx context.Context, namespace string) ([]*agent.Session, error) {
-	rows, err := st.db.QueryContext(ctx, `SELECT namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit FROM sessions WHERE namespace = ? ORDER BY updated_at DESC`, namespace)
+	rows, err := st.db.QueryContext(ctx, `SELECT namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens FROM sessions WHERE namespace = ? ORDER BY updated_at DESC`, namespace)
 	if err != nil {
 		return nil, err
 	}
