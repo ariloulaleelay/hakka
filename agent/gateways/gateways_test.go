@@ -142,22 +142,30 @@ func TestWebSocketGatewayRoundTrip(t *testing.T) {
 	if err := c.Write(ctx, websocket.MessageText, []byte(`{"input":"hello"}`)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	_, data, err := c.Read(ctx)
-	if err != nil {
-		t.Fatalf("read: %v", err)
+	var output string
+	var done bool
+	for !done {
+		_, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		var resp FrameResponse
+		if err := json.Unmarshal(data, &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if resp.Error != "" {
+			t.Fatalf("unexpected error: %s", resp.Error)
+		}
+		if resp.Output != "" {
+			output = resp.Output
+		}
+		done = resp.Done
+		if resp.SessionID == "" {
+			t.Fatal("expected non-empty session_id in every frame")
+		}
 	}
-	var resp FrameResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if resp.Error != "" {
-		t.Fatalf("unexpected error: %s", resp.Error)
-	}
-	if resp.Output != "ws-pong" {
-		t.Fatalf("expected output %q, got: %q", "ws-pong", resp.Output)
-	}
-	if !resp.Done || resp.SessionID == "" {
-		t.Fatalf("expected done=true and non-empty session_id, got: %+v", resp)
+	if output != "ws-pong" {
+		t.Fatalf("expected output %q, got: %q", "ws-pong", output)
 	}
 }
 
@@ -307,7 +315,7 @@ func TestWebSocketGatewayStreamToolFallbackUsesStreamNotComplete(t *testing.T) {
 	}
 }
 
-func TestWebSocketGatewayStreamingCommandSendsDone(t *testing.T) {
+func TestWebSocketGatewayJSONCommandReturnsData(t *testing.T) {
 	conv, streamer, cmd := newGatewayComponents("unused")
 	addr := freeAddr(t)
 	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
@@ -337,7 +345,9 @@ func TestWebSocketGatewayStreamingCommandSendsDone(t *testing.T) {
 	}
 	defer c.CloseNow()
 
-	if err := c.Write(ctx, websocket.MessageText, []byte(`{"input":"/model","stream":true}`)); err != nil {
+	// Send a JSON command via the "command" field — text slash commands
+	// are NOT intercepted server-side; clients must use JSON commands.
+	if err := c.Write(ctx, websocket.MessageText, []byte(`{"command":{"cmd":"session_info"},"stream":true}`)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -352,29 +362,20 @@ func TestWebSocketGatewayStreamingCommandSendsDone(t *testing.T) {
 	if reply.Error != "" {
 		t.Fatalf("unexpected error frame: %s", reply.Error)
 	}
-	if !strings.Contains(reply.Delta, "current model:") {
-		t.Fatalf("expected delta to mention 'current model:', got: %+v", reply)
+	if reply.Event != "command_result" {
+		t.Fatalf("expected event 'command_result', got event=%q", reply.Event)
 	}
-	if reply.Done {
-		t.Fatalf("expected first frame to carry delta only, got done frame: %+v", reply)
+	if reply.Cmd != "session_info" {
+		t.Fatalf("expected cmd 'session_info', got cmd=%q", reply.Cmd)
 	}
-
-	_, data, err = c.Read(ctx)
-	if err != nil {
-		t.Fatalf("read command done frame: %v", err)
+	if reply.Data == nil {
+		t.Fatalf("expected structured data in response, got: %+v", reply)
 	}
-	var done FrameResponse
-	if err := json.Unmarshal(data, &done); err != nil {
-		t.Fatalf("unmarshal done %q: %v", data, err)
+	if !reply.Done {
+		t.Fatalf("expected done=true for command result, got: %+v", reply)
 	}
-	if done.Error != "" {
-		t.Fatalf("unexpected error frame: %s", done.Error)
-	}
-	if !done.Done {
-		t.Fatalf("expected final done frame after streaming command reply, got: %+v", done)
-	}
-	if done.SessionID == "" {
-		t.Fatalf("expected done frame to include session id, got: %+v", done)
+	if reply.SessionID == "" {
+		t.Fatalf("expected session_id in response, got: %+v", reply)
 	}
 }
 
@@ -413,22 +414,29 @@ func TestWebSocketGatewayStreamingLLMErrorSendsErrorFrame(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, data, err := c.Read(ctx)
-	if err != nil {
-		t.Fatalf("read error frame: %v", err)
+	var foundError string
+	for {
+		_, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("read error frame: %v", err)
+		}
+		var frame FrameResponse
+		if err := json.Unmarshal(data, &frame); err != nil {
+			t.Fatalf("unmarshal %q: %v", data, err)
+		}
+		if frame.Error != "" {
+			foundError = frame.Error
+			break
+		}
+		if frame.Done {
+			break
+		}
 	}
-	var frame FrameResponse
-	if err := json.Unmarshal(data, &frame); err != nil {
-		t.Fatalf("unmarshal %q: %v", data, err)
+	if foundError == "" {
+		t.Fatalf("expected error frame for streaming LLM error, got none")
 	}
-	if frame.Error == "" {
-		t.Fatalf("expected error frame for streaming LLM error, got: %+v", frame)
-	}
-	if !strings.Contains(frame.Error, context.DeadlineExceeded.Error()) {
-		t.Fatalf("expected deadline error in frame, got: %+v", frame)
-	}
-	if frame.SessionID == "" {
-		t.Fatalf("expected error frame to include session id, got: %+v", frame)
+	if !strings.Contains(foundError, context.DeadlineExceeded.Error()) {
+		t.Fatalf("expected deadline error, got: %q", foundError)
 	}
 }
 

@@ -14,7 +14,7 @@
 - **Pluggable Architecture** — Every component (LLM provider, persistence, tool, transport) is a Go interface. Swap or extend without touching core logic.
 - **Concurrent Tool Execution** — Tools run in parallel when independent, speeding up complex workflows.
 - **Transport Agnostic** — WebSocket, Telegram — the engine is fully isolated from how users connect.
-- **Neovim Integration** — First-class plugin turns Neovim into an interactive agent IDE with status bars, session switching, and buffer inspection.
+- **Neovim Integration** — First-class plugin turns Neovim into an interactive agent IDE with status bars, session fetching, and buffer inspection.
 - **Persistent Sessions** — SQLite-backed (CGO-free via `modernc.org/sqlite`) or in-memory store with session history, token tracking, and metadata.
 - **Cooperative Streaming** — Stream tokens by default; transparently falls back to tool loop when the model requests tools mid-stream.
 - **Rich Tool System** — Built-in file, shell, search, HTTP, session management, and MCP server tools. Enable/disable per-session.
@@ -149,18 +149,29 @@ Tool tags available for `--run-enable-tool`:
 
 ### Slash Commands
 
-Slash commands are available in any input and are handled without invoking the LLM:
+Slash commands are converted to JSON commands **client-side**. Clients (like the Neovim plugin or the Telegram gateway) parse text like `/help` and send the corresponding JSON `command` object. This is a **non-exhaustive** list of available slash commands and their JSON equivalents:
 
-| Command | Description |
-|---------|-------------|
-| `/help` | Show available commands |
-| `/models` | List registered models (current marked with `*`) |
-| `/model` | Show current active model |
-| `/model <name>` | Switch session to a different model |
-| `/session` | Show current session info |
-| `/session list` | List all sessions |
-| `/session create` | Create a new session |
-| `/session switch <id>` | Switch to a different session |
+| Slash command | JSON command |
+|---|---|
+| `/help` | `{"cmd":"help"}` |
+| `/models` | `{"cmd":"model_list"}` |
+| `/model` | `{"cmd":"session_info"}` |
+| `/model <name>` | `{"cmd":"model_switch","params":{"name":"<name>"}}` |
+| `/session` | `{"cmd":"session_info"}` |
+| `/session list` | `{"cmd":"session_list"}` |
+| `/session create` | `{"cmd":"session_create"}` |
+| `/session get <id>` | `{"cmd":"get_session","params":{"id":"<id>"}}` |
+| `/session info` | `{"cmd":"session_info"}` |
+| `/session rename <name>` | `{"cmd":"session_rename","params":{"name":"<name>"}}` |
+| `/continue` | `{"cmd":"continue"}` |
+| `/cwd_set <path>` | `{"cmd":"cwd_set","params":{"cwd":"<path>"}}` |
+| `/compact [n]` | `{"cmd":"compact","params":{"n":<n>}}` or `{}` to read |
+| `/tool list` | `{"cmd":"tool_list"}` |
+| `/tool allow <name>` | `{"cmd":"tool_allow","params":{"name":"<name>"}}` |
+| `/tool deny <name>` | `{"cmd":"tool_deny","params":{"name":"<name>"}}` |
+| `/start` | `{"cmd":"start"}` |
+
+See AGENT.md for the full list of JSON commands and protocol details.
 
 ### Model Switching at Runtime
 

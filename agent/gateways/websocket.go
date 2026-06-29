@@ -185,7 +185,7 @@ func (gw *WebSocketGateway) handleListSessions(ctx context.Context, w frameWrite
 
 	// Execute session_list command with an empty session ID (no active session).
 	cmdRes := gw.Handler.Cmd.ExecuteJSON(nsCtx, "", "session_list", nil)
-	writeCommandResult(w, cmdRes, false, true)
+	writeCommandResult(w, cmdRes)
 }
 
 // wsWriter adapts a websocket.Conn to frameWriter. Returns a

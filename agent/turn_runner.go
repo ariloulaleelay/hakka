@@ -212,6 +212,15 @@ func (r *turnRunner) runOneIteration(
 ) (*llmStepResult, bool, error) {
 	softLimit := r.resolveSoftLimit(session)
 	msgs, needCompactify, estimatedTokens := BuildCompactContext(session, softLimit)
+
+	// Store and emit estimated context size before the LLM call so
+	// clients can display current context utilisation.
+	session.SetEstimatedContextTokens(estimatedTokens)
+	sendEngineEvent(events, event.ContextEstimated{
+		SessionID:       session.SessionID(),
+		EstimatedTokens: estimatedTokens,
+	})
+
 	turnSchemas := r.augmentSchemasWithCompactify(schemas, needCompactify)
 
 	// Inject the tool list system message into the context so the LLM

@@ -70,7 +70,7 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | **ToolExecutor** | `agent/tool_executor.go` | Concurrent tool execution with fan-out, event hooks, and result appending |
 | **Compact** | `agent/compact.go` | LLM-driven context compaction — when estimated context exceeds the soft limit, [N] message indices and a warning prompt the LLM to call `context_compactify` |
 | **StreamSession** | `agent/stream_session.go` | Cooperative streaming — streams text tokens, transparently falls back to tool loop when model requests tools |
-| **CommandProcessor** | `agent/commands/` | Structured commands and slash-commands (`/help`, `/model`, `/session`, `/tool`) without LLM dependency |
+| **CommandProcessor** | `agent/commands/` | Structured JSON-only command handler (`ExecuteJSON`) — no text slash-command parsing. Delegates to ModelCommands, SessionCommands, ToolCommands. Clients map slash-commands to JSON commands locally. |
 | **AutoRenamer** | `agent/auto_renamer.go` | LLM-driven session naming logic |
 | **ProcessManager** | `agent/tools/process.go` | Goroutine-safe subprocess registry with ring-buffered stdout+stderr |
 | **Gateway** | `agent/gateways/` | Transport layer — WebSocket (`websocket.go`), Telegram (`telegram.go`). Wire framing in `frame.go`. |
@@ -151,10 +151,14 @@ A typical client follows this sequence:
 5. **Enable tools** — `{"command":{"cmd":"tool_allow","params":{"name":"#all"}}}`.
 6. **Send input** — `{"session_id":"...","input":"Hello!","stream":true}`.
 7. **Receive responses** — deltas, tool events, and finally `done: true`.
-8. **Switch sessions** — `{"command":{"cmd":"session_switch","params":{"id":"..."}}}`.
+8. **Fetch a session** — `{"command":{"cmd":"get_session","params":{"id":"..."}}}`.
 
 **Key rules for client authors:**
 
+- Text-based slash commands (like `/help`, `/model`, `/session list`) are **not**
+  intercepted by the server. Clients are responsible for parsing slash commands
+  and converting them to structured JSON commands (see the `command` field below).
+  The Telegram gateway includes a built-in `parseSlashCommand()` function for this.
 - Always include `session_id` on every request once you have one.
   Omitting it on the first request auto-creates a session (backward compatibility).
 - `stream: true` gives incremental `delta` frames; `stream: false` (or omitted)
@@ -185,7 +189,7 @@ All frames share the base fields in `FrameRequest`:
 |---|---|---|
 | `type` | string | `"request"` (default), `"cancel"`, `"response"`, `"list_sessions"` |
 | `session_id` | string | Session UUID. Omit to auto-create; always send thereafter. |
-| `input` | string | User text. Slash-commands starting with `/` are intercepted. |
+| `input` | string | User text. Sent directly to the LLM — slash commands are **not** intercepted server-side; clients must use the `command` field for structured commands. |
 | `stream` | bool | `true` for token-by-token deltas. |
 | `cwd` | string | Client's working directory. Preferred: use `cwd_set` command instead. |
 | `command` | object | Structured JSON command — see table below. |
@@ -197,7 +201,7 @@ All frames share the base fields in `FrameRequest`:
 
 | `type` | Purpose |
 |---|---|
-| *(omitted)* | Normal chat turn (with optional slash-command interception). |
+| *(omitted)* | Normal chat turn (sends `input` to the LLM directly — no slash-command interception). |
 | `"cancel"` | Cancel the in-flight turn for `session_id`. |
 | `"response"` | Client reply to a `client_request` (Neovim Lua eval result). |
 | `"list_sessions"` | Discover sessions in the namespace. Server replies with `command_result` + session list. |
@@ -213,7 +217,7 @@ All frames share the base fields in `FrameRequest`:
 | `cwd_set` | `{"cwd": "/path"}` | Persist working directory on the session. |
 | `session_list` | — | List all sessions in the namespace. |
 | `session_create` | — | Create a new empty session. |
-| `session_switch` | `{"id": "<uuid or prefix>"}` | Switch to an existing session. **Fails** if not found. |
+| `get_session` | `{"id": "<uuid or prefix>"}` | Fetch session data and messages by ID. **Fails** if not found. |
 | `session_delete` | `{"id": "<uuid>"}` | Delete a session. Use `"this"` for the current session. |
 | `session_info` | — | Show current session details. |
 | `session_rename` | `{"name": "..."}` | Rename the current session. |
@@ -236,20 +240,6 @@ All frames share the base fields in `FrameRequest`:
 | `session` | All session management tools |
 | `all` | Every registered tool |
 
-**Text-based slash commands** — intercepted from `input` when it starts with `/`:
-
-| Command | Action |
-|---|---|
-| `/help` | Text help. |
-| `/continue` | Continue without user input. |
-| `/start` | Start fresh session with all tools enabled. |
-| `/compact [n]` | Set or get compact limit. |
-| `/model [list\|show\|switch <name>\|<name>]` | Model management. |
-| `/session [list\|create\|switch <id>\|delete <id>\|info\|rename <n>\|autorename]` | Session management. |
-| `/tool [list\|allow <n>\|deny <n>]` | Tool management. |
-
----
-
 ### Outbound Frames (Server → Client)
 
 All frames share the base fields in `FrameResponse`:
@@ -261,7 +251,7 @@ All frames share the base fields in `FrameResponse`:
 | `delta` | string | Streaming text chunk. |
 | `done` | bool | **Terminal frame** — when `true`, the turn is complete and the engine is ready for new input. Always emitted. |
 | `error` | string | Error message. When present, the turn failed. |
-| `event` | string | Event type: `"tool"`, `"meta"`, `"command_result"`, `"session_switch"`, `"session_create"`, `"session_renamed"`, `"cancel"`, `"client_request"`. |
+| `event` | string | Event type: `"tool"`, `"meta"`, `"command_result"`, `"get_session"`, `"session_create"`, `"session_renamed"`, `"cancel"`, `"client_request"`. |
 | `tool` | string | Tool name (only with `event: "tool"`). |
 | `status` | string | Tool status: `"start"`, `"ok"`, `"err"` (only with `event: "tool"`). |
 | `args` | object | Structured tool arguments as JSON object. |
@@ -300,6 +290,11 @@ All frames share the base fields in `FrameResponse`:
 {"session_id": "<uuid>", "event": "meta", "data": {"prompt_tokens": 1234, "completion_tokens": 56, "total_tokens": 1290}}
 ```
 
+*Estimated context size (before every LLM call):*
+```json
+{"session_id": "<uuid>", "event": "meta", "data": {"estimated_context_tokens": 52000}}
+```
+
 *Client request (server asks client to run code — Neovim Lua):*
 ```json
 {"session_id": "<uuid>", "event": "client_request", "client_request": {"request_id": "req-1", "command": "return vim.api.nvim_buf_get_name(0)"}}
@@ -328,13 +323,13 @@ All frames share the base fields in `FrameResponse`:
 }}
 ```
 
-*Session switch event (includes message history for UI reload):*
+*Session fetch event (includes message history for UI reload):*
 ```json
 {
   "session_id": "<uuid>",
-  "event": "session_switch",
+  "event": "get_session",
   "data": {
-    "session": {"id": "<uuid>", "short_id": "a1b2c3d4", "name": "Bug hunt", "message_count": 42, "model": "deepseek", "total_tokens": 5000},
+    "session": {"id": "<uuid>", "short_id": "a1b2c3d4", "name": "Bug hunt", "message_count": 42, "model": "deepseek", "total_tokens": 5000, "estimated_context_tokens": 52000},
     "messages": [
       {"role": "user", "content": "What is a segmentation fault?"},
       {"role": "assistant", "content": "A segmentation fault is..."}
@@ -345,7 +340,7 @@ All frames share the base fields in `FrameResponse`:
 
 *Session created event:*
 ```json
-{"session_id": "<uuid>", "event": "session_create", "data": {"session": {"id": "<uuid>", "short_id": "...", "name": "", "message_count": 0, "model": "deepseek", "total_tokens": 0}}}
+{"session_id": "<uuid>", "event": "session_create", "data": {"session": {"id": "<uuid>", "short_id": "...", "name": "", "message_count": 0, "model": "deepseek", "total_tokens": 0, "estimated_context_tokens": 0}}}
 ```
 
 *Session renamed event:*
@@ -362,7 +357,7 @@ All frames share the base fields in `FrameResponse`:
 - [ ] **Handle `done: true`** — the engine is not ready for new input until this frame arrives.
 - [ ] **Render tool events** inline — `status: "start"` shows a spinner, `"ok"` renders the result, `"err"` renders the error.
 - [ ] **Handle `client_request`** — if your client supports Neovim, evaluate the Lua and reply with `{"type":"response","request_id":"...","result":...}`. If not, reply with `{"type":"response","request_id":"...","error":"unsupported"}` so the tool doesn't hang.
-- [ ] **Handle `session_switch`** — reload the entire message view from `data.messages`.
+- [ ] **Handle `get_session`** — reload the entire message view from `data.messages`.
 - [ ] **Handle `command_result`** — parse `data` according to `cmd` (e.g. `session_list`, `tool_list`, `model_list`).
 - [ ] **Handle `session_renamed`** — update the session name in the sidebar without reloading.
 - [ ] **Send `cwd`** (via `cwd_set` command or per-request `cwd` field) on startup and when the user changes directory.
@@ -379,7 +374,7 @@ All frames share the base fields in `FrameResponse`:
 3. **Client/Response Loop** — `vim_run_command` sends a `client_request` frame, blocks on `ResponseReader`, and the client replies asynchronously over the same WebSocket.
 4. **Model Switching at Runtime** — `/model <name>` or `model_switch` command changes the active model per-session, persisted in the store.
 5. **LLM-Driven Context Compaction** — When estimated context exceeds `CompactSoftLimit` (default 200K), [N] message indices are injected and the LLM is prompted to call `context_compactify`. Compacted ranges become `[Compacted N messages: …]` markers. Full session data is never modified.
-6. **Unified Command Path** — All session operations (create, switch, delete, CWD, tools, models) go through the same `command` dispatch. Slash-commands in `input` are an alternative text-based entry point.
+6. **Unified Command Path** — All session operations (create, fetch, delete, CWD, tools, models) go through the same JSON `command` dispatch in `CommandProcessor.ExecuteJSON`. Text-based slash commands are **not parsed server-side** — clients (or gateway-specific `parseSlashCommand` functions like the one in the Telegram gateway) convert them to JSON commands before sending.
 
 ---
 
@@ -403,7 +398,7 @@ All frames share the base fields in `FrameResponse`:
 - Turn runner tests (`turn_runner_test.go`)
 - Streaming + tool fallback tests (`gateways/stream_tool_fallback_test.go`)
 - Command processor tests (`commands/command_test.go`)
-- Gateway reconnection and session switch tests (`gateways/reconnect_test.go`, `gateways/reconnect_switch_test.go`, `gateways/session_switch_test.go`)
+- Gateway reconnection and session fetch tests
 - Concurrent Vim tool race tests (`gateways/vim_tool_race_test.go`)
 
 ---

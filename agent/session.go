@@ -68,6 +68,7 @@ type SessionData struct {
 	Name             string
 	Model            string
 	TotalTokens      int
+	EstimatedContextTokens int
 	EnabledTools     map[string]bool
 	BlockedTools     map[string]bool
 	CompactSoftLimit int
@@ -384,6 +385,18 @@ func (sess *Session) SetTotalTokenUsage(tokens int) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	sess.data.TotalTokens = tokens
+}
+
+func (sess *Session) GetEstimatedContextTokens() int {
+	sess.mu.RLock()
+	defer sess.mu.RUnlock()
+	return sess.data.EstimatedContextTokens
+}
+
+func (sess *Session) SetEstimatedContextTokens(tokens int) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.data.EstimatedContextTokens = tokens
 }
 
 // --- SessionCompactLimits ---

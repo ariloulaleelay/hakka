@@ -117,7 +117,7 @@ func (at *activeTurn) Subscribe(ctx context.Context, w frameWriter) {
 // the writer fails, or the context is cancelled.
 //
 // This prevents duplicate subscribers when a client re-subscribes to
-// an active turn (e.g. via session_switch) from a different goroutine
+// an active turn (e.g. via get_session) from a different goroutine
 // on the same connection.
 func (at *activeTurn) ReplaceSubscriber(ctx context.Context, w frameWriter) {
 	key := w.ConnKey()

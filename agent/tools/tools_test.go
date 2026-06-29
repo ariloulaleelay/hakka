@@ -82,6 +82,10 @@ func TestReadFileTruncated(t *testing.T) {
 	if !strings.Contains(res, strings.Repeat("x", 10)) {
 		t.Fatalf("expected first 10 bytes in result, got: %q", res)
 	}
+	// Bug check: footer says [TRUNCATED: N bytes omitted] where N is omitted (90), not kept (10)
+	if !strings.Contains(res, "[TRUNCATED: 90 bytes omitted]") {
+		t.Fatalf("expected footer to say '90 bytes omitted' (the omitted count), got: %q", res)
+	}
 }
 
 func TestReadFileError(t *testing.T) {
@@ -446,6 +450,27 @@ func TestHTTPGetConvertHTMLToMarkdown(t *testing.T) {
 	// Should NOT contain raw HTML tags
 	if strings.Contains(res, "<h1>") || strings.Contains(res, "<p>") {
 		t.Fatalf("body should not contain raw HTML tags, got: %q", res)
+	}
+}
+
+func TestHTTPGetTruncated(t *testing.T) {
+	body := strings.Repeat("hello", 1000) // 5000 bytes
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	res := runPlain(t, HTTPGet().Handler, map[string]any{"url": srv.URL, "max_bytes": 100})
+	if !strings.Contains(res, "Status: 200") {
+		t.Fatalf("expected Status: 200 in output, got: %q", res)
+	}
+	if !strings.Contains(res, "[TRUNCATED:") {
+		t.Fatalf("expected truncation marker in result, got: %q", res)
+	}
+	// Body is 5000 bytes, max_bytes=100, so omitted = 4900
+	if !strings.Contains(res, "[TRUNCATED: 4900 bytes omitted]") {
+		t.Fatalf("expected footer to say '4900 bytes omitted' (the omitted count), got: %q", res)
 	}
 }
 

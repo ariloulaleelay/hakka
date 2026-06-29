@@ -317,12 +317,13 @@ func TestTelegramGateway_SlashCommand(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a sent message")
 	}
-	if !strings.Contains(msg.Text, "available commands:") {
-		t.Fatalf("expected help text, got: %q", msg.Text)
+	if !strings.Contains(msg.Text, "/help —") {
+		t.Fatalf("expected formatted help with '/help —', got: %q", msg.Text)
 	}
 }
 
-// TestTelegramGateway_UnknownCommand returns an error message.
+// TestTelegramGateway_UnknownCommand verifies that an unknown text command
+// is forwarded to the LLM (the server no longer intercepts text slash commands).
 func TestTelegramGateway_UnknownCommand(t *testing.T) {
 	th := newTelegramTestHelper(t)
 	defer th.close()
@@ -333,12 +334,13 @@ func TestTelegramGateway_UnknownCommand(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a sent message")
 	}
-	if !strings.Contains(msg.Text, "unknown command") {
-		t.Fatalf("expected 'unknown command' response, got: %q", msg.Text)
+	if !strings.Contains(msg.Text, "hello from telegram") {
+		t.Fatalf("expected LLM reply for unknown text command, got: %q", msg.Text)
 	}
 }
 
-// TestTelegramGateway_ModelCommandSwitch verifies that /model works.
+// TestTelegramGateway_ModelCommandSwitch verifies that /model works
+// (maps to session_info command).
 func TestTelegramGateway_ModelCommandSwitch(t *testing.T) {
 	th := newTelegramTestHelper(t)
 	defer th.close()
@@ -349,7 +351,7 @@ func TestTelegramGateway_ModelCommandSwitch(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a sent message")
 	}
-	if !strings.Contains(msg.Text, "current model:") {
+	if !strings.Contains(msg.Text, "Model:") {
 		t.Fatalf("expected model info, got: %q", msg.Text)
 	}
 }
@@ -793,7 +795,7 @@ func TestTelegramGateway_GroupChatCommandWithBotUsername(t *testing.T) {
 	if msg.ChatID != 1001 {
 		t.Fatalf("expected chat_id 1001, got %d", msg.ChatID)
 	}
-	if !strings.Contains(msg.Text, "available commands:") {
+	if !strings.Contains(msg.Text, "/help —") {
 		t.Fatalf("expected help menu in reply to /help@test_bot, got: %q", msg.Text)
 	}
 }
@@ -815,7 +817,7 @@ func TestTelegramGateway_PrivateChatCommandWithBotUsername(t *testing.T) {
 	if msg.ChatID != 1001 {
 		t.Fatalf("expected chat_id 1001, got %d", msg.ChatID)
 	}
-	if !strings.Contains(msg.Text, "available commands:") {
+	if !strings.Contains(msg.Text, "/help —") {
 		t.Fatalf("expected help menu in reply to /help@test_bot, got: %q", msg.Text)
 	}
 }

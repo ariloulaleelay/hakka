@@ -41,7 +41,196 @@ local function execute_vim_command(cmd)
     return nil, tostring(compile_err)
   end
   local ok, result = pcall(fn)
-  if not ok then
+  -- Clean up any lingering hakka buffers from previous tests.
+local function cleanup_hakka_buffers()
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    local lines = vim.api.nvim_buf_get_lines(b, 0, 2, false)
+    if #lines >= 1 and lines[1] == "# Me" then
+      pcall(vim.api.nvim_buf_delete, b, { force = true })
+    end
+  end
+end
+
+-- ──────────────────────────────────────────
+heading("reset_prompt idempotent — no double # Me")
+
+-- When reset_prompt is called twice in a row (e.g. from append_error
+-- during streaming followed by end_assistant_stream), it MUST NOT
+-- produce a second # Me prompt.
+do
+  cleanup_hakka_buffers()
+  local function fresh_ui()
+    package.loaded["hakka.ui"] = nil
+    return require("hakka.ui")
+  end
+
+  local ui = fresh_ui()
+  pcall(ui.open, function() end)
+
+  -- Helper: get our test buffer lines
+  local function get_buf_lines()
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+      -- Buffer created by ui.open has "# Me" at line 1
+      if #lines >= 1 and lines[1] == "# Me" then
+        return lines
+      end
+    end
+    return {}
+  end
+
+  local function count_me_in(lines)
+    local count = 0
+    for _, l in ipairs(lines) do
+      if l == "# Me" then count = count + 1 end
+    end
+    return count
+  end
+
+  -- Simulate: append_error during streaming followed by end_assistant_stream.
+  -- This is what happens when a frame.error arrives in the streaming callback:
+  -- append_error calls reset_prompt, then on_done calls end_assistant_stream
+  -- which calls reset_prompt again.
+  ui.append_user("hello")
+  ui.begin_assistant_stream()
+  -- Now simulate a command error frame that comes mid-stream
+  -- We call append_error which calls reset_prompt internally
+  ui.append_error("some error")
+  -- Then end_assistant_stream is called (from on_done callback) which would
+  -- call reset_prompt again, causing double # Me without the fix.
+  ui.end_assistant_stream()
+
+  local lines = get_buf_lines()
+  local me_count = count_me_in(lines)
+
+  -- Expected: 1 # Me for the label (from append_user) + 1 # Me for the prompt
+  -- Total: 2. If > 2, we have the double-# Me bug.
+  assert_eq(me_count, 2,
+    "append_error+end_assistant_stream: exactly 2 '# Me' (1 label + 1 prompt), got " .. me_count ..
+    ", lines: " .. vim.inspect(lines))
+end
+
+-- ──────────────────────────────────────────
+heading("reset_prompt idempotent — direct double call")
+
+-- Directly calling reset_prompt twice should also be safe.
+do
+  cleanup_hakka_buffers()
+  local function fresh_ui()
+    package.loaded["hakka.ui"] = nil
+    return require("hakka.ui")
+  end
+
+  local ui = fresh_ui()
+  pcall(ui.open, function() end)
+
+  -- Simulate a regular conversation turn
+  ui.append_user("hello")
+  ui.begin_assistant_stream()
+  ui.append_delta("hi there")
+  -- Call end_assistant_stream once
+  ui.end_assistant_stream()
+
+  -- Get lines and count # Me
+  local function get_buf_lines()
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+      if #lines >= 1 and lines[1] == "# Me" then
+        return lines
+      end
+    end
+    return {}
+  end
+
+  local function count_me_in(lines)
+    local count = 0
+    for _, l in ipairs(lines) do
+      if l == "# Me" then count = count + 1 end
+    end
+    return count
+  end
+
+  local lines = get_buf_lines()
+  local me_count = count_me_in(lines)
+  -- After one turn: 1 # Me label + 1 # Me prompt = 2
+  assert_eq(me_count, 2,
+    "after one turn: exactly 2 '# Me', got " .. me_count)
+
+  -- Now simulate a second end_assistant_stream call (bug: reset_prompt called again)
+  -- Without the fix, this would add another # Me
+  ui.end_assistant_stream()
+
+  lines = get_buf_lines()
+  me_count = count_me_in(lines)
+  -- Still 2: the duplicate call should not add another # Me
+  assert_eq(me_count, 2,
+    "after second end_assistant_stream: still 2 '# Me', got " .. me_count ..
+    ", lines: " .. vim.inspect(lines))
+end
+
+-- ──────────────────────────────────────────
+heading("reset_prompt idempotent — multiple regular turns")
+
+-- Even after multiple full conversation cycles, # Me count should be correct.
+do
+  cleanup_hakka_buffers()
+  local function fresh_ui()
+    package.loaded["hakka.ui"] = nil
+    return require("hakka.ui")
+  end
+
+  local ui = fresh_ui()
+  pcall(ui.open, function() end)
+
+  local function get_buf_lines()
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      local lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+      if #lines >= 1 and lines[1] == "# Me" then
+        for _, l in ipairs(lines) do
+          if l == "turn_A" or l == "turn_B" then return lines end
+        end
+      end
+    end
+    return {}
+  end
+
+  local function count_me_in(lines)
+    local count = 0
+    for _, l in ipairs(lines) do
+      if l == "# Me" then count = count + 1 end
+    end
+    return count
+  end
+
+  -- Turn A
+  ui.append_user("turn_A")
+  ui.begin_assistant_stream()
+  ui.append_delta("reply A")
+  ui.end_assistant_stream()
+
+  local lines = get_buf_lines()
+  assert_eq(count_me_in(lines), 2, "after turn A: 2 # Me")
+
+  -- Turn B
+  ui.append_user("turn_B")
+  ui.begin_assistant_stream()
+  ui.append_delta("reply B")
+  ui.end_assistant_stream()
+
+  lines = get_buf_lines()
+  assert_eq(count_me_in(lines), 3, "after turn B: 3 # Me (2 labels + 1 prompt)")
+
+  -- Turn C
+  ui.append_user("turn_C")
+  ui.begin_assistant_stream()
+  ui.append_delta("reply C")
+  ui.end_assistant_stream()
+
+  lines = get_buf_lines()
+  assert_eq(count_me_in(lines), 4, "after turn C: 4 # Me (3 labels + 1 prompt)")
+end
+
+if not ok then
     return nil, tostring(result)
   end
   return result, nil
@@ -351,6 +540,14 @@ assert_eq(done_err, nil, "error frame closes stream without transport error")
 
 -- ──────────────────────────────────────────
 heading("ui.prompts")
+
+-- Clean up any lingering hakka buffers from previous tests.
+for _, b in ipairs(vim.api.nvim_list_bufs()) do
+  local lines = vim.api.nvim_buf_get_lines(b, 0, 2, false)
+  if #lines >= 1 and lines[1] == "# Me" then
+    pcall(vim.api.nvim_buf_delete, b, { force = true })
+  end
+end
 
 -- Helper: get a fresh, isolated UI module (clear its internal state)
 local function fresh_ui()
@@ -960,7 +1157,8 @@ heading("ui.append_assistant not stream-safe — documents the bug")
 -- append_assistant() is a convenience function for non-stream output: it
 -- prepends "# Hakka" and calls reset_prompt (# Me). Calling it during an
 -- active stream (as handle_command_result does) causes a second # Hakka
--- header and an extra # Me prompt. Use append_delta for stream output.
+-- header. The # Me duplication was fixed by making reset_prompt idempotent.
+-- Use append_delta for stream output.
 do
   local ui = fresh_ui()
   pcall(ui.open, function() end)
@@ -988,7 +1186,7 @@ do
   -- (buggy pattern from handle_command_result) → end stream
   ui.append_user("/session list")
   ui.begin_assistant_stream()
-  ui.append_assistant("list output here")  -- BUG: not stream-safe!
+  ui.append_assistant("list output here")  -- BUG: not stream-safe (adds 2nd # Hakka)
   ui.end_assistant_stream()
 
   local lines = get_test_lines()
@@ -1001,16 +1199,14 @@ do
     if l == "# Hakka" then hakka_count = hakka_count + 1 end
   end
 
-  -- append_assistant during stream adds a SECOND # Hakka header
+  -- append_assistant during stream still adds a SECOND # Hakka header
   -- (one from begin_assistant_stream, one from append_assistant)
-  -- and both # Me are doubled too.
-  -- This test documents the broken behavior. The fix is in init.lua:
-  -- handle_command_result must use append_delta, not append_assistant,
-  -- when called during a stream.
   assert_eq(hakka_count >= 2, true,
     "append_assistant during stream causes >=2 # Hakka (duplicate header)")
-  assert_eq(me_count >= 3, true,
-    "append_assistant during stream causes >=3 # Me (duplicate prompt)")
+  -- # Me prompt is no longer duplicated (reset_prompt is idempotent).
+  -- After 2 turns: 2 labels + 1 prompt = 3
+  assert_eq(me_count, 3,
+    "append_assistant during stream: 3 # Me (2 labels + 1 prompt), got " .. me_count)
 end
 
 -- ──────────────────────────────────────────

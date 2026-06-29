@@ -15,7 +15,7 @@ type frameWriter interface {
 	// ConnKey returns a unique identifier for the underlying transport
 	// connection (e.g. "ws:0x14000567800").
 	// This is used by ReplaceSubscriber to deduplicate subscribers
-	// from the same connection when session_switch is called while a
+	// from the same connection when get_session is called while a
 	// stream is in-flight.
 	ConnKey() string
 }
@@ -44,18 +44,26 @@ func (g *gwClientWriter) WriteFrame(f event.Frame) error {
 
 func (g *gwClientWriter) ConnKey() string { return g.writer.ConnKey() }
 
-// writeCommandResult writes a CommandResult as a frame.
-// When the result has structured Data (e.g. tool_list, session_list),
-// it emits event: "command_result" with structured payload, regardless
-// of the isJSON flag — WebSocket clients can render this.
-// For text-only clients (Telegram), it falls back to Reply text.
-func writeCommandResult(w frameWriter, res commands.CommandResult, stream bool, isJSON bool) (handled, ok bool) {
+// writeCommandResult writes a CommandResult as a frame to the client.
+//
+// All commands are expected to carry structured Data. The function
+// converts them to event:"command_result" frames. Session lifecycle
+// events (get_session, session_create) additionally emit a dedicated
+// event frame.
+func writeCommandResult(w frameWriter, res commands.CommandResult) (handled, ok bool) {
 	if !res.Handled {
 		return false, true
 	}
+
 	resp := FrameResponse{Done: true}
 	if res.Session != nil {
 		resp.SessionID = res.Session.SessionID()
+	}
+
+	if res.Action == commands.ActionContinue {
+		// Send a minimal done frame so the client knows the command
+		// was handled and can proceed (e.g. Neovim waits for a response).
+		return true, w.Write(FrameResponse{Done: true, SessionID: resp.SessionID}) == nil
 	}
 
 	if res.Error != nil {
@@ -63,17 +71,7 @@ func writeCommandResult(w frameWriter, res commands.CommandResult, stream bool, 
 		return true, w.Write(resp) == nil
 	}
 
-	// Continue action: no response frame, caller proceeds to LLM.
-	if res.Action == commands.ActionContinue {
-		return true, true
-	}
-
-	// Structured data path: emit as event: "command_result" whenever
-	// the result has Data. This works for both JSON-capable clients
-	// (Neovim, web UI) and WebSocket gateways that
-	// receive text slash commands — they all understand event frames.
-	// Telegram is unaffected because it has its own command handler
-	// and never calls writeCommandResult.
+	// Structured data path: emit as event: "command_result".
 	if res.Data != nil {
 		resp.Event = "command_result"
 		resp.Cmd = res.Cmd
@@ -82,40 +80,21 @@ func writeCommandResult(w frameWriter, res commands.CommandResult, stream bool, 
 		return true, w.Write(resp) == nil
 	}
 
-	// For session switch/create, emit event frame.
-	if res.Action == commands.ActionSessionSwitch || res.Action == commands.ActionSessionCreate {
-		eventType := "session_switch"
+	// Session lifecycle events — emit dedicated event frame.
+	if res.Action == commands.ActionGetSession || res.Action == commands.ActionSessionCreate {
+		eventType := "get_session"
 		if res.Action == commands.ActionSessionCreate {
 			eventType = "session_create"
 		}
 		data := map[string]any{}
-		if res.Action == commands.ActionSessionSwitch && res.Session != nil {
+		if res.Action == commands.ActionGetSession && res.Session != nil {
 			data["messages"] = res.Session.AllMessages()
 		}
 		data["session"] = sessionToMap(res.Session)
-		if err := w.Write(FrameResponse{SessionID: resp.SessionID, Event: eventType, Data: data}); err != nil {
-			return true, false
-		}
-		// For JSON clients, also send command_result with the same data (no text reply).
-		if isJSON && res.Data != nil {
-			resp.Event = "command_result"
-			resp.Cmd = res.Cmd
-			json.Unmarshal(res.Data, &resp.Data)
-			resp.Done = true
-			return true, w.Write(resp) == nil
-		}
-		// For non-JSON clients, fall through to send the text reply.
+		return true, w.Write(FrameResponse{SessionID: resp.SessionID, Event: eventType, Data: data}) == nil
 	}
 
-	// Text fallback for non-JSON clients (Telegram).
-	if stream {
-		if res.Reply != "" {
-			if err := w.Write(FrameResponse{SessionID: resp.SessionID, Delta: res.Reply}); err != nil {
-				return true, false
-			}
-		}
-		return true, w.Write(FrameResponse{SessionID: resp.SessionID, Done: true}) == nil
-	}
+	// Fallback: send reply text if available, or a minimal done frame.
 	resp.Output = res.Reply
 	return true, w.Write(resp) == nil
 }
@@ -131,7 +110,8 @@ func sessionToMap(s *agent.Session) map[string]any {
 		"short_id":       shortID(s.SessionID()),
 		"message_count":  len(s.AllMessages()),
 		"model":          s.GetModel(),
-		"total_tokens":   s.TotalTokenUsage(),
+		"total_tokens":              s.TotalTokenUsage(),
+		"estimated_context_tokens": s.GetEstimatedContextTokens(),
 	}
 }
 
@@ -211,6 +191,14 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 				"prompt_tokens":     e.Usage.PromptTokens,
 				"completion_tokens": e.Usage.CompletionTokens,
 				"total_tokens":      e.Usage.TotalTokens,
+			},
+		})
+	case event.ContextEstimated:
+		return writeFrame(w, FrameResponse{
+			SessionID: e.SessionID,
+			Event:     "meta",
+			Data: map[string]any{
+				"estimated_context_tokens": e.EstimatedTokens,
 			},
 		})
 	case event.TextDelta:

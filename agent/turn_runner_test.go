@@ -181,3 +181,70 @@ func TestMidTurnToolEditor_ContextInjection(t *testing.T) {
 		t.Fatal("test_tool was NOT executed — context injection should have enabled it")
 	}
 }
+
+// TestContextEstimatedEvent verifies that the turn runner emits a
+// ContextEstimated event with the estimated token count before each
+// LLM call, and that the session stores the latest estimate.
+func TestContextEstimatedEvent(t *testing.T) {
+	store := newCopyBackStore()
+	sm := NewSessionManager(store, "sys")
+	session, err := sm.GetOrCreate(context.Background(), "testns", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add some messages to give the heuristic estimate something to count
+	session.Append(Message{Role: RoleUser, Content: "What is the meaning of life, the universe, and everything?"})
+	session.Append(Message{Role: RoleAssistant, Content: "42. It is the answer to the ultimate question. Deep thought computed it over millions of years."})
+
+	tools := NewToolRegistry()
+
+	rr := newTurnRunner(tools, newToolExecutor(tools, nil, Hooks{}), EngineConfig{
+		MaxToolIterations: 3,
+		Logger:            testLogger(t),
+	}, &Router{}, testLogger(t))
+
+	eventCh := make(chan event.EngineEvent, 64)
+
+	step := func(ctx context.Context, msgs []Message, schemas []ToolSchema, ev eventSender) (*llmStepResult, error) {
+		return &llmStepResult{content: "hello"}, nil
+	}
+
+	saveFn := func(ctx context.Context, s SessionView) error {
+		return sm.Save(ctx, "testns", s)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	reply, err := rr.run(ctx, session, eventCh, step, saveFn)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	if reply != "hello" {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+
+	// Drain events channel — should find a ContextEstimated event
+	var found bool
+	for i := 0; i < cap(eventCh); i++ {
+		select {
+		case evt := <-eventCh:
+			if _, ok := evt.(event.ContextEstimated); ok {
+				found = true
+			}
+		default:
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected a ContextEstimated event")
+	}
+
+	// The session should have the estimated context tokens stored
+	estimated := session.GetEstimatedContextTokens()
+	if estimated <= 0 {
+		t.Fatalf("expected positive estimated context tokens, got %d", estimated)
+	}
+}

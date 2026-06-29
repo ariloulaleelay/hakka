@@ -4,22 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/ariloulaleelay/hakka/agent"
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
-// CommandResult describes the outcome of processing a slash command.
+// CommandResult describes the outcome of processing a command.
 type CommandResult struct {
 	Handled bool
 	Action  CommandAction
-	Reply   string          // human-readable text (for non-JSON clients)
-	Data    json.RawMessage // structured data (for JSON-capable clients), optional
+	Data    json.RawMessage // structured data for JSON-capable clients
 	Cmd     string          // command name that produced this result
 	Session *agent.Session
 	Error   error
+	Reply   string // fallback text (kept for backward compat, not used by JSON clients)
 }
 
 // CommandAction describes what effect the command had on the session.
@@ -27,15 +26,15 @@ type CommandAction int
 
 const (
 	ActionNone          CommandAction = iota
-	ActionReply                       // command produced a text reply
 	ActionClearSession                // active session was deleted
-	ActionSessionSwitch               // session was switched to a different one
+	ActionGetSession                  // session was fetched and made active
 	ActionSessionCreate               // a new session was created
 	ActionContinue                    // trigger LLM without adding a user message
 )
 
-// CommandProcessor handles slash-commands (/help, /model, /session, /tool, ...).
-// It is a thin dispatcher that delegates to domain-specific handlers.
+// CommandProcessor handles structured JSON commands (/help, /model, /session, /tool, ...).
+// It delegates to domain-specific handlers. No text-based slash command parsing
+// happens here — clients are responsible for mapping slash-commands to JSON.
 type CommandProcessor struct {
 	Sessions     *agent.SessionManager
 	Conv         *agent.Conversation
@@ -104,7 +103,7 @@ func (cp *CommandProcessor) ExecuteJSON(ctx context.Context, sessionID, cmd stri
 		if cp.sessionHandler != nil {
 			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
 		}
-	case "session_switch":
+	case "get_session":
 		if cp.sessionHandler != nil {
 			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
 		}
@@ -152,198 +151,9 @@ func (cp *CommandProcessor) ExecuteJSON(ctx context.Context, sessionID, cmd stri
 
 	return CommandResult{
 		Handled: true,
-		Action:  ActionReply,
 		Cmd:     cmd,
 		Reply:   fmt.Sprintf("unknown command: %s", cmd),
 	}
-}
-
-// Execute attempts to interpret input as a slash-command (text-based).
-func (cp *CommandProcessor) Execute(ctx context.Context, sessionID, input string) CommandResult {
-	if event.NamespaceFromContext(ctx) == "" {
-		ctx = event.ContextWithNamespace(ctx, cp.Namespace)
-	}
-	trimmed := strings.TrimSpace(input)
-	if !strings.HasPrefix(trimmed, "/") {
-		return CommandResult{Handled: false}
-	}
-	parts := strings.Fields(trimmed)
-	cmd := parts[0]
-	if idx := strings.Index(cmd, "@"); idx >= 0 {
-		cmd = cmd[:idx]
-	}
-
-	if res := cp.trySubHandlers(ctx, sessionID, parts, cmd); res.Handled {
-		return res
-	}
-
-	switch cmd {
-	case "/help":
-		return cp.handleHelp(ctx, sessionID, parts)
-	case "/continue":
-		return cp.handleContinue(ctx, sessionID, parts)
-	case "/cwd_set":
-		return cp.handleCWDSet(ctx, sessionID, parts)
-	case "/start":
-		return cp.handleStart(ctx, sessionID, parts)
-	case "/compact":
-		return cp.handleCompact(ctx, sessionID, parts)
-	default:
-		return CommandResult{
-			Handled: true,
-			Action:  ActionReply,
-			Reply:   fmt.Sprintf("unknown command: %s. Type /help for available commands.", cmd),
-		}
-	}
-}
-
-func (cp *CommandProcessor) trySubHandlers(ctx context.Context, sessionID string, parts []string, cmd string) CommandResult {
-	if cp.modelHandler != nil {
-		if cmd == "/model" || cmd == "/models" {
-			return cp.modelHandler.Handle(ctx, sessionID, parts, cmd)
-		}
-	}
-	if cp.sessionHandler != nil && cmd == "/session" {
-		return cp.sessionHandler.Handle(ctx, sessionID, parts)
-	}
-	if cp.toolHandler != nil && cmd == "/tool" {
-		return cp.toolHandler.Handle(ctx, sessionID, parts)
-	}
-	return CommandResult{Handled: false}
-}
-
-// --- Text-based handlers (keep for non-JSON clients) ---
-
-func (cp *CommandProcessor) handleHelp(_ context.Context, _ string, _ []string) CommandResult {
-	helpText := `available commands:
-  /help                         - Show this help menu
-  /continue                     - Continue the conversation
-  /start                        - Start a fresh session with all tools enabled
-  /model list                   - List available models
-  /model show                   - Show current model
-  /model switch <name>          - Switch to a different model
-  /session list                 - List all sessions
-  /session create               - Start a new session
-  /session switch <id>          - Switch to an existing session
-  /session delete <id>          - Delete a session (use "this" for current)
-  /session info                 - Show current session details
-  /session rename <name>        - Rename current session
-  /session autorename           - Auto-generate a session name using LLM
-  /tool list                    - List available tools with status
-  /tool allow <name-or-#tag>... - Allow (and enable) a tool or all tools with a #tag
-  /tool deny <name-or-#tag>...  - Deny (hide) a tool or all tools with a #tag
-  /cwd_set <path>               - Set working directory for the session
-  /compact <n>                  - Set context soft limit in tokens (default 150000)`
-	return CommandResult{Handled: true, Action: ActionReply, Reply: helpText}
-}
-
-func (cp *CommandProcessor) handleContinue(_ context.Context, _ string, _ []string) CommandResult {
-	return CommandResult{Handled: true, Action: ActionContinue}
-}
-
-func (cp *CommandProcessor) handleCompact(ctx context.Context, sessionID string, parts []string) CommandResult {
-	ns := event.NamespaceFromContext(ctx)
-
-	if len(parts) < 2 {
-		session, err := cp.Sessions.GetOrCreate(ctx, ns, sessionID)
-		if err != nil {
-			return CommandResult{Handled: true, Error: err}
-		}
-		return CommandResult{
-			Handled: true,
-			Action:  ActionReply,
-			Reply:   fmt.Sprintf("compact soft limit: %d tokens (0=off, default 150000)", session.GetCompactSoftLimit()),
-		}
-	}
-
-	n := 0
-	if _, err := fmt.Sscanf(parts[1], "%d", &n); err != nil || n < 0 {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "usage: /compact <n> — where n is a non-negative integer (soft token limit)"}
-	}
-
-	session, err := cp.Sessions.GetOrCreate(ctx, ns, sessionID)
-	if err != nil {
-		return CommandResult{Handled: true, Error: err}
-	}
-	session.SetCompactSoftLimit(n)
-	if err := cp.Sessions.Save(ctx, ns, session); err != nil {
-		return CommandResult{Handled: true, Error: err}
-	}
-
-	desc := "off"
-	if n > 0 {
-		desc = fmt.Sprintf("warning at %d tokens", n)
-	}
-	return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("compact soft limit set to %d (%s)", n, desc)}
-}
-
-func (cp *CommandProcessor) handleStart(ctx context.Context, sessionID string, parts []string) CommandResult {
-	ns := event.NamespaceFromContext(ctx)
-	session, err := cp.Sessions.GetOrCreate(ctx, ns, "")
-	if err != nil {
-		return CommandResult{Handled: true, Error: err}
-	}
-
-	inheritCWD(ctx, cp.Sessions, ns, sessionID, session)
-
-	if cp.Tools != nil {
-		for _, schema := range cp.Tools.Schemas() {
-			session.EnableTool(schema.Name)
-		}
-	}
-
-	if err := cp.Sessions.Save(ctx, ns, session); err != nil {
-		return CommandResult{Handled: true, Error: err}
-	}
-
-	return CommandResult{
-		Handled: true,
-		Action:  ActionSessionCreate,
-		Reply:   "started fresh session: " + session.SessionID() + " with all tools enabled",
-		Session: session,
-	}
-}
-
-// --- CWD set ---
-
-func (cp *CommandProcessor) handleCWDSet(ctx context.Context, sessionID string, parts []string) CommandResult {
-	ns := event.NamespaceFromContext(ctx)
-	if len(parts) < 2 {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "usage: /cwd_set <path> — please specify a path"}
-	}
-	path := strings.Join(parts[1:], " ")
-	session, err := cp.Sessions.GetOrCreate(ctx, ns, sessionID)
-	if err != nil {
-		return CommandResult{Handled: true, Error: err}
-	}
-	session.SetClientCWD(path)
-	if err := cp.Sessions.Save(ctx, ns, session); err != nil {
-		return CommandResult{Handled: true, Error: err}
-	}
-	return CommandResult{Handled: true, Action: ActionReply, Reply: "cwd set to: " + path, Session: session}
-}
-
-func (cp *CommandProcessor) execCWDSet(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
-	ns := event.NamespaceFromContext(ctx)
-	var p struct {
-		CWD string `json:"cwd"`
-	}
-	if params != nil {
-		json.Unmarshal(params, &p)
-	}
-	if p.CWD == "" {
-		return CommandResult{Handled: true, Cmd: "cwd_set", Reply: "error: please specify a path in 'cwd' field"}
-	}
-	session, err := cp.Sessions.GetOrCreate(ctx, ns, sessionID)
-	if err != nil {
-		return CommandResult{Handled: true, Cmd: "cwd_set", Error: err}
-	}
-	session.SetClientCWD(p.CWD)
-	if err := cp.Sessions.Save(ctx, ns, session); err != nil {
-		return CommandResult{Handled: true, Cmd: "cwd_set", Error: err}
-	}
-	data, _ := json.Marshal(map[string]any{"cwd": p.CWD, "session_id": session.SessionID()})
-	return CommandResult{Handled: true, Cmd: "cwd_set", Data: data, Session: session}
 }
 
 // --- JSON handlers ---
@@ -363,7 +173,7 @@ func (cp *CommandProcessor) execHelp(ctx context.Context, sessionID string) Comm
 			{Cmd: "compact", Desc: "Set context soft limit in tokens", Params: map[string]string{"n": "int (0=off)"}},
 			{Cmd: "session_list", Desc: "List all sessions"},
 			{Cmd: "session_create", Desc: "Create a new session"},
-			{Cmd: "session_switch", Desc: "Switch to a session", Params: map[string]string{"id": "session ID or prefix"}},
+			{Cmd: "get_session", Desc: "Fetch session data by ID", Params: map[string]string{"id": "session ID or prefix"}},
 			{Cmd: "session_delete", Desc: "Delete a session", Params: map[string]string{"id": "session ID or 'this'"}},
 			{Cmd: "session_info", Desc: "Show current session details"},
 			{Cmd: "session_rename", Desc: "Rename current session", Params: map[string]string{"name": "new name"}},
@@ -375,7 +185,7 @@ func (cp *CommandProcessor) execHelp(ctx context.Context, sessionID string) Comm
 			{Cmd: "tool_deny", Desc: "Deny (hide) a tool or tag", Params: map[string]string{"name": "tool name or #tag"}},
 		},
 	})
-	return CommandResult{Handled: true, Action: ActionReply, Cmd: "help", Data: helpJSON}
+	return CommandResult{Handled: true, Cmd: "help", Data: helpJSON}
 }
 
 func (cp *CommandProcessor) execStart(ctx context.Context, sessionID string) CommandResult {
@@ -403,6 +213,29 @@ func (cp *CommandProcessor) execStart(ctx context.Context, sessionID string) Com
 		Data:    data,
 		Session: session,
 	}
+}
+
+func (cp *CommandProcessor) execCWDSet(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
+	ns := event.NamespaceFromContext(ctx)
+	var p struct {
+		CWD string `json:"cwd"`
+	}
+	if params != nil {
+		json.Unmarshal(params, &p)
+	}
+	if p.CWD == "" {
+		return CommandResult{Handled: true, Cmd: "cwd_set", Reply: "error: please specify a path in 'cwd' field"}
+	}
+	session, err := cp.Sessions.GetOrCreate(ctx, ns, sessionID)
+	if err != nil {
+		return CommandResult{Handled: true, Cmd: "cwd_set", Error: err}
+	}
+	session.SetClientCWD(p.CWD)
+	if err := cp.Sessions.Save(ctx, ns, session); err != nil {
+		return CommandResult{Handled: true, Cmd: "cwd_set", Error: err}
+	}
+	data, _ := json.Marshal(map[string]any{"cwd": p.CWD, "session_id": session.SessionID()})
+	return CommandResult{Handled: true, Cmd: "cwd_set", Data: data, Session: session}
 }
 
 func (cp *CommandProcessor) execCompact(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
@@ -451,7 +284,8 @@ func sessionToMap(s *agent.Session) map[string]any {
 		"short_id":      shortID(d.ID),
 		"message_count": len(d.Messages),
 		"model":         s.GetModel(),
-		"total_tokens":  s.TotalTokenUsage(),
+		"total_tokens":              s.TotalTokenUsage(),
+		"estimated_context_tokens": s.GetEstimatedContextTokens(),
 		"client_cwd":    d.ClientCWD,
 		"created_at":    d.CreatedAt.Format(time.RFC3339),
 		"updated_at":    formatTime(d.UpdatedAt, d.CreatedAt),

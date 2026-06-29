@@ -240,10 +240,9 @@ func (reg *ToolRegistry) ExecuteForSession(ctx context.Context, session toolSess
 }
 
 // BuildToolListMessage returns a system message listing all allowed tools
-// with their descriptions. This is injected into the conversation context
-// so the LLM knows what tools are available (and which ones are enabled
-// vs disabled). The message also hints that show_tool can be used to
-// enable a tool for direct use.
+// with their descriptions and Pythonic signatures. This is injected into
+// the conversation context so the LLM knows what tools are available
+// (and which ones are enabled vs disabled).
 func BuildToolListMessage(tools *ToolRegistry, session SessionToolAuth) string {
 	if tools == nil || session == nil {
 		return ""
@@ -258,26 +257,25 @@ func BuildToolListMessage(tools *ToolRegistry, session SessionToolAuth) string {
 		return schemas[i].Name < schemas[j].Name
 	})
 
-	// Find longest name for alignment
+	// Precompute signatures and find longest for alignment
+	type item struct {
+		sig  string
+		desc string
+	}
+	items := make([]item, len(schemas))
 	maxLen := 0
-	for _, s := range schemas {
-		if len(s.Name) > maxLen {
-			maxLen = len(s.Name)
+	for i, s := range schemas {
+		sig := s.Signature()
+		items[i] = item{sig: sig, desc: compactDescription(s.Description)}
+		if len(sig) > maxLen {
+			maxLen = len(sig)
 		}
 	}
 
 	var b strings.Builder
 	b.WriteString("You are allowed to use next tools:\n")
-	for _, s := range schemas {
-		/*
-		status := "[disabled]"
-		if session.IsToolEnabled(s.Name) {
-			status = "[enabled] "
-		}
-		*/
-		snippet := compactDescription(s.Description)
-		// b.WriteString(fmt.Sprintf("  %-*s  %s %s\n", maxLen, s.Name, status, snippet))
-		b.WriteString(fmt.Sprintf("  %-*s - %s\n", maxLen, s.Name, snippet))
+	for _, it := range items {
+		b.WriteString(fmt.Sprintf("  %-*s - %s\n", maxLen, it.sig, it.desc))
 	}
 	b.WriteString("\nTo activate any tool or get detailed info, use show_tool call.")
 	return b.String()
@@ -324,4 +322,142 @@ func compactDescription(desc string) string {
 		desc = desc[:97] + "..."
 	}
 	return desc
+}
+
+// Signature returns a Pythonic function signature for the tool schema.
+// Examples:
+//
+//	read_file(path, max_bytes=200000)
+//	random(min_value, max_value)
+//	session_create()
+//	edit_file(path, old, new, replace_all=False)
+func (s ToolSchema) Signature() string {
+	props, ok := s.Parameters["properties"].(map[string]any)
+	if !ok || len(props) == 0 {
+		return s.Name
+	}
+
+	// Build the required set — handle both []string and []any (JSON unmarshal).
+	requiredSet := make(map[string]bool)
+	if req, ok := s.Parameters["required"].([]string); ok {
+		for _, name := range req {
+			requiredSet[name] = true
+		}
+	} else if req, ok := s.Parameters["required"].([]any); ok {
+		for _, r := range req {
+			if name, ok := r.(string); ok {
+				requiredSet[name] = true
+			}
+		}
+	}
+
+	var required, optional []string
+	for name := range props {
+		if requiredSet[name] {
+			required = append(required, name)
+		} else {
+			optional = append(optional, name)
+		}
+	}
+	sort.Strings(required)
+	sort.Strings(optional)
+
+	parts := make([]string, 0, len(required)+len(optional))
+	for _, name := range required {
+		parts = append(parts, name)
+	}
+	for _, name := range optional {
+		parts = append(parts, formatOptionalParam(props, name))
+	}
+
+	if len(parts) == 0 {
+		return s.Name + "()"
+	}
+	return s.Name + "(" + strings.Join(parts, ", ") + ")"
+}
+
+// formatOptionalParam formats an optional parameter with its default value.
+// Priority:
+//  1. Extract explicit default from description via (default X) or Default X. patterns
+//  2. Boolean → False
+//  3. Otherwise → None
+func formatOptionalParam(props map[string]any, name string) string {
+	prop, ok := props[name].(map[string]any)
+	if !ok {
+		return name + "=None"
+	}
+
+	desc, _ := prop["description"].(string)
+	if defaultVal := extractDefaultFromDescription(desc); defaultVal != "" {
+		return name + "=" + defaultVal
+	}
+
+	typ, _ := prop["type"].(string)
+	if typ == "boolean" {
+		return name + "=False"
+	}
+	return name + "=None"
+}
+
+// extractDefaultFromDescription searches for common default-value patterns
+// in a parameter description string. Returns "" if no default is found.
+func extractDefaultFromDescription(desc string) string {
+	if desc == "" {
+		return ""
+	}
+
+	// Pattern 1: "(default X)" — e.g. "(default 200_000)" or "(default 64KB)"
+	const parenPrefix = "(default "
+	if idx := strings.Index(desc, parenPrefix); idx >= 0 {
+		rest := desc[idx+len(parenPrefix):]
+		end := strings.IndexAny(rest, ").")
+		if end < 0 {
+			end = len(rest)
+		}
+		val := strings.TrimSpace(rest[:end])
+		return cleanDefaultValue(val)
+	}
+
+	// Pattern 2: "Default X." — e.g. "Default 30." or "Default 50"
+	const defaultPrefix = "Default "
+	if idx := strings.Index(desc, defaultPrefix); idx >= 0 {
+		rest := desc[idx+len(defaultPrefix):]
+		end := strings.IndexAny(rest, " .")
+		if end < 0 {
+			end = len(rest)
+		}
+		val := strings.TrimSpace(rest[:end])
+		return cleanDefaultValue(val)
+	}
+
+	return ""
+}
+
+// cleanDefaultValue normalises a raw default value string extracted from
+// a description. Handles Go numeric underscores and KB/MB suffixes.
+func cleanDefaultValue(val string) string {
+	// Remove Go numeric underscores
+	val = strings.ReplaceAll(val, "_", "")
+
+	// Handle KB suffix (e.g. "64KB" → 65536)
+	if strings.HasSuffix(val, "KB") {
+		numStr := strings.TrimSuffix(val, "KB")
+		if num, err := fmt.Sscanf(numStr, "%d", new(int)); err == nil && num == 1 {
+			var n int
+			fmt.Sscanf(numStr, "%d", &n)
+			return fmt.Sprintf("%d", n*1024)
+		}
+	}
+
+	// Handle MB suffix
+	if strings.HasSuffix(val, "MB") {
+		numStr := strings.TrimSuffix(val, "MB")
+		if num, err := fmt.Sscanf(numStr, "%d", new(int)); err == nil && num == 1 {
+			var n int
+			fmt.Sscanf(numStr, "%d", &n)
+			return fmt.Sprintf("%d", n*1024*1024)
+		}
+	}
+
+	return val
 }

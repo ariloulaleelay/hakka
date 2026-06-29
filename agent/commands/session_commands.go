@@ -51,7 +51,7 @@ func shortestUniquePrefix(id string, allIDs []string) string {
 	return id
 }
 
-// SessionCommands handles session-related slash commands.
+// SessionCommands handles session-related commands.
 type SessionCommands struct {
 	Sessions *agent.SessionManager
 	Conv     *agent.Conversation
@@ -63,15 +63,14 @@ func NewSessionCommands(sm *agent.SessionManager, conv *agent.Conversation, ns s
 }
 
 // HandleJSON handles a structured JSON session command.
-// cmd is e.g. "session_list", "session_create", etc.
 func (sc *SessionCommands) HandleJSON(ctx context.Context, sessionID, cmd string, params json.RawMessage) CommandResult {
 	switch cmd {
 	case "session_list":
 		return sc.jsonSessionList(ctx, sessionID)
 	case "session_create":
 		return sc.jsonSessionCreate(ctx, sessionID)
-	case "session_switch":
-		return sc.jsonSessionSwitch(ctx, sessionID, params)
+	case "get_session":
+		return sc.jsonGetSession(ctx, sessionID, params)
 	case "session_delete":
 		return sc.jsonSessionDelete(ctx, sessionID, params)
 	case "session_info":
@@ -145,7 +144,7 @@ func (sc *SessionCommands) jsonSessionCreate(ctx context.Context, prevSessionID 
 	}
 }
 
-func (sc *SessionCommands) jsonSessionSwitch(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
+func (sc *SessionCommands) jsonGetSession(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 
 	var p struct {
@@ -155,23 +154,23 @@ func (sc *SessionCommands) jsonSessionSwitch(ctx context.Context, sessionID stri
 		json.Unmarshal(params, &p)
 	}
 	if p.ID == "" {
-		return CommandResult{Handled: true, Cmd: "session_switch", Reply: "error: please specify a session ID"}
+		return CommandResult{Handled: true, Cmd: "get_session", Reply: "error: please specify a session ID"}
 	}
 
 	target, err := sc.Sessions.ResolveSessionID(ctx, ns, p.ID)
 	if err != nil {
-		return CommandResult{Handled: true, Cmd: "session_switch", Reply: err.Error()}
+		return CommandResult{Handled: true, Cmd: "get_session", Reply: err.Error()}
 	}
 
 	session, ok, err := sc.Sessions.Get(ctx, ns, target)
 	if err != nil {
-		return CommandResult{Handled: true, Cmd: "session_switch", Error: err}
+		return CommandResult{Handled: true, Cmd: "get_session", Error: err}
 	}
 	if !ok {
-		return CommandResult{Handled: true, Cmd: "session_switch", Reply: fmt.Sprintf("session not found: %s", p.ID)}
+		return CommandResult{Handled: true, Cmd: "get_session", Reply: fmt.Sprintf("session not found: %s", p.ID)}
 	}
 	if err != nil {
-		return CommandResult{Handled: true, Cmd: "session_switch", Error: err}
+		return CommandResult{Handled: true, Cmd: "get_session", Error: err}
 	}
 
 	data, _ := json.Marshal(map[string]any{
@@ -180,8 +179,8 @@ func (sc *SessionCommands) jsonSessionSwitch(ctx context.Context, sessionID stri
 	})
 	return CommandResult{
 		Handled: true,
-		Action:  ActionSessionSwitch,
-		Cmd:     "session_switch",
+		Action:  ActionGetSession,
+		Cmd:     "get_session",
 		Data:    data,
 		Session: session,
 	}
@@ -221,7 +220,7 @@ func (sc *SessionCommands) jsonSessionDelete(ctx context.Context, sessionID stri
 	}
 
 	data, _ := json.Marshal(map[string]any{
-		"deleted":       target,
+		"deleted":        target,
 		"active_cleared": target == sessionID,
 	})
 	if target == sessionID {
@@ -243,7 +242,8 @@ func (sc *SessionCommands) jsonSessionInfo(ctx context.Context, sessionID string
 			"name":              session.DisplayName(),
 			"model":             sc.modelName(session),
 			"message_count":     len(session.AllMessages()),
-			"total_tokens":      session.TotalTokenUsage(),
+			"total_tokens":              session.TotalTokenUsage(),
+			"estimated_context_tokens": session.GetEstimatedContextTokens(),
 			"compact_soft_limit": session.GetCompactSoftLimit(),
 			"estimated_context": estimateTokenCount(session.History()),
 		},
@@ -310,179 +310,4 @@ func (sc *SessionCommands) modelName(session *agent.Session) string {
 		return sc.Conv.SessionModel(session)
 	}
 	return session.GetModel()
-}
-
-// --- Text-based handlers (keep for non-JSON clients) ---
-
-func (sc *SessionCommands) Handle(ctx context.Context, sessionID string, parts []string) CommandResult {
-	if len(parts) < 2 {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "session usage:\n  /session create\n  /session list\n  /session delete <id>\n  /session delete this\n  /session switch <id>\n  /session info\n  /session rename <name>\n  /session autorename"}
-	}
-
-	handlers := map[string]func(context.Context, string, []string) CommandResult{
-		"info":       sc.handleSessionInfo,
-		"list":       sc.handleSessionList,
-		"delete":     sc.handleSessionDelete,
-		"switch":     sc.handleSessionSwitch,
-		"create":     sc.handleSessionCreate,
-		"rename":     sc.handleSessionRename,
-		"autorename": sc.handleSessionAutoRename,
-	}
-
-	handler, exists := handlers[parts[1]]
-	if !exists {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("unknown session subcommand %q", parts[1])}
-	}
-	return handler(ctx, sessionID, parts)
-}
-
-func (sc *SessionCommands) handleSessionInfo(ctx context.Context, sessionID string, _ []string) CommandResult {
-	ns := event.NamespaceFromContext(ctx)
-	session, err := sc.Sessions.GetOrCreate(ctx, ns, sessionID)
-	if err != nil {
-		return CommandResult{Handled: true, Error: err}
-	}
-	msgs := len(session.AllMessages())
-	totalTokens := session.TotalTokenUsage()
-	contextTokens := estimateTokenCount(session.History())
-	displayName := session.DisplayName()
-	reply := fmt.Sprintf("Session ID: %s\nName: %s\nModel: %s\nMessages: %d\nCompact soft limit: %d tokens\nEst. Context Tokens: ~%d\nTotal Lifetime Tokens: %d",
-		session.SessionID(), displayName, sc.modelName(session), msgs, session.GetCompactSoftLimit(), contextTokens, totalTokens)
-	return CommandResult{Handled: true, Action: ActionReply, Reply: reply, Session: session}
-}
-
-func (sc *SessionCommands) handleSessionList(ctx context.Context, sessionID string, _ []string) CommandResult {
-	ns := event.NamespaceFromContext(ctx)
-	sessions, err := sc.Sessions.List(ctx, ns)
-	if err != nil {
-		return CommandResult{Handled: true, Error: err}
-	}
-	if len(sessions) == 0 {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "no sessions found"}
-	}
-
-	var visible []*agent.Session
-	for _, session := range sessions {
-		if len(session.AllMessages()) == 0 && session.SessionID() != sessionID {
-			continue
-		}
-		visible = append(visible, session)
-	}
-	if len(visible) == 0 {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "no sessions found"}
-	}
-
-	shortIDs := shortestUniquePrefixes(sessions)
-
-	lines := []string{"available sessions:"}
-	for _, session := range visible {
-		mark := "  "
-		if session.SessionID() == sessionID {
-			mark = "* "
-		}
-		short := shortIDs[session.SessionID()]
-		created := session.Read().CreatedAt.Format("2006-01-02 15:04")
-		if session.SessionName() != "" {
-			lines = append(lines, fmt.Sprintf("%s%s  %s [%s] <%s>", mark, created, session.SessionName(), short, session.SessionID()))
-		} else {
-			lines = append(lines, fmt.Sprintf("%s%s  [%s] %s", mark, created, short, session.SessionID()))
-		}
-	}
-	return CommandResult{Handled: true, Action: ActionReply, Reply: strings.Join(lines, "\n")}
-}
-
-func (sc *SessionCommands) handleSessionDelete(ctx context.Context, sessionID string, parts []string) CommandResult {
-	ns := event.NamespaceFromContext(ctx)
-	if len(parts) < 3 {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "error: please specify a session ID to delete"}
-	}
-	if parts[2] == "this" {
-		if sessionID == "" {
-			return CommandResult{Handled: true, Action: ActionReply, Reply: "error: no active session to delete"}
-		}
-		if err := sc.Sessions.Drop(ctx, ns, sessionID); err != nil {
-			return CommandResult{Handled: true, Error: err}
-		}
-		return CommandResult{Handled: true, Action: ActionClearSession, Reply: fmt.Sprintf("session %s deleted (active session cleared)", sessionID)}
-	}
-	target, err := sc.Sessions.ResolveSessionID(ctx, ns, parts[2])
-	if err != nil {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: err.Error()}
-	}
-	if err := sc.Sessions.Drop(ctx, ns, target); err != nil {
-		return CommandResult{Handled: true, Error: err}
-	}
-	if target == sessionID {
-		return CommandResult{Handled: true, Action: ActionClearSession, Reply: fmt.Sprintf("session %s deleted (active session cleared)", target)}
-	}
-	return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("session %s deleted", target)}
-}
-
-func (sc *SessionCommands) handleSessionSwitch(ctx context.Context, sessionID string, parts []string) CommandResult {
-	ns := event.NamespaceFromContext(ctx)
-	if len(parts) < 3 {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "error: please specify a session ID to switch to"}
-	}
-	target, err := sc.Sessions.ResolveSessionID(ctx, ns, parts[2])
-	if err != nil {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: err.Error()}
-	}
-	session, ok, err := sc.Sessions.Get(ctx, ns, target)
-	if err != nil {
-		return CommandResult{Handled: true, Error: err}
-	}
-	if !ok {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: fmt.Sprintf("session not found: %s", parts[2])}
-	}
-	if err != nil {
-		return CommandResult{Handled: true, Error: err}
-	}
-	return CommandResult{Handled: true, Action: ActionSessionSwitch, Reply: "switched to session: " + target, Session: session}
-}
-
-func (sc *SessionCommands) handleSessionCreate(ctx context.Context, sessionID string, _ []string) CommandResult {
-	ns := event.NamespaceFromContext(ctx)
-	session, err := sc.Sessions.GetOrCreate(ctx, ns, "")
-	if err != nil {
-		return CommandResult{Handled: true, Error: err}
-	}
-	inheritCWD(ctx, sc.Sessions, ns, sessionID, session)
-	return CommandResult{Handled: true, Action: ActionSessionCreate, Reply: "created and switched to session: " + session.SessionID(), Session: session}
-}
-
-func (sc *SessionCommands) handleSessionRename(ctx context.Context, sessionID string, parts []string) CommandResult {
-	ns := event.NamespaceFromContext(ctx)
-	if len(parts) < 3 {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "error: please specify a name for the session"}
-	}
-	name := strings.Join(parts[2:], " ")
-	name = strings.Trim(name, `"'`)
-	if name == "" {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "error: name cannot be empty"}
-	}
-	session, err := sc.Sessions.GetOrCreate(ctx, ns, sessionID)
-	if err != nil {
-		return CommandResult{Handled: true, Error: err}
-	}
-	session.SetSessionName(name)
-	if err := sc.Sessions.Save(ctx, ns, session); err != nil {
-		return CommandResult{Handled: true, Error: err}
-	}
-	return CommandResult{Handled: true, Action: ActionReply, Reply: "session renamed to: " + name, Session: session}
-}
-
-func (sc *SessionCommands) handleSessionAutoRename(ctx context.Context, sessionID string, _ []string) CommandResult {
-	if sc.Conv == nil {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "error: no conversation engine available"}
-	}
-	ns := event.NamespaceFromContext(ctx)
-	session, err := sc.Sessions.GetOrCreate(ctx, ns, sessionID)
-	if err != nil {
-		return CommandResult{Handled: true, Error: err}
-	}
-	name, renameErr := sc.Conv.AutoRename(ctx, session)
-	if renameErr != nil {
-		return CommandResult{Handled: true, Action: ActionReply, Reply: "session auto-rename failed: " + renameErr.Error(), Session: session}
-	}
-	return CommandResult{Handled: true, Action: ActionReply, Reply: "session renamed to: " + name, Session: session}
 }

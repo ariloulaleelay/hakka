@@ -18,12 +18,10 @@ end
 --- @param on_done fun(err: string|nil, resp: table|nil)
 local function send_init(on_done)
   local addr = config.values.addr
-  local payload = {
-    type = "init",
-    cwd = vim.fn.getcwd(),
-    start = true,
-  }
-  client.send(addr, payload, function(err, resp)
+
+  -- Use the "start" JSON command which creates a new session with all
+  -- tools enabled and returns structured data — no LLM turn is triggered.
+  client.execute(addr, nil, "start", {}, function(err, resp)
     if err then
       ui.append_error("init: " .. err)
       if on_done then on_done(err, nil) end
@@ -34,13 +32,32 @@ local function send_init(on_done)
       if on_done then on_done(resp.error, nil) end
       return
     end
-    if resp.session_id and resp.session_id ~= "" then
+
+    -- Handle command_result from the "start" command
+    if resp.event == "command_result" and resp.data and resp.data.session then
+      session_id = resp.data.session.id
+      ui.set_session_id(session_id)
+      if resp.data.session.model then
+        ui.set_model(resp.data.session.model)
+      end
+    elseif resp.event == "session_create" and resp.data and resp.data.session then
+      -- Fallback: also handle legacy session_create event
+      session_id = resp.data.session.id
+      ui.set_session_id(session_id)
+      if resp.data.session.model then
+        ui.set_model(resp.data.session.model)
+      end
+    elseif resp.session_id then
       session_id = resp.session_id
       ui.set_session_id(session_id)
     end
-    if resp.data and resp.data.model then
-      ui.set_model(resp.data.model)
+
+    -- Set CWD using the cwd_set command
+    local cwd = vim.fn.getcwd()
+    if cwd and cwd ~= "" then
+      client.execute(addr, session_id, "cwd_set", { cwd = cwd }, function() end)
     end
+
     -- Fetch session list on connect (silently)
     client.execute(addr, session_id, "session_list", {}, function(exec_err, exec_resp)
       if exec_err or not exec_resp then
@@ -52,6 +69,7 @@ local function send_init(on_done)
         -- No UI output — this is a background refresh
       end
     end)
+
     if on_done then on_done(nil, resp) end
   end)
 end
@@ -73,20 +91,45 @@ local function parse_slash_command(text)
   -- Strip @bot_username suffix
   cmd = cmd:gsub("@.*$", "")
 
+  -- Normalize combined slash commands like /session_list → /session list
+  -- This handles the common pattern of typing slash commands without a space.
+  local known_prefixes = { "/session", "/model", "/tool", "/models" }
+  for _, prefix in ipairs(known_prefixes) do
+    if cmd:match("^" .. prefix .. "_") then
+      local suffix = cmd:sub(#prefix + 2) -- after prefix and underscore
+      -- Rebuild parts: prefix, suffix, then any remaining original arguments
+      local new_parts = { prefix, suffix }
+      for i = 2, #parts do
+        table.insert(new_parts, parts[i])
+      end
+      parts = new_parts
+      cmd = prefix
+      break
+    end
+  end
+
   -- /help
   if cmd == "/help" then
     return { cmd = "help", params = {} }
   end
 
-  -- /continue — NOT intercepted as JSON command, must go through
-  -- the LLM path (sends as regular input so server invokes the engine)
+  -- /continue — JSON command, server continues the LLM turn
   if cmd == "/continue" then
-    return nil
+    return { cmd = "continue", params = {} }
   end
 
   -- /start
   if cmd == "/start" then
     return { cmd = "start", params = {} }
+  end
+
+  -- /cwd_set <path>
+  if cmd == "/cwd_set" then
+    local path = table.concat(parts, " ", 2)
+    if path and path ~= "" then
+      return { cmd = "cwd_set", params = { cwd = path } }
+    end
+    return nil
   end
 
   -- /compact [n]
@@ -109,9 +152,9 @@ local function parse_slash_command(text)
     elseif sub == "delete" then
       local target = parts[3] or ""
       return { cmd = "session_delete", params = { id = target } }
-    elseif sub == "switch" then
+    elseif sub == "get" then
       local target = parts[3] or ""
-      return { cmd = "session_switch", params = { id = target } }
+      return { cmd = "get_session", params = { id = target } }
     elseif sub == "rename" then
       -- Join remaining parts as the name
       local name_parts = {}
@@ -134,34 +177,34 @@ local function parse_slash_command(text)
       return { cmd = "model_list", params = {} }
     elseif sub == "show" then
       return { cmd = "session_info", params = {} } -- shows session info with model
-    elseif sub == "switch" then
+    elseif sub == "switch" or sub == "get" then
       local name = parts[3]
       if name then
         return { cmd = "model_switch", params = { name = name } }
       end
     end
     -- /model alone or with unknown sub
-    if sub and sub ~= "list" and sub ~= "show" and sub ~= "switch" then
+    if sub and sub ~= "list" and sub ~= "show" and sub ~= "get" then
       -- treat as /model <name> (short form)
       return { cmd = "model_switch", params = { name = sub } }
     end
     return { cmd = "session_info", params = {} }
   end
 
-  -- /tool list | enable | disable
+  -- /tool list | allow | deny
   if cmd == "/tool" then
     local sub = parts[2]
     if sub == "list" then
       return { cmd = "tool_list", params = {} }
-    elseif sub == "enable" then
+    elseif sub == "enable" or sub == "allow" then
       local name = parts[3]
       if name then
-        return { cmd = "tool_enable", params = { name = name } }
+        return { cmd = "tool_allow", params = { name = name } }
       end
-    elseif sub == "disable" then
+    elseif sub == "disable" or sub == "deny" then
       local name = parts[3]
       if name then
-        return { cmd = "tool_disable", params = { name = name } }
+        return { cmd = "tool_deny", params = { name = name } }
       end
     end
     return nil
@@ -182,7 +225,7 @@ local function handle_command_result(frame)
       ui.set_session_id(session_id)
       ui.clear()
     end
-  elseif cmd == "session_switch" then
+  elseif cmd == "get_session" then
     if data.session then
       session_id = data.session.id
       session_name = data.session.name
@@ -204,6 +247,9 @@ local function handle_command_result(frame)
       session_name = nil
       ui.set_session_id(nil)
       ui.clear()
+      ui.append_delta("Session " .. (data.deleted or "?") .. " deleted (active session cleared)")
+    elseif data.deleted then
+      ui.append_delta("Session " .. data.deleted .. " deleted")
     end
   elseif cmd == "session_info" then
     if data.session then
@@ -233,14 +279,6 @@ local function handle_command_result(frame)
       session_name = data.session.name
       ui.set_session_id(data.session.id)
       ui.append_delta("Session renamed to: " .. data.session.name)
-    end
-  elseif cmd == "session_delete" then
-    if data.deleted then
-      if data.active_cleared then
-        ui.append_delta("Session " .. data.deleted .. " deleted (active session cleared)")
-      else
-        ui.append_delta("Session " .. data.deleted .. " deleted")
-      end
     end
   elseif cmd == "session_list" then
     if data.sessions and #data.sessions > 0 then
@@ -281,13 +319,13 @@ local function handle_command_result(frame)
       end
       ui.append_delta(table.concat(lines, "\n"))
     end
-  elseif cmd == "tool_enable" then
-    if data.enabled then
-      ui.append_delta("enabled: " .. table.concat(data.enabled, ", "))
+  elseif cmd == "tool_allow" then
+    if data.allowed then
+      ui.append_delta("allowed: " .. table.concat(data.allowed, ", "))
     end
-  elseif cmd == "tool_disable" then
-    if data.disabled then
-      ui.append_delta("disabled: " .. table.concat(data.disabled, ", "))
+  elseif cmd == "tool_deny" then
+    if data.denied then
+      ui.append_delta("denied: " .. table.concat(data.denied, ", "))
     end
   elseif cmd == "help" then
     if data.commands then
@@ -341,9 +379,9 @@ local function send(text)
         -- If the command produced no output, just end stream
         -- (session_create/switch commands don't produce text output)
         ui.end_assistant_stream()
-      elseif resp.event == "session_switch" or resp.event == "session_create" then
+      elseif resp.event == "get_session" or resp.event == "session_create" then
         -- Backward compat: old-style events from text command path
-        if resp.event == "session_switch" and resp.data and resp.data.messages then
+        if resp.event == "get_session" and resp.data and resp.data.messages then
           ui.clear()
           ui.load_history(resp.data.messages)
         elseif resp.event == "session_create" then
@@ -364,21 +402,19 @@ local function send(text)
 
     client.execute(config.values.addr, session_id, json_cmd.cmd, json_cmd.params, on_command_response)
     return
+
+  -- Any text starting with / but not recognized — intercept locally, don't send to LLM
+  elseif vim.trim(text):match("^/") then
+    ui.append_user(text)
+    ui.begin_assistant_stream()
+    ui.append_delta("Unknown command: " .. vim.trim(text):match("^/(%S+)"))
+    pending = false
+    ui.end_assistant_stream()
+    return
   end
 
   -- Regular chat message — send as input
   pending = true
-
-  -- Client-side intercept to clear active session if deleted
-  local trimmed = vim.trim(text)
-  if trimmed:match("^/session%s+delete%s*(.*)$") then
-    local target = trimmed:match("^/session%s+delete%s*(.*)$")
-    if target == session_id or target == "" or target == "this" then
-      session_id = nil
-      session_name = nil
-      ui.set_session_id(nil)
-    end
-  end
 
   ui.append_user(text)
   ui.begin_assistant_stream()
@@ -394,7 +430,7 @@ local function send(text)
       return
     end
 
-    if frame.event == "session_switch" or frame.event == "session_create" then
+    if frame.event == "get_session" or frame.event == "session_create" then
       ui.clear()
       if frame.data and frame.data.messages then
         ui.load_history(frame.data.messages)
@@ -494,12 +530,19 @@ function M.send_oneshot(text)
         if text_out ~= "" then
           vim.notify(text_out:gsub("%s+$", ""), vim.log.levels.INFO)
         end
+      elseif resp.output and resp.output ~= "" then
+        vim.notify(resp.output, vim.log.levels.INFO)
       end
       if resp.session_id then
         session_id = resp.session_id
         ui.set_session_id(session_id)
       end
     end)
+    return
+
+  -- Any text starting with / but not recognized — intercept locally, don't send to LLM
+  elseif vim.trim(text):match("^/") then
+    vim.notify("hakka: unknown command: " .. vim.trim(text):match("^/(%S+)"), vim.log.levels.WARN)
     return
   end
 

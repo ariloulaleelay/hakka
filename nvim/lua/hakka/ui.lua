@@ -63,9 +63,19 @@ local function append(buf, text)
 end
 
 --- Reset the buffer to show a fresh prompt after an assistant response.
+--- Idempotent: if the buffer already ends with "# Me" + "", does nothing.
 local function reset_prompt(buf)
   vim.api.nvim_buf_set_option(buf, "modifiable", true)
   local existing = lines(buf)
+  -- Idempotency: if buffer already ends with "# Me" followed by a blank line,
+  -- just update prompt_start and cursor without duplicating the prompt.
+  if #existing >= 2 and existing[#existing - 1] == "# Me" and existing[#existing] == "" then
+    state.prompt_start = #existing
+    if state.win and vim.api.nvim_win_is_valid(state.win) then
+      vim.api.nvim_win_set_cursor(state.win, { state.prompt_start, 0 })
+    end
+    return
+  end
   if #existing > 0 and existing[#existing] ~= "" then
     table.insert(existing, "")
   end
@@ -73,7 +83,9 @@ local function reset_prompt(buf)
   table.insert(existing, "")
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, existing)
   state.prompt_start = #existing
-  vim.api.nvim_win_set_cursor(state.win, { state.prompt_start, 0 })
+  if state.win and vim.api.nvim_win_is_valid(state.win) then
+    vim.api.nvim_win_set_cursor(state.win, { state.prompt_start, 0 })
+  end
 end
 
 --- Read the prompt text from the buffer (lines after prompt_start).

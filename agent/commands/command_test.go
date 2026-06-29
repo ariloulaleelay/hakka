@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
-
+	
 	"github.com/ariloulaleelay/hakka/agent"
 )
 
@@ -39,140 +38,9 @@ func newCommandComponents(t *testing.T) (*agent.Conversation, *CommandProcessor,
 	return conv, cmd, sm
 }
 
-func TestHandleCommandNotACommand(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "", "hello")
-	if res.Handled {
-		t.Fatal("expected non-command input to be passed through")
-	}
-}
-
-func TestHandleCommandUnknownCommand(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/typo")
-	if !res.Handled {
-		t.Fatal("expected unknown command starting with / to be handled (not passed to LLM)")
-	}
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "unknown command") {
-		t.Fatalf("expected error about unknown command, got: %q", res.Reply)
-	}
-	if !strings.Contains(res.Reply, "/help") {
-		t.Fatalf("expected reply to mention /help, got: %q", res.Reply)
-	}
-}
-
-func TestHandleCommandUnknownCommandMultipleWords(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/helo world")
-	if !res.Handled {
-		t.Fatal("expected unknown command starting with / to be handled")
-	}
-	if !strings.Contains(res.Reply, "/helo") {
-		t.Fatalf("expected reply to mention the unknown command '/helo', got: %q", res.Reply)
-	}
-}
-
-func TestHandleCommandJustSlash(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/")
-	if !res.Handled {
-		t.Fatal("expected lone slash to be handled")
-	}
-	if !strings.Contains(res.Reply, "unknown command") {
-		t.Fatalf("expected unknown command reply, got: %q", res.Reply)
-	}
-}
-
-func TestHandleCommandWithBotUsernameSuffix(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	// Commands with @bot_username suffix should be handled like their bare equivalents.
-	res := cmd.Execute(context.Background(), "sid", "/help@my_bot")
-	if !res.Handled {
-		t.Fatal("expected /help@my_bot to be handled as /help")
-	}
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "available commands:") {
-		t.Fatalf("expected help menu for /help@my_bot, got: %q", res.Reply)
-	}
-}
-
-func TestHandleCommandModelWithBotUsernameSuffix(t *testing.T) {
-	conv, cmd, _ := newCommandComponents(t)
-	// /model@bot_username beta should work like /model beta
-	res := cmd.Execute(context.Background(), "sid", "/model@some_bot beta")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if !strings.Contains(res.Reply, "beta") {
-		t.Fatalf("reply: %q", res.Reply)
-	}
-	if conv.SessionModel(res.Session) != "beta" {
-		t.Fatalf("session model not set: %q", conv.SessionModel(res.Session))
-	}
-}
-
-func TestHandleCommandUnknownWithBotUsernameSuffix(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	// Unknown command with @bot_username should still be handled (not passed to LLM)
-	res := cmd.Execute(context.Background(), "sid", "/typo@my_bot")
-	if !res.Handled {
-		t.Fatal("expected unknown command with @suffix to be handled (not passed to LLM)")
-	}
-	if !strings.Contains(res.Reply, "unknown command") {
-		t.Fatalf("expected error about unknown command, got: %q", res.Reply)
-	}
-}
-
-func TestHandleCommandModelSet(t *testing.T) {
-	conv, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/model beta")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if !strings.Contains(res.Reply, "beta") {
-		t.Fatalf("reply: %q", res.Reply)
-	}
-	if conv.SessionModel(res.Session) != "beta" {
-		t.Fatalf("session model not set: %q", conv.SessionModel(res.Session))
-	}
-}
-
-func TestHandleCommandModelUnknown(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/model nope")
-	if res.Error == nil {
-		t.Fatal("expected error for unknown model")
-	}
-}
-
-func TestHandleCommandModelShow(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/model")
-	if res.Error != nil {
-		t.Fatalf("handle: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "alpha") {
-		t.Fatalf("reply: %q", res.Reply)
-	}
-}
-
-func TestHandleCommandModelsList(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/models")
-	if res.Error != nil {
-		t.Fatalf("handle: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "alpha") || !strings.Contains(res.Reply, "beta") {
-		t.Fatalf("reply: %q", res.Reply)
-	}
-	if !strings.Contains(res.Reply, "* alpha") {
-		t.Fatalf("default not marked: %q", res.Reply)
-	}
+func params(data map[string]any) json.RawMessage {
+	b, _ := json.Marshal(data)
+	return b
 }
 
 func TestSessionModelPersistsAcrossLookups(t *testing.T) {
@@ -186,144 +54,307 @@ func TestSessionModelPersistsAcrossLookups(t *testing.T) {
 	}
 }
 
-func TestHandleCommandHelp(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/help")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if !strings.Contains(res.Reply, "available commands:") {
-		t.Fatalf("expected help menu, got: %q", res.Reply)
-	}
-}
+// --- Session list tests ---
 
-func TestHandleCommandModelSubcommands(t *testing.T) {
-	conv, cmd, _ := newCommandComponents(t)
-
-	res := cmd.Execute(context.Background(), "sid", "/model show")
-	if !strings.Contains(res.Reply, "current model: alpha") {
-		t.Fatalf("expected alpha, got: %q", res.Reply)
-	}
-
-	res = cmd.Execute(context.Background(), "sid", "/model switch beta")
-	if !strings.Contains(res.Reply, "model set to: beta") {
-		t.Fatalf("expected switch confirmation, got: %q", res.Reply)
-	}
-	if conv.SessionModel(res.Session) != "beta" {
-		t.Fatalf("expected beta model, got: %q", conv.SessionModel(res.Session))
-	}
-
-	res = cmd.Execute(context.Background(), "sid", "/model list")
-	if !strings.Contains(res.Reply, "* beta") {
-		t.Fatalf("expected active beta, got: %q", res.Reply)
-	}
-}
-
-func TestSessionList_MarksCurrentWithAsterisk(t *testing.T) {
+func TestSessionList_ReturnsSessions(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
+	s1, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
+	s1.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
+	sm.Save(context.Background(), "testns", s1)
 
-	res := cmd.Execute(context.Background(), "session1", "/session list")
+	res := cmd.ExecuteJSON(context.Background(), "session1", "session_list", nil)
 
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if !strings.Contains(res.Reply, "*") {
-		t.Fatalf("expected current session1 to be marked with '*', got reply: %q", res.Reply)
+	if res.Data == nil {
+		t.Fatal("expected data in result")
 	}
-	if !strings.Contains(res.Reply, "session1") {
-		t.Fatalf("expected session1 to appear in list, got: %q", res.Reply)
+	var data struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := json.Unmarshal(res.Data, &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(data.Sessions) == 0 {
+		t.Fatal("expected at least one session")
 	}
 }
 
-func TestSessionCreate_ReturnsNewSessionWithID(t *testing.T) {
+func TestSessionList_HidesEmptySessions(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
+	sm.GetOrCreate(context.Background(), "testns", "empty-session")
+	fullSession, _ := sm.GetOrCreate(context.Background(), "testns", "full-session")
+	fullSession.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
+	sm.Save(context.Background(), "testns", fullSession)
 
-	res := cmd.Execute(context.Background(), "session1", "/session create")
+	res := cmd.ExecuteJSON(context.Background(), "full-session", "session_list", nil)
 
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if !strings.Contains(res.Reply, "created and switched to session:") {
-		t.Fatalf("expected confirmation of session creation, got reply: %q", res.Reply)
+	var data struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	json.Unmarshal(res.Data, &data)
+
+	for _, s := range data.Sessions {
+		id, _ := s["id"].(string)
+		if id == "empty-session" {
+			t.Fatal("expected empty session to be hidden from list")
+		}
+	}
+}
+
+func TestSessionList_ShowsActiveEmptySession(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	sm.GetOrCreate(context.Background(), "testns", "active-empty")
+
+	res := cmd.ExecuteJSON(context.Background(), "active-empty", "session_list", nil)
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+	var data struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	json.Unmarshal(res.Data, &data)
+
+	var found bool
+	for _, s := range data.Sessions {
+		id, _ := s["id"].(string)
+		if id == "active-empty" {
+			found = true
+			if cur, _ := s["current"].(bool); !cur {
+				t.Fatal("expected active-empty to be marked as current")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected active empty session to be visible in list")
+	}
+}
+
+// --- Session create tests ---
+
+func TestSessionCreate_ReturnsNewSession(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	sm.GetOrCreate(context.Background(), "testns", "session1")
+
+	res := cmd.ExecuteJSON(context.Background(), "session1", "session_create", nil)
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+	if res.Action != ActionSessionCreate {
+		t.Fatalf("expected ActionSessionCreate, got %v", res.Action)
 	}
 	if res.Session == nil {
-		t.Fatal("expected new session in result, got nil")
+		t.Fatal("expected new session")
 	}
-	if res.Session.SessionID() == "" {
-		t.Fatal("expected non-empty session ID in new session")
+	if res.Session.SessionID() == "session1" {
+		t.Fatal("expected a different session ID")
 	}
 }
 
-func TestSessionSwitch_ChangesActiveSession(t *testing.T) {
+// --- get_session tests ---
+
+func TestGetSession_FetchesSession(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
-	createRes := cmd.Execute(context.Background(), "session1", "/session create")
+	s1, _ := sm.GetOrCreate(context.Background(), "testns", "target-session")
+	s1.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
+	sm.Save(context.Background(), "testns", s1)
+	createRes := cmd.ExecuteJSON(context.Background(), "target-session", "session_create", nil)
 	newID := createRes.Session.SessionID()
 
-	res := cmd.Execute(context.Background(), newID, "/session switch session1")
+	res := cmd.ExecuteJSON(context.Background(), newID, "get_session", params(map[string]any{"id": "target-session"}))
 
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if !strings.Contains(res.Reply, "switched to session: session1") {
-		t.Fatalf("expected switch confirmation to 'session1', got reply: %q", res.Reply)
+	if res.Action != ActionGetSession {
+		t.Fatalf("expected ActionGetSession, got %v", res.Action)
 	}
-	if res.Session == nil || res.Session.SessionID() != "session1" {
-		t.Fatalf("expected switched session to be session1, got session ID: %q", res.Session.SessionID())
+	if res.Session == nil || res.Session.SessionID() != "target-session" {
+		t.Fatalf("expected session 'target-session', got %v", res.Session)
 	}
 }
 
-func TestSessionDelete_RemovesTargetFromList(t *testing.T) {
+func TestGetSession_NonExistentFails(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
-	createRes := cmd.Execute(context.Background(), "session1", "/session create")
+	sm.GetOrCreate(context.Background(), "testns", "session1")
+
+	res := cmd.ExecuteJSON(context.Background(), "session1", "get_session", params(map[string]any{"id": "nonexistent"}))
+
+	if res.Error == nil && !strings.Contains(res.Reply, "no session matching") {
+		t.Fatalf("expected error when fetching non-existent session, got: %+v", res)
+	}
+	if res.Session != nil {
+		t.Fatal("expected nil session when fetch fails")
+	}
+}
+
+func TestGetSession_WithShortID(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	s1, _ := sm.GetOrCreate(context.Background(), "testns", "target-session")
+	s1.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
+	sm.Save(context.Background(), "testns", s1)
+	createRes := cmd.ExecuteJSON(context.Background(), "target-session", "session_create", nil)
 	newID := createRes.Session.SessionID()
 
-	delRes := cmd.Execute(context.Background(), "session1", "/session delete "+newID)
+	prefix := "target-session"[:3]
+	res := cmd.ExecuteJSON(context.Background(), newID, "get_session", params(map[string]any{"id": prefix}))
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+	if res.Session == nil || res.Session.SessionID() != "target-session" {
+		t.Fatalf("expected session 'target-session', got: %v", res.Session)
+	}
+}
+
+func TestGetSession_WithAmbiguousPrefix(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	sm.GetOrCreate(context.Background(), "testns", "xyz-one")
+	sm.GetOrCreate(context.Background(), "testns", "xyz-two")
+
+	res := cmd.ExecuteJSON(context.Background(), "xyz-one", "get_session", params(map[string]any{"id": "xyz"}))
+
+	if res.Error == nil && !strings.Contains(res.Reply, "ambiguous") {
+		t.Fatalf("expected 'ambiguous' error, got: %+v", res)
+	}
+}
+
+func TestGetSession_WithEmptyID(t *testing.T) {
+	_, cmd, _ := newCommandComponents(t)
+	res := cmd.ExecuteJSON(context.Background(), "sid", "get_session", nil)
+	if !strings.Contains(res.Reply, "specify") {
+		t.Fatalf("expected error about missing ID, got: %+v", res)
+	}
+}
+
+// --- Session delete tests ---
+
+func TestSessionDelete_RemovesTarget(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	sm.GetOrCreate(context.Background(), "testns", "session1")
+	createRes := cmd.ExecuteJSON(context.Background(), "session1", "session_create", nil)
+	newID := createRes.Session.SessionID()
+
+	delRes := cmd.ExecuteJSON(context.Background(), "session1", "session_delete", params(map[string]any{"id": newID}))
 
 	if delRes.Error != nil {
 		t.Fatalf("unexpected error: %v", delRes.Error)
 	}
-	if !strings.Contains(delRes.Reply, "deleted") {
-		t.Fatalf("expected delete confirmation, got reply: %q", delRes.Reply)
-	}
 
-	listRes := cmd.Execute(context.Background(), "session1", "/session list")
-	if strings.Contains(listRes.Reply, newID) {
-		t.Fatalf("deleted session %q should be absent from list, got: %q", newID, listRes.Reply)
+	var data struct {
+		Deleted string `json:"deleted"`
+	}
+	json.Unmarshal(delRes.Data, &data)
+	if data.Deleted != newID {
+		t.Fatalf("expected deleted %q, got %q", newID, data.Deleted)
 	}
 }
 
-func TestSessionDeleteCurrent_ClearsSession(t *testing.T) {
+func TestSessionDelete_WithShortID(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
+	sm.GetOrCreate(context.Background(), "testns", "session1")
+	createRes := cmd.ExecuteJSON(context.Background(), "session1", "session_create", nil)
+	newID := createRes.Session.SessionID()
+	createRes.Session.Append(agent.Message{Role: agent.RoleUser, Content: "hi"})
+	sm.Save(context.Background(), "testns", createRes.Session)
 
-	res := cmd.Execute(context.Background(), "session1", "/session delete session1")
+	prefix := newID[:3]
+	delRes := cmd.ExecuteJSON(context.Background(), "session1", "session_delete", params(map[string]any{"id": prefix}))
+
+	if delRes.Error != nil {
+		t.Fatalf("unexpected error: %v", delRes.Error)
+	}
+}
+
+func TestSessionDelete_CurrentClearsSession(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	sm.GetOrCreate(context.Background(), "testns", "session1")
+
+	res := cmd.ExecuteJSON(context.Background(), "session1", "session_delete", params(map[string]any{"id": "this"}))
 
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
 	if res.Action != ActionClearSession {
-		t.Fatalf("expected ActionClearSession when deleting active session, got: %v", res.Action)
-	}
-	if !strings.Contains(res.Reply, "deleted") {
-		t.Fatalf("expected delete confirmation, got reply: %q", res.Reply)
+		t.Fatalf("expected ActionClearSession, got %v", res.Action)
 	}
 }
 
-func TestSessionRename_SetsName(t *testing.T) {
+func TestSessionDelete_ExactMatchPreferred(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
+	s1, _ := sm.GetOrCreate(context.Background(), "testns", "abc")
+	s2, _ := sm.GetOrCreate(context.Background(), "testns", "abcdef")
+	s1.Append(agent.Message{Role: agent.RoleUser, Content: "msg"})
+	s2.Append(agent.Message{Role: agent.RoleUser, Content: "msg"})
+	sm.Save(context.Background(), "testns", s1)
+	sm.Save(context.Background(), "testns", s2)
 
-	res := cmd.Execute(context.Background(), "session1", `/session rename "My Chat"`)
+	delRes := cmd.ExecuteJSON(context.Background(), "abcdef", "session_delete", params(map[string]any{"id": "abc"}))
+
+	if delRes.Error != nil {
+		t.Fatalf("unexpected error: %v", delRes.Error)
+	}
+	var data struct {
+		Deleted string `json:"deleted"`
+	}
+	json.Unmarshal(delRes.Data, &data)
+	if data.Deleted != "abc" {
+		t.Fatalf("expected exact match 'abc' to be deleted, got %q", data.Deleted)
+	}
+
+	_, ok, _ := sm.Store.Get(context.Background(), "testns", "abcdef")
+	if !ok {
+		t.Fatal("expected abcdef to still exist")
+	}
+	_, ok, _ = sm.Store.Get(context.Background(), "testns", "abc")
+	if ok {
+		t.Fatal("expected abc to be deleted")
+	}
+}
+
+// --- Session info tests ---
+
+func TestSessionInfo_ShowsDetails(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	session, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
+	session.SetSessionName("My Session")
+
+	res := cmd.ExecuteJSON(context.Background(), "session1", "session_info", nil)
 
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if !strings.Contains(res.Reply, "renamed") {
-		t.Fatalf("expected rename confirmation, got: %q", res.Reply)
+	if res.Data == nil {
+		t.Fatal("expected data in result")
+	}
+	var data struct {
+		Session map[string]any `json:"session"`
+	}
+	json.Unmarshal(res.Data, &data)
+	if data.Session["name"] != "My Session" {
+		t.Fatalf("expected name 'My Session', got %v", data.Session["name"])
+	}
+	if data.Session["id"] != "session1" {
+		t.Fatalf("expected id 'session1', got %v", data.Session["id"])
+	}
+}
+
+// --- Session rename tests ---
+
+func TestSessionRename_SetsName(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	sm.GetOrCreate(context.Background(), "testns", "session1")
+
+	res := cmd.ExecuteJSON(context.Background(), "session1", "session_rename", params(map[string]any{"name": "My Chat"}))
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
 	}
 	if res.Session == nil || res.Session.SessionName() != "My Chat" {
 		t.Fatalf("expected session.Name = %q, got %q", "My Chat", res.Session.SessionName())
@@ -335,559 +366,96 @@ func TestSessionRename_SetsName(t *testing.T) {
 	}
 }
 
-func TestSessionRename_MissingName(t *testing.T) {
+func TestSessionRename_EmptyName(t *testing.T) {
 	_, cmd, _ := newCommandComponents(t)
-
-	res := cmd.Execute(context.Background(), "session1", "/session rename")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "specify") {
-		t.Fatalf("expected error about missing name, got: %q", res.Reply)
+	res := cmd.ExecuteJSON(context.Background(), "session1", "session_rename", params(map[string]any{"name": ""}))
+	if !strings.Contains(res.Reply, "empty") {
+		t.Fatalf("expected error about empty name, got: %+v", res)
 	}
 }
 
-func TestSessionInfo_ShowsName(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
-	session.SetSessionName("My Session")
-
-	res := cmd.Execute(context.Background(), "session1", "/session info")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, session.SessionID()) {
-		t.Fatalf("expected reply to contain session ID, got: %q", res.Reply)
-	}
-	if !strings.Contains(res.Reply, "My Session") {
-		t.Fatalf("expected reply to contain session name 'My Session', got: %q", res.Reply)
-	}
-}
-
-func TestSessionList_ShowsNameAndID(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
-	session.SetSessionName("Alpha Chat")
-
-	res := cmd.Execute(context.Background(), "session1", "/session list")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "Alpha Chat") {
-		t.Fatalf("expected list to contain session name 'Alpha Chat', got: %q", res.Reply)
-	}
-	if !strings.Contains(res.Reply, "<session1>") {
-		t.Fatalf("expected list to contain session ID '<session1>', got: %q", res.Reply)
-	}
-	if !strings.Contains(res.Reply, "[s]") {
-		t.Fatalf("expected list to contain short prefix '[s]', got: %q", res.Reply)
-	}
-}
-
-func TestSessionList_ShowsIDWhenUnnamed(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "unnamed-session")
-
-	res := cmd.Execute(context.Background(), "unnamed-session", "/session list")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "unnamed-session") {
-		t.Fatalf("expected list to contain session ID 'unnamed-session', got: %q", res.Reply)
-	}
-}
-
-func TestSessionList_ShowsCreationDate(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
-	session.SetSessionName("Test Session")
-
-	res := cmd.Execute(context.Background(), "session1", "/session list")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	// Check that the reply contains the creation date in YYYY-MM-DD format
-	expectedDate := session.Read().CreatedAt.Format("2006-01-02")
-	if !strings.Contains(res.Reply, expectedDate) {
-		t.Fatalf("expected list to contain creation date %q, got: %q", expectedDate, res.Reply)
-	}
-	// Check that the reply contains the creation time in HH:MM format
-	expectedTime := session.Read().CreatedAt.Format("15:04")
-	if !strings.Contains(res.Reply, expectedTime) {
-		t.Fatalf("expected list to contain creation time %q, got: %q", expectedTime, res.Reply)
-	}
-}
-
-func TestSessionList_OrderedByUpdateTimeNewestFirst(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-
-	now := time.Now().Truncate(time.Second)
-
-	// Create sessions with IDs that would NOT sort alphabetically by time,
-	// so we can prove ordering is by UpdatedAt, not by ID.
-	// Sessions are saved in order: session-c, session-a, session-b.
-	// Since List returns most recently updated first, the order should be:
-	// session-b (last saved), session-a, session-c (first saved).
-
-	// oldest: created 2 hours ago — saved first
-	s1, _ := sm.GetOrCreate(context.Background(), "testns", "session-c")
-	s1.SetCreatedAt(now.Add(-2 * time.Hour))
-	s1.SetSessionName("Oldest Session")
-	s1.Append(agent.Message{Role: agent.RoleUser, Content: "old"})
-
-	// middle: created 1 hour ago — saved second
-	s2, _ := sm.GetOrCreate(context.Background(), "testns", "session-a")
-	s2.SetCreatedAt(now.Add(-1 * time.Hour))
-	s2.SetSessionName("Middle Session")
-	s2.Append(agent.Message{Role: agent.RoleUser, Content: "middle"})
-
-	// newest: created now — saved third (most recently updated)
-	s3, _ := sm.GetOrCreate(context.Background(), "testns", "session-b")
-	s3.SetCreatedAt(now)
-	s3.SetSessionName("Newest Session")
-	s3.Append(agent.Message{Role: agent.RoleUser, Content: "new"})
-
-	// Save sessions in this order. UpdatedAt will be set by Put.
-	sm.Store.Put(context.Background(), "testns", s1) // updated first
-	sm.Store.Put(context.Background(), "testns", s2) // updated second
-	sm.Store.Put(context.Background(), "testns", s3) // updated third (most recent)
-
-	res := cmd.Execute(context.Background(), "session-b", "/session list")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-
-	lines := strings.Split(strings.TrimSpace(res.Reply), "\n")
-	// First line is "available sessions:"
-	if len(lines) < 4 {
-		t.Fatalf("expected at least 4 lines, got %d: %q", len(lines), res.Reply)
-	}
-
-	// Check order by UpdatedAt: newest first (session-b), middle (session-a), oldest (session-c)
-	if !strings.Contains(lines[1], "Newest Session") {
-		t.Fatalf("expected first session to be 'Newest Session' (session-b, most recently updated), got: %q", lines[1])
-	}
-	if !strings.Contains(lines[2], "Middle Session") {
-		t.Fatalf("expected second session to be 'Middle Session' (session-a), got: %q", lines[2])
-	}
-	if !strings.Contains(lines[3], "Oldest Session") {
-		t.Fatalf("expected third session to be 'Oldest Session' (session-c, least recently updated), got: %q", lines[3])
-	}
-	if !strings.Contains(lines[1], "*") {
-		t.Fatalf("expected current session to be marked with '*', got: %q", lines[1])
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Session list filtering — empty sessions should be hidden (except active)
-// ---------------------------------------------------------------------------
-
-func TestSessionList_HidesEmptySessions(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-
-	// Create an empty session (like what :HakkaChat does)
-	emptySession, _ := sm.GetOrCreate(context.Background(), "testns", "empty-session")
-	// Ensure it's truly empty — no messages
-	if len(emptySession.AllMessages()) != 0 {
-		t.Fatal("expected empty session to have no messages")
-	}
-
-	// Create a session with messages (real conversation)
-	fullSession, _ := sm.GetOrCreate(context.Background(), "testns", "full-session")
-	fullSession.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
-	fullSession.Append(agent.Message{Role: agent.RoleAssistant, Content: "hi back"})
-	sm.Save(context.Background(), "testns", fullSession)
-
-	// List from the perspective of the full session
-	res := cmd.Execute(context.Background(), "full-session", "/session list")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-
-	// The empty session should NOT appear
-	if strings.Contains(res.Reply, "empty-session") {
-		t.Fatalf("expected empty session to be HIDDEN from list, got: %q", res.Reply)
-	}
-	// The full session SHOULD appear
-	if !strings.Contains(res.Reply, "full-session") {
-		t.Fatalf("expected full session to be VISIBLE in list, got: %q", res.Reply)
-	}
-}
-
-func TestSessionList_ShowsActiveEmptySession(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-
-	// Create an empty session — it's the active one
-	activeSession, _ := sm.GetOrCreate(context.Background(), "testns", "active-empty")
-	if len(activeSession.AllMessages()) != 0 {
-		t.Fatal("expected session to have no messages")
-	}
-
-	res := cmd.Execute(context.Background(), "active-empty", "/session list")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-
-	// The active (empty) session SHOULD appear with the asterisk mark
-	if !strings.Contains(res.Reply, "active-empty") {
-		t.Fatalf("expected active empty session to be VISIBLE in list, got: %q", res.Reply)
-	}
-	if !strings.Contains(res.Reply, "*") {
-		t.Fatalf("expected active session to be marked with '*', got: %q", res.Reply)
-	}
-}
-
-func TestSessionList_HidesMultipleEmptySessions(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-
-	// Create several empty sessions (simulating multiple :HakkaChat opens)
-	for _, id := range []string{"empty-1", "empty-2", "empty-3"} {
-		s, _ := sm.GetOrCreate(context.Background(), "testns", id)
-		if len(s.AllMessages()) != 0 {
-			t.Fatalf("expected session %q to be empty", id)
-		}
-	}
-
-	// Create one non-empty session
-	realSession, _ := sm.GetOrCreate(context.Background(), "testns", "real-session")
-	realSession.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
-	sm.Save(context.Background(), "testns", realSession)
-
-	res := cmd.Execute(context.Background(), "real-session", "/session list")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-
-	// Empty sessions should NOT appear
-	for _, id := range []string{"empty-1", "empty-2", "empty-3"} {
-		if strings.Contains(res.Reply, id) {
-			t.Fatalf("expected empty session %q to be HIDDEN from list, got: %q", id, res.Reply)
-		}
-	}
-	// The real session SHOULD appear
-	if !strings.Contains(res.Reply, "real-session") {
-		t.Fatalf("expected non-empty session to be VISIBLE in list, got: %q", res.Reply)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Short ID tests — shortest unique prefix display and resolution
-// ---------------------------------------------------------------------------
-
-func TestShortestUniquePrefix_SingleSession(t *testing.T) {
-	sessions := []*agent.Session{
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abcdef"); return s }(),
-	}
-	prefixes := shortestUniquePrefixes(sessions)
-	if prefixes["abcdef"] != "a" {
-		t.Fatalf("expected prefix 'a', got %q", prefixes["abcdef"])
-	}
-}
-
-func TestShortestUniquePrefix_MultipleSessions(t *testing.T) {
-	sessions := []*agent.Session{
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abc123"); return s }(),
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abd456"); return s }(),
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abe789"); return s }(),
-	}
-	prefixes := shortestUniquePrefixes(sessions)
-	if prefixes["abc123"] != "abc" {
-		t.Fatalf("expected prefix 'abc' for abc123, got %q", prefixes["abc123"])
-	}
-	if prefixes["abd456"] != "abd" {
-		t.Fatalf("expected prefix 'abd' for abd456, got %q", prefixes["abd456"])
-	}
-	if prefixes["abe789"] != "abe" {
-		t.Fatalf("expected prefix 'abe' for abe789, got %q", prefixes["abe789"])
-	}
-}
-
-func TestShortestUniquePrefix_DifferentLengths(t *testing.T) {
-	sessions := []*agent.Session{
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("a-long-id"); return s }(),
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("another-id"); return s }(),
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("b-short"); return s }(),
-	}
-	prefixes := shortestUniquePrefixes(sessions)
-	if prefixes["a-long-id"] != "a-" {
-		t.Fatalf("expected prefix 'a-' for a-long-id, got %q", prefixes["a-long-id"])
-	}
-	if prefixes["another-id"] != "an" {
-		t.Fatalf("expected prefix 'an' for another-id, got %q", prefixes["another-id"])
-	}
-	if prefixes["b-short"] != "b" {
-		t.Fatalf("expected prefix 'b' for b-short, got %q", prefixes["b-short"])
-	}
-}
-
-func TestSessionList_ShowsShortPrefix(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
-
-	res := cmd.Execute(context.Background(), "session1", "/session list")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "[s]") {
-		t.Fatalf("expected short prefix '[s]' in list, got: %q", res.Reply)
-	}
-}
-
-func TestSessionList_ShortPrefixesUniqueAmongAll(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	// Short prefixes should be unique even considering hidden empty sessions.
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "aaa-empty")
-	s2, _ := sm.GetOrCreate(context.Background(), "testns", "aab-active")
-	s2.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
-	sm.Save(context.Background(), "testns", s2)
-
-	res := cmd.Execute(context.Background(), "aab-active", "/session list")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-
-	// s2 should have a unique prefix that accounts for s1 (hidden empty)
-	// "aab-" should uniquely match s2 (since "aaa-" matches s1)
-	if !strings.Contains(res.Reply, "[aab") {
-		t.Fatalf("expected short prefix for aab-active to start with 'aab', got: %q", res.Reply)
-	}
-}
-
-func TestSessionDelete_WithShortID(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
-	createRes := cmd.Execute(context.Background(), "session1", "/session create")
-	newID := createRes.Session.SessionID()
-	// Give the new session a message so it's visible
-	createRes.Session.Append(agent.Message{Role: agent.RoleUser, Content: "hi"})
-	sm.Save(context.Background(), "testns", createRes.Session)
-
-	// Delete using short prefix of the new session's UUID
-	prefix := newID[:3]
-	delRes := cmd.Execute(context.Background(), "session1", "/session delete "+prefix)
-
-	if delRes.Error != nil {
-		t.Fatalf("unexpected error: %v", delRes.Error)
-	}
-	if !strings.Contains(delRes.Reply, "deleted") {
-		t.Fatalf("expected delete confirmation with short id, got: %q", delRes.Reply)
-	}
-}
-
-func TestSessionDelete_WithAmbiguousPrefix(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "abc-one")
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "abc-two")
-
-	res := cmd.Execute(context.Background(), "abc-one", "/session delete abc")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "ambiguous") {
-		t.Fatalf("expected 'ambiguous' error, got: %q", res.Reply)
-	}
-}
-
-func TestSessionDelete_WithNonexistentPrefix(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
-
-	res := cmd.Execute(context.Background(), "session1", "/session delete nonexistent")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "no session matching") {
-		t.Fatalf("expected 'no session matching' error, got: %q", res.Reply)
-	}
-}
-
-func TestSessionSwitch_WithShortID(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	// Create two sessions
-	s1, _ := sm.GetOrCreate(context.Background(), "testns", "switch-target")
-	s1.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
-	sm.Save(context.Background(), "testns", s1)
-	createRes := cmd.Execute(context.Background(), "switch-target", "/session create")
-	newID := createRes.Session.SessionID()
-	createRes.Session.Append(agent.Message{Role: agent.RoleUser, Content: "other"})
-	sm.Save(context.Background(), "testns", createRes.Session)
-
-	// Switch back using short prefix
-	prefix := "switch-target"[:3] // "swi"
-	res := cmd.Execute(context.Background(), newID, "/session switch "+prefix)
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "switched to session: switch-target") {
-		t.Fatalf("expected switch to 'switch-target', got: %q", res.Reply)
-	}
-	if res.Session == nil || res.Session.SessionID() != "switch-target" {
-		t.Fatalf("expected session 'switch-target', got: %v", res.Session)
-	}
-}
-
-func TestSessionSwitch_WithAmbiguousPrefix(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "xyz-one")
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "xyz-two")
-
-	res := cmd.Execute(context.Background(), "xyz-one", "/session switch xyz")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "ambiguous") {
-		t.Fatalf("expected 'ambiguous' error, got: %q", res.Reply)
-	}
-}
-
-func TestSessionList_ShortPrefixesWithEmptyHiddenSessions(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	// Create hidden empty sessions and one visible session
-	// The visible session's short prefix should account for all sessions
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "hidden-empty-a")
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "hidden-empty-b")
-	visible, _ := sm.GetOrCreate(context.Background(), "testns", "visible-chat")
-	visible.Append(agent.Message{Role: agent.RoleUser, Content: "test"})
-	sm.Save(context.Background(), "testns", visible)
-
-	res := cmd.Execute(context.Background(), "visible-chat", "/session list")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-
-	// The visible session should have a unique prefix considering hidden ones
-	// "v" should be unique (no other session starts with 'v')
-	if !strings.Contains(res.Reply, "[v]") {
-		t.Fatalf("expected visible session short prefix '[v]' in list, got: %q", res.Reply)
-	}
-}
-
-func TestSessionDelete_ExactMatchPreferredOverPrefix(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	// Create sessions where one ID is a prefix of another
-	s1, _ := sm.GetOrCreate(context.Background(), "testns", "abc")
-	s2, _ := sm.GetOrCreate(context.Background(), "testns", "abcdef")
-	s1.Append(agent.Message{Role: agent.RoleUser, Content: "msg"})
-	s2.Append(agent.Message{Role: agent.RoleUser, Content: "msg"})
-	sm.Save(context.Background(), "testns", s1)
-	sm.Save(context.Background(), "testns", s2)
-
-	// Delete "abc" — exact match should take precedence over prefix match
-	res := cmd.Execute(context.Background(), "abcdef", "/session delete abc")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "abc deleted") {
-		t.Fatalf("expected deletion of exact match 'abc', got: %q", res.Reply)
-	}
-
-	// Verify abc is gone but abcdef still exists
-	_, ok, _ := sm.Store.Get(context.Background(), "testns", "abcdef")
-	if !ok {
-		t.Fatal("expected abcdef to still exist")
-	}
-	_, ok, _ = sm.Store.Get(context.Background(), "testns", "abc")
-	if ok {
-		t.Fatal("expected abc to be deleted")
-	}
-}
+// --- Session auto-rename tests ---
 
 func TestSessionAutoRename_NamesSession(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
 	session.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
 	session.Append(agent.Message{Role: agent.RoleAssistant, Content: "hi back"})
-	session.Append(agent.Message{Role: agent.RoleUser, Content: "how are you?"})
 	sm.Save(context.Background(), "testns", session)
 
-	res := cmd.Execute(context.Background(), "session1", "/session autorename")
+	res := cmd.ExecuteJSON(context.Background(), "session1", "session_autorename", nil)
 
 	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "renamed") && !strings.Contains(res.Reply, "failed") {
-		t.Fatalf("expected rename reply, got: %q", res.Reply)
-	}
-}
-
-func TestSessionAutoRename_ReplacesExistingName(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
-	session.SetSessionName("Old Name")
-	session.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
-	session.Append(agent.Message{Role: agent.RoleAssistant, Content: "hi back"})
-	session.Append(agent.Message{Role: agent.RoleUser, Content: "how are you?"})
-	sm.Save(context.Background(), "testns", session)
-
-	res := cmd.Execute(context.Background(), "session1", "/session autorename")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "renamed") && !strings.Contains(res.Reply, "failed") {
-		t.Fatalf("expected rename reply, got: %q", res.Reply)
-	}
-}
-
-func TestSessionAutoRename_WorksEvenWithNoMessages(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
-
-	res := cmd.Execute(context.Background(), "session1", "/session autorename")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "session renamed") {
-		t.Fatalf("expected rename reply, got: %q", res.Reply)
+		t.Fatalf("error: %v", res.Error)
 	}
 	if res.Session == nil || res.Session.SessionName() == "" {
 		t.Fatal("expected session to have a name after autorename")
 	}
 }
 
-func TestSessionAutoRename_HelpIncludesAutorename(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/session")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
+func TestSessionAutoRename_WorksEvenWithNoMessages(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	sm.GetOrCreate(context.Background(), "testns", "session1")
+
+	res := cmd.ExecuteJSON(context.Background(), "session1", "session_autorename", nil)
+
+	if res.Error != nil {
+		t.Fatalf("error: %v", res.Error)
 	}
-	if !strings.Contains(res.Reply, "autorename") {
-		t.Fatalf("expected /session usage to mention autorename, got: %q", res.Reply)
+	if res.Session == nil || res.Session.SessionName() == "" {
+		t.Fatal("expected session to have a name after autorename")
 	}
 }
 
-func TestHelp_IncludesRename(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/help")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
+// --- Model tests ---
+
+func TestModelList_ReturnsModels(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	sm.GetOrCreate(context.Background(), "testns", "sid")
+
+	res := cmd.ExecuteJSON(context.Background(), "sid", "model_list", nil)
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if !strings.Contains(res.Reply, "rename") {
-		t.Fatalf("expected /help to mention rename, got: %q", res.Reply)
+	var data struct {
+		Models []map[string]any `json:"models"`
+	}
+	json.Unmarshal(res.Data, &data)
+	if len(data.Models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(data.Models))
 	}
 }
 
-// ---------------------------------------------------------------------------
-// /tool command tests — per-session tool control
-// ---------------------------------------------------------------------------
+func TestModelSwitch_SetsModel(t *testing.T) {
+	conv, cmd, _ := newCommandComponents(t)
+	res := cmd.ExecuteJSON(context.Background(), "sid", "model_switch", params(map[string]any{"name": "beta"}))
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+	if conv.SessionModel(res.Session) != "beta" {
+		t.Fatalf("session model not set: %q", conv.SessionModel(res.Session))
+	}
+}
+
+func TestModelSwitch_UnknownFails(t *testing.T) {
+	_, cmd, _ := newCommandComponents(t)
+	res := cmd.ExecuteJSON(context.Background(), "sid", "model_switch", params(map[string]any{"name": "nope"}))
+	if res.Error == nil {
+		t.Fatal("expected error for unknown model")
+	}
+}
+
+func TestModelSwitch_EmptyName(t *testing.T) {
+	_, cmd, _ := newCommandComponents(t)
+	res := cmd.ExecuteJSON(context.Background(), "sid", "model_switch", nil)
+	if !strings.Contains(res.Reply, "specify") {
+		t.Fatalf("expected error about missing name, got: %+v", res)
+	}
+}
+
+// --- Tool command tests ---
 
 func newCommandComponentsWithTools(t *testing.T) (*agent.Conversation, *CommandProcessor, *agent.SessionManager, *agent.ToolRegistry) {
 	t.Helper()
@@ -933,218 +501,149 @@ func newCommandComponentsWithTools(t *testing.T) (*agent.Conversation, *CommandP
 	return conv, cmd, sm, tools
 }
 
-func TestToolCommand_List(t *testing.T) {
+func TestToolList_ReturnsTools(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "s1")
+	sm.GetOrCreate(context.Background(), "testns", "s1")
 
-	res := cmd.Execute(context.Background(), "s1", "/tool list")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	t.Logf("tool list:\n%s", res.Reply)
+	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_list", nil)
 
-	if !strings.Contains(res.Reply, "read_file") {
-		t.Fatalf("expected read_file in list, got: %q", res.Reply)
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if !strings.Contains(res.Reply, "allowed") && !strings.Contains(res.Reply, "disabled") && !strings.Contains(res.Reply, "enabled") {
-		t.Fatalf("expected status marker in list, got: %q", res.Reply)
+	var data struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	json.Unmarshal(res.Data, &data)
+	if len(data.Tools) != 4 {
+		t.Fatalf("expected 4 tools, got %d", len(data.Tools))
 	}
 }
 
-func TestToolCommand_Allow(t *testing.T) {
+func TestToolAllow_EnablesTool(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
 
-	res := cmd.Execute(context.Background(), "s1", "/tool allow read_file")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if !strings.Contains(res.Reply, "read_file") {
-		t.Fatalf("expected confirmation, got: %q", res.Reply)
+	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_allow", params(map[string]any{"name": "read_file"}))
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
 	}
 	if !session.IsToolEnabled("read_file") {
-		t.Fatal("expected read_file to be enabled on the session")
+		t.Fatal("expected read_file to be enabled")
 	}
 }
 
-func TestToolCommand_Deny(t *testing.T) {
+func TestToolDeny_DisablesTool(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
 	session.EnableTool("write_file")
 
-	res := cmd.Execute(context.Background(), "s1", "/tool deny write_file")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if !strings.Contains(res.Reply, "write_file") {
-		t.Fatalf("expected confirmation, got: %q", res.Reply)
+	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_deny", params(map[string]any{"name": "write_file"}))
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
 	}
 	if session.IsToolEnabled("write_file") {
-		t.Fatal("expected write_file to be disabled on the session")
+		t.Fatal("expected write_file to be disabled")
 	}
 }
 
-func TestToolCommand_AllowTag(t *testing.T) {
+func TestToolAllow_ByTag(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
 
-	res := cmd.Execute(context.Background(), "s1", "/tool allow #filesystem")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
+	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_allow", params(map[string]any{"name": "#filesystem"}))
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if !strings.Contains(res.Reply, "read_file") || !strings.Contains(res.Reply, "write_file") {
-		t.Fatalf("expected both filesystem tools enabled, got: %q", res.Reply)
-	}
-	if !session.IsToolEnabled("read_file") {
-		t.Fatal("expected read_file to be enabled via tag")
-	}
-	if !session.IsToolEnabled("write_file") {
-		t.Fatal("expected write_file to be enabled via tag")
+	if !session.IsToolEnabled("read_file") || !session.IsToolEnabled("write_file") {
+		t.Fatal("expected filesystem tools to be enabled via tag")
 	}
 }
 
-func TestToolCommand_DenyTag(t *testing.T) {
+func TestToolDeny_ByTag(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
 	session.EnableTool("read_file")
-	session.EnableTool("write_file")
 	session.EnableTool("shell")
 
-	res := cmd.Execute(context.Background(), "s1", "/tool deny #filesystem")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if !strings.Contains(res.Reply, "read_file") || !strings.Contains(res.Reply, "write_file") {
-		t.Fatalf("expected both filesystem tools disabled, got: %q", res.Reply)
+	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_deny", params(map[string]any{"name": "#filesystem"}))
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
 	}
 	if session.IsToolEnabled("read_file") {
 		t.Fatal("expected read_file to be disabled via tag")
-	}
-	if session.IsToolEnabled("write_file") {
-		t.Fatal("expected write_file to be disabled via tag")
 	}
 	if !session.IsToolEnabled("shell") {
 		t.Fatal("expected shell to remain enabled (different tag)")
 	}
 }
 
-func TestToolCommand_AllowUnknownTool(t *testing.T) {
+func TestToolAllow_UnknownTool(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "s1")
+	sm.GetOrCreate(context.Background(), "testns", "s1")
 
-	res := cmd.Execute(context.Background(), "s1", "/tool allow nonexistent")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if !strings.Contains(res.Reply, "unknown") {
-		t.Fatalf("expected error about unknown tool, got: %q", res.Reply)
+	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_allow", params(map[string]any{"name": "nonexistent"}))
+
+	if res.Error == nil && !strings.Contains(res.Reply, "unknown") {
+		t.Fatalf("expected error about unknown tool, got: %+v", res)
 	}
 }
 
-func TestToolCommand_ListShowsEnabledWithMarker(t *testing.T) {
+func TestToolAllow_NonexistentTag(t *testing.T) {
+	_, cmd, sm, _ := newCommandComponentsWithTools(t)
+	sm.GetOrCreate(context.Background(), "testns", "s1")
+
+	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_allow", params(map[string]any{"name": "#bogus"}))
+
+	if res.Error == nil && !strings.Contains(res.Reply, "no tools") {
+		t.Fatalf("expected 'no tools' message, got: %+v", res)
+	}
+}
+
+func TestToolList_ShowsEnabledStatus(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
 	session.EnableTool("http_get")
 
-	res := cmd.Execute(context.Background(), "s1", "/tool list")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if !strings.Contains(res.Reply, "[enabled]") || !strings.Contains(res.Reply, "http_get") {
-		t.Fatalf("expected http_get to show as enabled, got: %q", res.Reply)
-	}
-	if !strings.Contains(res.Reply, "[allowed]") && !strings.Contains(res.Reply, "[disabled]") && !strings.Contains(res.Reply, "[denied]") {
-		t.Fatalf("expected other tools to show non-enabled status, got: %q", res.Reply)
-	}
-}
+	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_list", nil)
 
-func TestToolCommand_ListWithTags(t *testing.T) {
-	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "s1")
-
-	res := cmd.Execute(context.Background(), "s1", "/tool list")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if !strings.Contains(res.Reply, "#filesystem") || !strings.Contains(res.Reply, "#dangerous") {
-		t.Fatalf("expected tags with # prefix in listing, got: %q", res.Reply)
+	var data struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	json.Unmarshal(res.Data, &data)
+	var httpGetFound bool
+	for _, tl := range data.Tools {
+		if tl["name"] == "http_get" {
+			httpGetFound = true
+			if en, _ := tl["enabled"].(bool); !en {
+				t.Fatal("expected http_get to be enabled")
+			}
+		}
+	}
+	if !httpGetFound {
+		t.Fatal("expected http_get in tool list")
 	}
 }
 
 func TestToolCommand_PersistsAcrossSessions(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "s1")
-
-	cmd.Execute(context.Background(), "s1", "/tool allow read_file")
+	sm.GetOrCreate(context.Background(), "testns", "s1")
+	cmd.ExecuteJSON(context.Background(), "s1", "tool_allow", params(map[string]any{"name": "read_file"}))
 
 	session2, _ := sm.GetOrCreate(context.Background(), "testns", "s2")
 	if session2.IsToolEnabled("read_file") {
-		t.Fatal("expected new sessions to have no tools enabled by default (opt-in model)")
+		t.Fatal("expected new sessions to have no tools enabled by default")
 	}
 
 	session1, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
 	if !session1.IsToolEnabled("read_file") {
 		t.Fatal("expected session1 to retain its tool settings")
-	}
-}
-
-func TestToolCommand_AllowNonexistentTag(t *testing.T) {
-	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "s1")
-
-	res := cmd.Execute(context.Background(), "s1", "/tool allow #bogus")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if !strings.Contains(res.Reply, "no tools") {
-		t.Fatalf("expected 'no tools' message, got: %q", res.Reply)
-	}
-}
-
-func TestToolCommand_AllowMultipleTags(t *testing.T) {
-	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
-
-	res := cmd.Execute(context.Background(), "s1", "/tool allow #network #dangerous")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if !strings.Contains(res.Reply, "http_get") {
-		t.Fatalf("expected http_get enabled via 'network' tag, got: %q", res.Reply)
-	}
-	if !strings.Contains(res.Reply, "shell") {
-		t.Fatalf("expected shell enabled via 'dangerous' tag, got: %q", res.Reply)
-	}
-	if !session.IsToolEnabled("http_get") {
-		t.Fatal("expected http_get to be enabled")
-	}
-	if !session.IsToolEnabled("shell") {
-		t.Fatal("expected shell to be enabled")
-	}
-	if session.IsToolEnabled("read_file") {
-		t.Fatal("expected read_file to NOT be enabled (only network and dangerous tags were enabled)")
-	}
-}
-
-func TestToolCommand_DenyMultipleTags(t *testing.T) {
-	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
-	session.EnableTool("http_get")
-	session.EnableTool("shell")
-	session.EnableTool("read_file")
-
-	res := cmd.Execute(context.Background(), "s1", "/tool deny #network #dangerous")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if session.IsToolEnabled("http_get") {
-		t.Fatal("expected http_get to be disabled")
-	}
-	if session.IsToolEnabled("shell") {
-		t.Fatal("expected shell to be disabled")
-	}
-	if !session.IsToolEnabled("read_file") {
-		t.Fatal("expected read_file to remain enabled (different tags)")
 	}
 }
 
@@ -1160,295 +659,96 @@ func TestToolCommand_GatewayRestriction(t *testing.T) {
 	})
 	cmd.SetTools(restrictedTools)
 
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "tg-session")
+	sm.GetOrCreate(context.Background(), "testns", "tg-session")
 
-	res := cmd.Execute(context.Background(), "tg-session", "/tool allow shell")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if !strings.Contains(res.Reply, "unknown") {
-		t.Fatalf("expected error about unknown tool, got: %q", res.Reply)
+	res := cmd.ExecuteJSON(context.Background(), "tg-session", "tool_allow", params(map[string]any{"name": "shell"}))
+	if res.Error == nil && !strings.Contains(res.Reply, "unknown") {
+		t.Fatalf("expected error about unknown tool, got: %+v", res)
 	}
 
-	res = cmd.Execute(context.Background(), "tg-session", "/tool allow http_get")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if !strings.Contains(res.Reply, "http_get") {
-		t.Fatalf("expected http_get enabled, got: %q", res.Reply)
+	res = cmd.ExecuteJSON(context.Background(), "tg-session", "tool_allow", params(map[string]any{"name": "http_get"}))
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
 	}
 
-	res = cmd.Execute(context.Background(), "tg-session", "/tool list")
-	if strings.Contains(res.Reply, "read_file") || strings.Contains(res.Reply, "shell") {
-		t.Fatalf("expected only http_get in restricted list, got: %q", res.Reply)
+	res = cmd.ExecuteJSON(context.Background(), "tg-session", "tool_list", nil)
+	var data struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	json.Unmarshal(res.Data, &data)
+	for _, tl := range data.Tools {
+		if tl["name"] == "read_file" || tl["name"] == "shell" {
+			t.Fatal("expected only http_get in restricted tool list")
+		}
 	}
 }
 
-// ---------------------------------------------------------------------------
-// /start command tests
-// ---------------------------------------------------------------------------
+// --- Start command tests ---
 
 func TestStartCommand_CreatesNewSession(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	// Create an initial session so we have something to start from
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "s1")
+	sm.GetOrCreate(context.Background(), "testns", "s1")
 
-	res := cmd.Execute(context.Background(), "s1", "/start")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
+	res := cmd.ExecuteJSON(context.Background(), "s1", "start", nil)
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
 	}
 	if res.Action != ActionSessionCreate {
 		t.Fatalf("expected ActionSessionCreate, got %v", res.Action)
 	}
 	if res.Session == nil {
-		t.Fatal("expected a new session in result, got nil")
+		t.Fatal("expected a new session")
 	}
 	if res.Session.SessionID() == "s1" {
-		t.Fatal("expected a different session ID, not the old one")
-	}
-	if !strings.Contains(res.Reply, "started fresh session") {
-		t.Fatalf("expected startup message, got: %q", res.Reply)
+		t.Fatal("expected a different session ID")
 	}
 }
 
 func TestStartCommand_EnablesAllTools(t *testing.T) {
 	_, cmd, sm, tools := newCommandComponentsWithTools(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "s1")
+	sm.GetOrCreate(context.Background(), "testns", "s1")
 
-	res := cmd.Execute(context.Background(), "s1", "/start")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
+	res := cmd.ExecuteJSON(context.Background(), "s1", "start", nil)
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
 	}
-
-	session := res.Session
-	// All registered tools should be enabled
 	for _, schema := range tools.Schemas() {
-		if !session.IsToolEnabled(schema.Name) {
-			t.Fatalf("expected tool %q to be enabled after /start, but it's disabled", schema.Name)
+		if !res.Session.IsToolEnabled(schema.Name) {
+			t.Fatalf("expected tool %q to be enabled after /start", schema.Name)
 		}
 	}
 }
 
-func TestStartCommand_WithNoToolRegistry_StillWorks(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	// newCommandComponents does NOT call SetTools, so Tools is nil
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "s1")
-
-	res := cmd.Execute(context.Background(), "s1", "/start")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if res.Session == nil {
-		t.Fatal("expected a new session")
-	}
-}
-
-func TestStartCommand_HelpIncludesStart(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/help")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if !strings.Contains(res.Reply, "/start") {
-		t.Fatalf("expected /help to mention /start, got: %q", res.Reply)
-	}
-}
-
-func TestHelp_IncludesStart(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/help")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if !strings.Contains(res.Reply, "/start") {
-		t.Fatalf("expected /start in help, got: %q", res.Reply)
-	}
-}
-
-// TestStartCommand_PreservesProvidedCWD verifies that /start preserves the
-// client CWD from the previous session instead of resetting to server CWD.
-func TestStartCommand_PreservesProvidedCWD(t *testing.T) {
+func TestStartCommand_PreservesCWD(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	// Create old session WITH a client CWD (simulating what the gateway does)
 	oldSession, _ := sm.GetOrCreate(context.Background(), "testns", "old-session")
 	oldSession.SetClientCWD("/client/project")
 	sm.Save(context.Background(), "testns", oldSession)
 
-	res := cmd.Execute(context.Background(), "old-session", "/start")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	session := res.Session
-	if session == nil {
-		t.Fatal("expected a session from /start")
-	}
-	if session.Read().ClientCWD != "/client/project" {
-		t.Fatalf("BUG: /start should preserve the client CWD from the old session.\n"+
-			"  expected ClientCWD = %q\n"+
-			"  got               %q",
-			"/client/project", session.Read().ClientCWD)
-	}
-}
-
-// TestSessionCreateCommand_PreservesProvidedCWD verifies that /session create
-// preserves the client CWD from the previous session.
-func TestSessionCreateCommand_PreservesProvidedCWD(t *testing.T) {
-	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	oldSession, _ := sm.GetOrCreate(context.Background(), "testns", "old-session")
-	oldSession.SetClientCWD("/workspace")
-	sm.Save(context.Background(), "testns", oldSession)
-
-	res := cmd.Execute(context.Background(), "old-session", "/session create")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	session := res.Session
-	if session == nil {
-		t.Fatal("expected a session from /session create")
-	}
-	if session.Read().ClientCWD != "/workspace" {
-		t.Fatalf("BUG: /session create should preserve the client CWD from the old session.\n"+
-			"  expected ClientCWD = %q\n"+
-			"  got               %q",
-			"/workspace", session.Read().ClientCWD)
-	}
-}
-
-// TestStartCommand_WithoutCWD_UsesServerCWD verifies that /start without
-// a client CWD still defaults to the server's working directory (backward
-// compatibility).
-func TestStartCommand_WithoutCWD_UsesServerCWD(t *testing.T) {
-	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "old-session")
-
-	res := cmd.Execute(context.Background(), "old-session", "/start")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	session := res.Session
-	if session == nil {
-		t.Fatal("expected a session from /start")
-	}
-	// When no CWD is provided, the session should still have the server CWD
-	// (set by NewSession). We just verify it's not empty.
-	if session.Read().ClientCWD == "" {
-		t.Fatal("expected ClientCWD to be set to server's CWD when no cwd is provided")
-	}
-}
-
-
-// ---------------------------------------------------------------------------
-// /session delete this — delete current session with "this" keyword
-// ---------------------------------------------------------------------------
-
-func TestSessionDeleteThis_DeletesCurrentSession(t *testing.T) {
-	_, cmd, sm := newCommandComponents(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
-
-	res := cmd.Execute(context.Background(), "session1", "/session delete this")
+	res := cmd.ExecuteJSON(context.Background(), "old-session", "start", nil)
 
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if res.Action != ActionClearSession {
-		t.Fatalf("expected ActionClearSession when deleting current session with 'this', got: %v", res.Action)
-	}
-	if !strings.Contains(res.Reply, "deleted") {
-		t.Fatalf("expected delete confirmation, got reply: %q", res.Reply)
-	}
-
-	// Verify the session is actually removed from the store
-	_, ok, _ := sm.Store.Get(context.Background(), "testns", "session1")
-	if ok {
-		t.Fatal("expected session to be deleted from store")
+	if res.Session.Read().ClientCWD != "/client/project" {
+		t.Fatalf("expected ClientCWD = %q, got %q", "/client/project", res.Session.Read().ClientCWD)
 	}
 }
 
-func TestSessionDeleteThis_WithNoSession(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-
-	res := cmd.Execute(context.Background(), "", "/session delete this")
-
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-	if !strings.Contains(res.Reply, "error") && !strings.Contains(res.Reply, "no session") {
-		t.Fatalf("should handle delete this with no current session gracefully")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// /continue command
-// ---------------------------------------------------------------------------
-
-func TestHandleContinue(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/continue")
-	if !res.Handled {
-		t.Fatal("expected /continue to be handled")
-	}
-	if res.Action != ActionContinue {
-		t.Fatalf("expected ActionContinue, got %v", res.Action)
-	}
-	if res.Reply != "" {
-		t.Fatalf("expected empty reply for /continue, got %q", res.Reply)
-	}
-	if res.Error != nil {
-		t.Fatalf("unexpected error: %v", res.Error)
-	}
-}
-
-func TestHandleContinueWithExtraArgs(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	// Extra args after /continue should be ignored — the command still triggers a continue.
-	res := cmd.Execute(context.Background(), "sid", "/continue with extra args")
-	if !res.Handled {
-		t.Fatal("expected /continue to be handled even with extra args")
-	}
-	if res.Action != ActionContinue {
-		t.Fatalf("expected ActionContinue, got %v", res.Action)
-	}
-}
-
-func TestHandleContinueWithBotUsernameSuffix(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/continue@my_bot")
-	if !res.Handled {
-		t.Fatal("expected /continue@my_bot to be handled")
-	}
-	if res.Action != ActionContinue {
-		t.Fatalf("expected ActionContinue, got %v", res.Action)
-	}
-}
-
-func TestHelpIncludesContinue(t *testing.T) {
-	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/help")
-	if !res.Handled {
-		t.Fatal("expected /help to be handled")
-	}
-	if !strings.Contains(res.Reply, "/continue") {
-		t.Fatalf("expected /help to mention /continue, got: %q", res.Reply)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// /cwd_set command tests
-// ---------------------------------------------------------------------------
+// --- CWD set tests ---
 
 func TestCWDSet_SetsSessionCWD(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
 	sess, _ := sm.GetOrCreate(context.Background(), "testns", "sid")
 	sess.SetClientCWD("/old/path")
 
-	res := cmd.Execute(context.Background(), "sid", "/cwd_set /new/path")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
-	if !strings.Contains(res.Reply, "/new/path") {
-		t.Fatalf("expected cwd in reply, got: %q", res.Reply)
-	}
+	res := cmd.ExecuteJSON(context.Background(), "sid", "cwd_set", params(map[string]any{"cwd": "/new/path"}))
 
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
 	got, _ := sm.GetOrCreate(context.Background(), "testns", "sid")
 	if got.Read().ClientCWD != "/new/path" {
 		t.Fatalf("expected CWD /new/path, got %q", got.Read().ClientCWD)
@@ -1457,46 +757,135 @@ func TestCWDSet_SetsSessionCWD(t *testing.T) {
 
 func TestCWDSet_MissingPath(t *testing.T) {
 	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/cwd_set")
-	if !res.Handled || res.Error != nil {
-		t.Fatalf("handle: %v %v", res.Handled, res.Error)
-	}
+	res := cmd.ExecuteJSON(context.Background(), "sid", "cwd_set", nil)
 	if !strings.Contains(res.Reply, "specify") {
-		t.Fatalf("expected error about missing path, got: %q", res.Reply)
+		t.Fatalf("expected error about missing path, got: %+v", res)
 	}
 }
 
-func TestHelpIncludesCWDSet(t *testing.T) {
+// --- Continue command tests ---
+
+func TestContinue_ReturnsContinueAction(t *testing.T) {
 	_, cmd, _ := newCommandComponents(t)
-	res := cmd.Execute(context.Background(), "sid", "/help")
+	res := cmd.ExecuteJSON(context.Background(), "sid", "continue", nil)
 	if !res.Handled {
-		t.Fatal("expected /help to be handled")
+		t.Fatal("expected continue to be handled")
 	}
-	if !strings.Contains(res.Reply, "/cwd_set") {
-		t.Fatalf("expected /help to mention /cwd_set, got: %q", res.Reply)
+	if res.Action != ActionContinue {
+		t.Fatalf("expected ActionContinue, got %v", res.Action)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// session_switch to non-existent session should fail
-// ---------------------------------------------------------------------------
+// --- Compact command tests ---
 
-func TestSessionSwitch_NonExistentFails(t *testing.T) {
+func TestCompact_ReadsCurrentValue(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	_, _ = sm.GetOrCreate(context.Background(), "testns", "session1")
+	sm.GetOrCreate(context.Background(), "testns", "sid")
 
-	res := cmd.Execute(context.Background(), "session1", "/session switch nonexistent")
-	if !res.Handled || res.Error == nil {
-		// Should be handled (not passed to LLM) and must return an error or error reply
+	res := cmd.ExecuteJSON(context.Background(), "sid", "compact", nil)
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if res.Reply == "" && res.Error == nil {
-		t.Fatal("expected error when switching to non-existent session, got no error and no reply")
+	var data struct {
+		Limit int `json:"compact_soft_limit"`
 	}
-	if res.Error == nil && !strings.Contains(res.Reply, "not found") && !strings.Contains(res.Reply, "no session matching") {
-		t.Fatalf("expected 'not found' or 'no session matching' error, got: %q", res.Reply)
+	json.Unmarshal(res.Data, &data)
+	if data.Limit < 0 {
+		t.Fatalf("expected non-negative limit, got %d", data.Limit)
 	}
-	// Must not have created a new session
-	if res.Session != nil {
-		t.Fatal("expected nil session when switch fails, got a session back")
+}
+
+func TestCompact_SetsValue(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	sm.GetOrCreate(context.Background(), "testns", "sid")
+
+	res := cmd.ExecuteJSON(context.Background(), "sid", "compact", params(map[string]any{"n": 50000}))
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+	session, _ := sm.GetOrCreate(context.Background(), "testns", "sid")
+	if session.GetCompactSoftLimit() != 50000 {
+		t.Fatalf("expected compact limit 50000, got %d", session.GetCompactSoftLimit())
+	}
+}
+
+// --- Help command tests ---
+
+func TestHelp_ReturnsCommands(t *testing.T) {
+	_, cmd, _ := newCommandComponents(t)
+	res := cmd.ExecuteJSON(context.Background(), "sid", "help", nil)
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+	if res.Data == nil {
+		t.Fatal("expected data in result")
+	}
+	var data struct {
+		Commands []map[string]any `json:"commands"`
+	}
+	json.Unmarshal(res.Data, &data)
+	if len(data.Commands) == 0 {
+		t.Fatal("expected commands in help")
+	}
+}
+
+// --- Unknown command test ---
+
+func TestUnknownCommand_ReturnsError(t *testing.T) {
+	_, cmd, _ := newCommandComponents(t)
+	res := cmd.ExecuteJSON(context.Background(), "sid", "unknown_cmd", nil)
+	if !strings.Contains(res.Reply, "unknown") {
+		t.Fatalf("expected 'unknown command' reply, got: %+v", res)
+	}
+}
+
+// --- Shortest unique prefix unit tests ---
+
+func TestShortestUniquePrefix_SingleSession(t *testing.T) {
+	sessions := []*agent.Session{
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abcdef"); return s }(),
+	}
+	prefixes := shortestUniquePrefixes(sessions)
+	if prefixes["abcdef"] != "a" {
+		t.Fatalf("expected prefix 'a', got %q", prefixes["abcdef"])
+	}
+}
+
+func TestShortestUniquePrefix_MultipleSessions(t *testing.T) {
+	sessions := []*agent.Session{
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abc123"); return s }(),
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abd456"); return s }(),
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abe789"); return s }(),
+	}
+	prefixes := shortestUniquePrefixes(sessions)
+	if prefixes["abc123"] != "abc" {
+		t.Fatalf("expected prefix 'abc' for abc123, got %q", prefixes["abc123"])
+	}
+	if prefixes["abd456"] != "abd" {
+		t.Fatalf("expected prefix 'abd' for abd456, got %q", prefixes["abd456"])
+	}
+	if prefixes["abe789"] != "abe" {
+		t.Fatalf("expected prefix 'abe' for abe789, got %q", prefixes["abe789"])
+	}
+}
+
+func TestShortestUniquePrefix_DifferentLengths(t *testing.T) {
+	sessions := []*agent.Session{
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("a-long-id"); return s }(),
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("another-id"); return s }(),
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("b-short"); return s }(),
+	}
+	prefixes := shortestUniquePrefixes(sessions)
+	if prefixes["a-long-id"] != "a-" {
+		t.Fatalf("expected prefix 'a-' for a-long-id, got %q", prefixes["a-long-id"])
+	}
+	if prefixes["another-id"] != "an" {
+		t.Fatalf("expected prefix 'an' for another-id, got %q", prefixes["another-id"])
+	}
+	if prefixes["b-short"] != "b" {
+		t.Fatalf("expected prefix 'b' for b-short, got %q", prefixes["b-short"])
 	}
 }

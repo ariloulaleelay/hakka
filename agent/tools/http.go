@@ -114,7 +114,16 @@ func HTTPGet() agent.Tool {
 				}
 			}
 			if truncated {
-				fmt.Fprintf(&b, "\n%s\n\n[TRUNCATED: %d bytes omitted]\n", bodyStr, len(body))
+				// Use Content-Length from response headers if available (set by real servers).
+				omitted := 0
+				if resp.ContentLength > 0 {
+					omitted = int(resp.ContentLength) - args.MaxBytes
+				}
+				if omitted > 0 {
+					fmt.Fprintf(&b, "\n%s\n\n[TRUNCATED: %d bytes omitted]\n", bodyStr, omitted)
+				} else {
+					fmt.Fprintf(&b, "\n%s\n\n[TRUNCATED]\n", bodyStr)
+				}
 			} else {
 				fmt.Fprintf(&b, "\n%s\n", bodyStr)
 			}

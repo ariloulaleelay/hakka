@@ -61,9 +61,18 @@ type SessionModelBinding interface {
 }
 
 // SessionTokenTracking tracks accumulated token usage.
+// SessionTokenTracking tracks accumulated token usage and estimated
+// context size for observability.
 type SessionTokenTracking interface {
 	TotalTokenUsage() int
 	AddTokenUsage(tokens int)
+	SetTotalTokenUsage(tokens int)
+
+	// GetEstimatedContextTokens returns the last estimated context size in tokens.
+	GetEstimatedContextTokens() int
+
+	// SetEstimatedContextTokens stores the estimated context size in tokens.
+	SetEstimatedContextTokens(tokens int)
 }
 
 // SessionCompactLimits provides per-session compaction settings.

@@ -2,6 +2,7 @@ package gateways
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -151,8 +152,6 @@ func (gw *TelegramGateway) isAuthorized(chatID int64) bool {
 }
 
 // isBotMentioned checks whether the message mentions the bot's username.
-// It first checks message entities for "mention" type, then falls back
-// to a simple substring check on the text.
 func (gw *TelegramGateway) isBotMentioned(msg *tgbotapi.Message) bool {
 	if gw.bot == nil {
 		slog.Warn("telegram: isBotMentioned called but bot is nil")
@@ -164,7 +163,6 @@ func (gw *TelegramGateway) isBotMentioned(msg *tgbotapi.Message) bool {
 		return false
 	}
 
-	// Check message entities for "mention" type
 	for i, ent := range msg.Entities {
 		slog.Debug("telegram: checking entity",
 			"entity_index", i,
@@ -184,8 +182,6 @@ func (gw *TelegramGateway) isBotMentioned(msg *tgbotapi.Message) bool {
 		}
 	}
 
-	// Check message entities for "bot_command" type — Telegram group
-	// commands like /session@bot_username use bot_command entities.
 	for _, ent := range msg.Entities {
 		if ent.Type == "bot_command" && ent.Offset+ent.Length <= len(msg.Text) {
 			cmdText := msg.Text[ent.Offset : ent.Offset+ent.Length]
@@ -199,20 +195,12 @@ func (gw *TelegramGateway) isBotMentioned(msg *tgbotapi.Message) bool {
 		}
 	}
 
-	// Fallback: check text for @username
 	lowerText := strings.ToLower(msg.Text)
 	lowerUsername := strings.ToLower("@" + username)
-	contains := strings.Contains(lowerText, lowerUsername)
-	slog.Debug("telegram: fallback mention check",
-		"lower_text", lowerText,
-		"looking_for", lowerUsername,
-		"contains", contains,
-	)
-	return contains
+	return strings.Contains(lowerText, lowerUsername)
 }
 
 // formatAuthorInfo builds the author heading for group chat messages.
-// Format: @username (FirstName LastName):\n
 func (gw *TelegramGateway) formatAuthorInfo(user *tgbotapi.User) string {
 	login := user.UserName
 	name := user.FirstName
@@ -243,6 +231,147 @@ func (gw *TelegramGateway) formatAuthorInfo(user *tgbotapi.User) string {
 		buf.WriteString(":\n")
 	}
 	return buf.String()
+}
+
+// jsonCmd represents a parsed slash command → JSON command mapping.
+type jsonCmd struct {
+	Cmd    string
+	Params json.RawMessage
+}
+
+// parseSlashCommand maps text-based slash commands to structured JSON
+// commands for the CommandProcessor. This is the Telegram gateway's
+// local mapping — the server no longer interprets text slash commands.
+func parseSlashCommand(input string) *jsonCmd {
+	trimmed := strings.TrimSpace(input)
+	if !strings.HasPrefix(trimmed, "/") {
+		return nil
+	}
+
+	parts := strings.Fields(trimmed)
+	if len(parts) == 0 {
+		return nil
+	}
+
+	cmd := parts[0]
+	// Strip @bot_username suffix
+	if idx := strings.Index(cmd, "@"); idx >= 0 {
+		cmd = cmd[:idx]
+	}
+
+	switch cmd {
+	case "/help":
+		return &jsonCmd{Cmd: "help", Params: nil}
+	case "/continue":
+		return &jsonCmd{Cmd: "continue", Params: nil}
+	case "/start":
+		return &jsonCmd{Cmd: "start", Params: nil}
+	case "/compact":
+		if len(parts) >= 2 {
+			n, err := strconv.Atoi(parts[1])
+			if err == nil && n >= 0 {
+				p, _ := json.Marshal(map[string]any{"n": n})
+				return &jsonCmd{Cmd: "compact", Params: p}
+			}
+		}
+		// No params = read current value
+		return &jsonCmd{Cmd: "compact", Params: json.RawMessage("{}")}
+	case "/cwd_set":
+		if len(parts) < 2 {
+			return nil
+		}
+		path := strings.Join(parts[1:], " ")
+		p, _ := json.Marshal(map[string]any{"cwd": path})
+		return &jsonCmd{Cmd: "cwd_set", Params: p}
+
+	// --- Model commands ---
+	case "/models":
+		return &jsonCmd{Cmd: "model_list", Params: nil}
+	case "/model":
+		if len(parts) >= 2 {
+			sub := parts[1]
+			switch sub {
+			case "list":
+				return &jsonCmd{Cmd: "model_list", Params: nil}
+			case "switch":
+				if len(parts) >= 3 {
+					p, _ := json.Marshal(map[string]any{"name": parts[2]})
+					return &jsonCmd{Cmd: "model_switch", Params: p}
+				}
+				return nil
+			case "show":
+				return &jsonCmd{Cmd: "session_info", Params: nil}
+			default:
+				// Short form: /model <name>
+				p, _ := json.Marshal(map[string]any{"name": sub})
+				return &jsonCmd{Cmd: "model_switch", Params: p}
+			}
+		}
+		return &jsonCmd{Cmd: "session_info", Params: nil}
+
+	// --- Session commands ---
+	case "/session":
+		if len(parts) < 2 {
+			return nil
+		}
+		sub := parts[1]
+		switch sub {
+		case "list":
+			return &jsonCmd{Cmd: "session_list", Params: nil}
+		case "create":
+			return &jsonCmd{Cmd: "session_create", Params: nil}
+		case "get":
+			if len(parts) >= 3 {
+				p, _ := json.Marshal(map[string]any{"id": parts[2]})
+				return &jsonCmd{Cmd: "get_session", Params: p}
+			}
+			return nil
+		case "info":
+			return &jsonCmd{Cmd: "session_info", Params: nil}
+		case "delete":
+			if len(parts) >= 3 {
+				p, _ := json.Marshal(map[string]any{"id": parts[2]})
+				return &jsonCmd{Cmd: "session_delete", Params: p}
+			}
+			return nil
+		case "rename":
+			if len(parts) >= 3 {
+				name := strings.Join(parts[2:], " ")
+				p, _ := json.Marshal(map[string]any{"name": name})
+				return &jsonCmd{Cmd: "session_rename", Params: p}
+			}
+			return nil
+		case "autorename":
+			return &jsonCmd{Cmd: "session_autorename", Params: nil}
+		}
+		return nil
+
+	// --- Tool commands ---
+	case "/tool":
+		if len(parts) < 2 {
+			return nil
+		}
+		sub := parts[1]
+		switch sub {
+		case "list":
+			return &jsonCmd{Cmd: "tool_list", Params: nil}
+		case "allow":
+			if len(parts) >= 3 {
+				p, _ := json.Marshal(map[string]any{"name": parts[2]})
+				return &jsonCmd{Cmd: "tool_allow", Params: p}
+			}
+			return nil
+		case "deny":
+			if len(parts) >= 3 {
+				p, _ := json.Marshal(map[string]any{"name": parts[2]})
+				return &jsonCmd{Cmd: "tool_deny", Params: p}
+			}
+			return nil
+		}
+		return nil
+	}
+
+	return nil
 }
 
 func (gw *TelegramGateway) dispatch(ctx context.Context, upd tgbotapi.Update) {
@@ -288,7 +417,9 @@ func (gw *TelegramGateway) dispatch(ctx context.Context, upd tgbotapi.Update) {
 		return
 	}
 
-	if cmdRes := gw.Cmd.Execute(ctx, sessionID, inputText); cmdRes.Handled {
+	// Parse text slash commands locally and execute as JSON commands.
+	if jc := parseSlashCommand(inputText); jc != nil {
+		cmdRes := gw.Cmd.ExecuteJSON(ctx, sessionID, jc.Cmd, jc.Params)
 		gw.handleCommandResult(chatID, sessionID, cmdRes)
 		return
 	}
@@ -370,21 +501,207 @@ func (gw *TelegramGateway) resetSession(chatID int64) {
 }
 
 // handleCommandResult sends the command reply and optionally updates
-// the active session mapping (e.g. when /session switch changes it).
+// the active session mapping (e.g. when get_session fetches a different
+// session).
 func (gw *TelegramGateway) handleCommandResult(chatID int64, sessionID string, cmdRes commands.CommandResult) {
 	slog.Debug("telegram: command handled",
 		"chat_id", chatID, "session_id", sessionID,
-		"reply_len", len(cmdRes.Reply))
+		"cmd", cmdRes.Cmd)
+
 	if cmdRes.Error != nil {
 		gw.reply(chatID, fmt.Sprintf("error: %v", cmdRes.Error))
-	} else if cmdRes.Reply != "" {
-		gw.reply(chatID, cmdRes.Reply)
+		return
 	}
+
+	// For commands with structured Data, render a human-readable reply.
+	if cmdRes.Data != nil {
+		text := gw.formatCommandResult(cmdRes)
+		if text != "" {
+			gw.reply(chatID, text)
+		}
+	}
+
+	// Update active session mapping if the result references a different
+	// session (e.g. get_session, session_create, session_delete this).
 	if cmdRes.Session != nil && cmdRes.Session.SessionID() != sessionID {
 		gw.mu.Lock()
 		gw.activeSessions[chatID] = cmdRes.Session.SessionID()
 		gw.mu.Unlock()
 	}
+}
+
+// formatCommandResult converts structured command data into human-readable
+// text for Telegram display.
+func (gw *TelegramGateway) formatCommandResult(res commands.CommandResult) string {
+	if res.Data == nil {
+		return ""
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal(res.Data, &data); err != nil {
+		return ""
+	}
+
+	switch res.Cmd {
+	case "help":
+		if cmds, ok := data["commands"].([]any); ok {
+			var lines []string
+			for _, c := range cmds {
+				if cmd, ok := c.(map[string]any); ok {
+					line := fmt.Sprintf("/%s — %s", cmd["cmd"], cmd["desc"])
+					lines = append(lines, line)
+				}
+			}
+			return strings.Join(lines, "\n")
+		}
+
+	case "session_list":
+		if sessions, ok := data["sessions"].([]any); ok {
+			var lines []string
+			for _, s := range sessions {
+				if sess, ok := s.(map[string]any); ok {
+					mark := ""
+					if current, _ := sess["current"].(bool); current {
+						mark = "▶ "
+					}
+					name, _ := sess["name"].(string)
+					id, _ := sess["id"].(string)
+					short, _ := sess["short_id"].(string)
+					msgCount, _ := sess["message_count"].(float64)
+					display := name
+					if display == "" {
+						display = short
+					}
+					lines = append(lines, fmt.Sprintf("%s%s [%s] (%d msgs)", mark, display, id, int(msgCount)))
+				}
+			}
+			return strings.Join(lines, "\n")
+		}
+
+	case "session_info":
+		if sess, ok := data["session"].(map[string]any); ok {
+			id, _ := sess["id"].(string)
+			name, _ := sess["name"].(string)
+			model, _ := sess["model"].(string)
+			msgCount, _ := sess["message_count"].(float64)
+			tokens, _ := sess["total_tokens"].(float64)
+			contextEst, _ := sess["estimated_context"].(float64)
+			return fmt.Sprintf("Session: %s\nName: %s\nModel: %s\nMessages: %d\nContext: ~%d tokens\nTotal tokens: %d",
+				id, name, model, int(msgCount), int(contextEst), int(tokens))
+		}
+
+	case "session_create":
+		if sess, ok := data["session"].(map[string]any); ok {
+			id, _ := sess["id"].(string)
+			return fmt.Sprintf("Created session: %s", id)
+		}
+
+	case "get_session":
+		if sess, ok := data["session"].(map[string]any); ok {
+			id, _ := sess["id"].(string)
+			name, _ := sess["name"].(string)
+			msgCount, _ := sess["message_count"].(float64)
+			model, _ := sess["model"].(string)
+			display := name
+			if display == "" {
+				display = "(unnamed)"
+			}
+			return fmt.Sprintf("Session: %s (%s)\nModel: %s\nMessages: %d",
+				display, id, model, int(msgCount))
+		}
+
+	case "session_delete":
+		if deleted, ok := data["deleted"].(string); ok {
+			return fmt.Sprintf("Deleted session: %s", deleted)
+		}
+
+	case "session_rename":
+		if sess, ok := data["session"].(map[string]any); ok {
+			name, _ := sess["name"].(string)
+			return fmt.Sprintf("Session renamed to: %s", name)
+		}
+
+	case "session_autorename":
+		if sess, ok := data["session"].(map[string]any); ok {
+			name, _ := sess["name"].(string)
+			return fmt.Sprintf("Session renamed to: %s", name)
+		}
+
+	case "model_list":
+		if models, ok := data["models"].([]any); ok {
+			var lines []string
+			for _, m := range models {
+				if mod, ok := m.(map[string]any); ok {
+					mark := ""
+					if current, _ := mod["current"].(bool); current {
+						mark = "▶ "
+					}
+					name, _ := mod["name"].(string)
+					lines = append(lines, mark+name)
+				}
+			}
+			return strings.Join(lines, "\n")
+		}
+
+	case "model_switch":
+		if model, ok := data["model"].(string); ok {
+			return fmt.Sprintf("Model set to: %s", model)
+		}
+
+	case "tool_list":
+		if tools, ok := data["tools"].([]any); ok {
+			var lines []string
+			for _, t := range tools {
+				if tool, ok := t.(map[string]any); ok {
+					name, _ := tool["name"].(string)
+					enabled, _ := tool["enabled"].(bool)
+					status := "🔴"
+					if enabled {
+						status = "🟢"
+					}
+					lines = append(lines, fmt.Sprintf("%s %s", status, name))
+				}
+			}
+			return strings.Join(lines, "\n")
+		}
+
+	case "tool_allow":
+		if allowed, ok := data["allowed"].([]any); ok {
+			names := make([]string, len(allowed))
+			for i, n := range allowed {
+				names[i] = fmt.Sprint(n)
+			}
+			return fmt.Sprintf("Allowed: %s", strings.Join(names, ", "))
+		}
+
+	case "tool_deny":
+		if denied, ok := data["denied"].([]any); ok {
+			names := make([]string, len(denied))
+			for i, n := range denied {
+				names[i] = fmt.Sprint(n)
+			}
+			return fmt.Sprintf("Denied: %s", strings.Join(names, ", "))
+		}
+
+	case "compact":
+		if limit, ok := data["compact_soft_limit"].(float64); ok {
+			if int(limit) == 0 {
+				return "Compact limit: off"
+			}
+			return fmt.Sprintf("Compact limit: %d tokens", int(limit))
+		}
+
+	case "cwd_set":
+		if cwd, ok := data["cwd"].(string); ok {
+			return fmt.Sprintf("CWD set to: %s", cwd)
+		}
+	}
+
+	// Fallback: use Reply text if available.
+	if res.Reply != "" {
+		return res.Reply
+	}
+	return ""
 }
 
 // runConversation executes the LLM turn for the given input and sends
@@ -420,10 +737,6 @@ func (gw *TelegramGateway) runConversation(
 }
 
 // getOrCreateSession returns the active session ID for the given chat.
-// On first call (or after a restart), it looks up existing sessions in
-// the store for this namespace. If one is found, the most recent session
-// is reused — this preserves conversation history across server restarts.
-// Only when no sessions exist at all does it create a brand new one.
 func (gw *TelegramGateway) getOrCreateSession(ctx context.Context, namespace string, chatID int64) string {
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
@@ -464,15 +777,12 @@ func (gw *TelegramGateway) getOrCreateSession(ctx context.Context, namespace str
 		gw.activeSessions[chatID] = sid
 		return sid
 	}
-	// Telegram sessions have no meaningful working directory, so
-	// ClientCWD remains empty and BuildContext won't inject it.
 	gw.activeSessions[chatID] = session.SessionID()
 	return session.SessionID()
 }
 
 // convExecute is a convenience wrapper that consumes the event channel
 // from Conversation.Execute and returns only the final reply/error.
-// Namespace is resolved from context by Conversation's resolveNamespace.
 func (gw *TelegramGateway) convExecute(ctx context.Context, namespace, sessionID, input string) (string, error) {
 	eventCh, err := gw.Conv.Execute(ctx, sessionID, input)
 	if err != nil {
@@ -494,7 +804,6 @@ func (gw *TelegramGateway) reply(chatID int64, text string) {
 	html := format.MarkdownToTelegramHTML(text)
 
 	if len(html) <= maxLen {
-		// Short enough — send as a single formatted message.
 		msg := tgbotapi.NewMessage(chatID, html)
 		msg.ParseMode = tgbotapi.ModeHTML
 		if _, err := gw.bot.Send(msg); err != nil {
@@ -503,7 +812,6 @@ func (gw *TelegramGateway) reply(chatID int64, text string) {
 		return
 	}
 
-	// Long response — split into multiple messages.
 	slog.Debug("telegram: response too long, splitting into multiple messages",
 		"chat_id", chatID,
 		"len", len(html),
@@ -513,7 +821,6 @@ func (gw *TelegramGateway) reply(chatID int64, text string) {
 		chunk := html
 		if len(chunk) > maxLen {
 			chunk = chunk[:maxLen]
-			// Try to break at the last newline within the chunk for cleaner splits.
 			if idx := strings.LastIndex(chunk, "\n"); idx > 0 {
 				chunk = chunk[:idx]
 			}
@@ -535,10 +842,6 @@ func (gw *TelegramGateway) reply(chatID int64, text string) {
 }
 
 // sendChatAction sends a chat action (e.g. "typing") to a specific chat.
-// The Telegram Bot API returns {"ok": true, "result": true} for this endpoint,
-// so we use MakeRequest directly instead of bot.Send (which expects a Message
-// struct). Errors are logged at debug level only — transient issues should
-// not interrupt the conversation flow.
 func (gw *TelegramGateway) sendChatAction(chatID int64, action string) {
 	params := tgbotapi.Params{
 		"chat_id": strconv.FormatInt(chatID, 10),
@@ -563,9 +866,7 @@ func (gw *TelegramGateway) sendChatAction(chatID int64, action string) {
 }
 
 // keepTyping periodically sends the "typing" chat action to the given chat
-// until done is closed or the context is cancelled. The first action is sent
-// immediately, then every 5 seconds as recommended by Telegram's Bot API docs.
-// This gives the user visual feedback that the bot is processing their request.
+// until done is closed or the context is cancelled.
 func (gw *TelegramGateway) keepTyping(ctx context.Context, chatID int64, done <-chan struct{}) {
 	gw.sendChatAction(chatID, tgbotapi.ChatTyping)
 	ticker := time.NewTicker(5 * time.Second)

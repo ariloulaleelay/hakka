@@ -20,10 +20,13 @@ import (
 // from any single client connection:
 //   - When a client disconnects mid-turn, the turn continues running in
 //     the background. The subscriber is silently removed from the fan-out.
-//   - A reconnecting client (or a client that switches to an in-flight
-//     session via session_switch) can subscribe to the running turn and
-//     receive all subsequent events.
+//   - A reconnecting client (or a client that fetches an in-flight session
+//     via get_session) can subscribe to the running turn and receive all
+//     subsequent events.
 //   - Explicit cancellation via CancelSession still works.
+//
+// Note: all text-based slash command handling is performed by clients.
+// The server only accepts structured JSON commands via the "command" field.
 // ---------------------------------------------------------------------------
 
 // TurnHandler encapsulates the turn orchestration logic shared by all
@@ -71,8 +74,7 @@ func (h *TurnHandler) executor(stream bool) agent.TurnExecutor {
 //
 // If the request has a Command field, it is handled as a structured JSON
 // command (no LLM invocation). Otherwise, it is treated as a chat/stream
-// request (with optional text-based slash command interception for
-// non-JSON clients like Telegram).
+// request (text-based slash command parsing is handled by the client).
 //
 // If there is already an active turn for this session (e.g. from a
 // previous client that disconnected), the new writer is subscribed to
@@ -84,24 +86,6 @@ func (h *TurnHandler) HandleRequest(ctx context.Context, req FrameRequest, w fra
 		return
 	}
 
-	// Text-based input: try slash command interception (for non-JSON clients).
-	input := req.Input
-	if h.Cmd != nil {
-		cmdRes := h.Cmd.Execute(ctx, req.SessionID, req.Input)
-		if cmdRes.Handled {
-			if cmdRes.Action == commands.ActionContinue {
-				input = ""
-			} else {
-				if handled, ok := writeCommandResult(w, cmdRes, req.Stream, false); handled {
-					if !ok {
-						// Write failed — client disconnected, nothing more to do.
-					}
-					return
-				}
-			}
-		}
-	}
-
 	// Resolve session and set CWD *before* the turn starts, so that
 	// session.History() already contains the correct directory hint.
 	sessionID := h.resolveSessionAndCWD(ctx, req)
@@ -111,7 +95,7 @@ func (h *TurnHandler) HandleRequest(ctx context.Context, req FrameRequest, w fra
 	// when the input is empty (no user message) or when the new client
 	// joins mid-turn.
 	if active := h.turns.Get(sessionID); active != nil {
-		if input == "" {
+		if req.Input == "" {
 			// Empty input means this is a reconnection subscription
 			// (e.g. client reconnected and wants to catch the tail
 			// of the stream without sending new input).
@@ -121,13 +105,13 @@ func (h *TurnHandler) HandleRequest(ctx context.Context, req FrameRequest, w fra
 			// to send new input, but the previous turn hasn't finished.
 			// Cancel the old turn and start a new one.
 			h.turns.Cancel(sessionID)
-			h.startNewTurn(ctx, w, responseReader, req, sessionID, input)
+			h.startNewTurn(ctx, w, responseReader, req, sessionID, req.Input)
 		}
 		return
 	}
 
 	// No active turn — start a new one.
-	h.startNewTurn(ctx, w, responseReader, req, sessionID, input)
+	h.startNewTurn(ctx, w, responseReader, req, sessionID, req.Input)
 }
 
 // startNewTurn creates a new turn context (from context.Background so
@@ -149,10 +133,10 @@ func (h *TurnHandler) startNewTurn(ctx context.Context, w frameWriter, responseR
 
 // handleJSONCommand processes a structured JSON command request.
 //
-// Special case: when the command is "session_switch" and the target
+// Special case: when the command is "get_session" and the target
 // session has an active turn, the new writer is subscribed to the
 // running turn after the command response is sent. This allows a
-// reconnecting web client to send session_switch and immediately
+// reconnecting web client to send get_session and immediately
 // start receiving streaming events.
 func (h *TurnHandler) handleJSONCommand(ctx context.Context, req FrameRequest, w frameWriter, responseReader *InProcessResponseReader) {
 	cmdReq := req.Command
@@ -170,11 +154,11 @@ func (h *TurnHandler) handleJSONCommand(ctx context.Context, req FrameRequest, w
 	reqCtx = enrichCtxWithCWD(reqCtx, h.Conv, req)
 
 	cmdRes := h.Cmd.ExecuteJSON(reqCtx, sessionID, cmdReq.Cmd, cmdReq.Params)
-	writeCommandResult(w, cmdRes, false, true)
+	writeCommandResult(w, cmdRes)
 
-	// After session_switch, subscribe the new writer to the target
+	// After get_session, subscribe the new writer to the target
 	// session's active turn if one exists.
-	if cmdReq.Cmd == "session_switch" && cmdRes.Session != nil {
+	if cmdReq.Cmd == "get_session" && cmdRes.Session != nil {
 		targetID := cmdRes.Session.SessionID()
 		if active := h.turns.Get(targetID); active != nil {
 			active.ReplaceSubscriber(ctx, w)

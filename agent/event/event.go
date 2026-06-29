@@ -93,6 +93,17 @@ type SessionRenamed struct {
 
 func (SessionRenamed) engineEvent() {}
 
+// ContextEstimated is emitted before each LLM call, carrying the estimated
+// context size (in tokens) computed by BuildCompactContext. This allows
+// clients to display the current context utilisation and helps with
+// debugging compaction behaviour.
+type ContextEstimated struct {
+	SessionID       string
+	EstimatedTokens int
+}
+
+func (ContextEstimated) engineEvent() {}
+
 // ---------------------------------------------------------------------------
 // Client communication — allows tools to send requests to the client
 // (e.g. Neovim) and receive responses over the same connection.

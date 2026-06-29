@@ -67,9 +67,9 @@ func ReadFile() agent.Tool {
 				data = data[:args.MaxBytes]
 			}
 			var b strings.Builder
+			omitted := 0
 			if truncated {
 				fileInfo, _ := os.Stat(resolved)
-				omitted := 0
 				if fileInfo != nil {
 					omitted = int(fileInfo.Size()) - args.MaxBytes
 				}
@@ -80,7 +80,7 @@ func ReadFile() agent.Tool {
 			b.Write(data)
 			b.WriteByte('\n')
 			if truncated {
-				b.WriteString(fmt.Sprintf("[TRUNCATED: %d bytes omitted]", len(data)))
+				b.WriteString(fmt.Sprintf("[TRUNCATED: %d bytes omitted]", omitted))
 			}
 			return b.String(), nil
 		}).

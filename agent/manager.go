@@ -22,7 +22,7 @@ func NewSessionManager(store SessionStore, systemPrompt string) *SessionManager 
 
 // Get fetches a session without creating it. Returns (nil, false, nil) if
 // the session does not exist. Use this when the caller needs to distinguish
-// between "not found" and "needs creation" (e.g. session_switch).
+// between "not found" and "needs creation" (e.g. get_session).
 func (sm *SessionManager) Get(ctx context.Context, namespace, id string) (*Session, bool, error) {
 	if id == "" {
 		return nil, false, nil

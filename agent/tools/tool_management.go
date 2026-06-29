@@ -107,17 +107,3 @@ func ShowTool(r *agent.ToolRegistry) agent.Tool {
 		}).
 		Build()
 }
-
-// compactDescription returns a compact version of a tool description by
-// taking the first sentence and truncating if needed.
-func compactDescription(desc string) string {
-	// Take first sentence
-	if idx := strings.Index(desc, "."); idx > 0 {
-		desc = desc[:idx+1]
-	}
-	// Truncate at reasonable length
-	if len(desc) > 100 {
-		desc = desc[:97] + "..."
-	}
-	return desc
-}

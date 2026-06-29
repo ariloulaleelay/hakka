@@ -25,12 +25,18 @@ func TestExecuteEvents_NoTools(t *testing.T) {
 		events = append(events, e)
 	}
 
-	// Expected: event.TurnFinished only (no UsageReported because Usage is nil)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event (event.TurnFinished), got %d", len(events))
+	// Expected: ContextEstimated (before LLM call) + TurnFinished
+	// No UsageReported because Usage is nil
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events (ContextEstimated + TurnFinished), got %d", len(events))
 	}
 
-	turnEv, ok := events[0].(event.TurnFinished)
+	_, ok := events[0].(event.ContextEstimated)
+	if !ok {
+		t.Fatalf("expected ContextEstimated, got %T", events[0])
+	}
+
+	turnEv, ok := events[1].(event.TurnFinished)
 	if !ok {
 		t.Fatalf("expected last event to be event.TurnFinished, got %T", events[1])
 	}
@@ -97,21 +103,28 @@ func TestExecuteEvents_ToolLoop(t *testing.T) {
 		events = append(events, e)
 	}
 
-	// Expected: UsageReported (tool call), event.ToolCallStarted, event.ToolCallFinished, UsageReported (final), event.TurnFinished
-	if len(events) != 5 {
-		t.Fatalf("expected 5 events, got %d: %+v", len(events), events)
+	// Expected: ContextEstimated, UsageReported (tool call), event.ToolCallStarted,
+	// event.ToolCallFinished, ContextEstimated, UsageReported (final), event.TurnFinished
+	if len(events) != 7 {
+		t.Fatalf("expected 7 events, got %d: %+v", len(events), events)
 	}
 
-	// First event: usage report for tool call
-	_, ok := events[0].(event.UsageReported)
+	// First event: context estimated
+	_, ok := events[0].(event.ContextEstimated)
 	if !ok {
-		t.Fatalf("expected UsageReported, got %T", events[0])
+		t.Fatalf("expected ContextEstimated, got %T", events[0])
 	}
 
-	// Second event: tool started
-	startEv, ok := events[1].(event.ToolCallStarted)
+	// Second event: usage report for tool call (iteration 1)
+	_, ok = events[1].(event.UsageReported)
 	if !ok {
-		t.Fatalf("expected event.ToolCallStarted, got %T", events[1])
+		t.Fatalf("expected UsageReported, got %T", events[1])
+	}
+
+	// Third event: tool started
+	startEv, ok := events[2].(event.ToolCallStarted)
+	if !ok {
+		t.Fatalf("expected event.ToolCallStarted, got %T", events[2])
 	}
 	if startEv.Name != "greet" {
 		t.Fatalf("expected tool 'greet', got %q", startEv.Name)
@@ -120,10 +133,10 @@ func TestExecuteEvents_ToolLoop(t *testing.T) {
 		t.Fatalf("expected snippet 'name=\"world\"', got %q", startEv.ExecSnippet)
 	}
 
-	// Third event: tool finished
-	finishEv, ok := events[2].(event.ToolCallFinished)
+	// Fourth event: tool finished
+	finishEv, ok := events[3].(event.ToolCallFinished)
 	if !ok {
-		t.Fatalf("expected event.ToolCallFinished, got %T", events[2])
+		t.Fatalf("expected event.ToolCallFinished, got %T", events[3])
 	}
 	if finishEv.Result.IsError() {
 		t.Fatalf("unexpected tool error: %v", finishEv.Result.Err)
@@ -132,16 +145,16 @@ func TestExecuteEvents_ToolLoop(t *testing.T) {
 		t.Fatalf("unexpected tool result: %q", finishEv.Result.Output)
 	}
 
-	// Fourth event: usage report for final LLM response
-	_, ok = events[3].(event.UsageReported)
+	// Fifth event: usage report for final LLM response
+	_, ok = events[5].(event.UsageReported)
 	if !ok {
-		t.Fatalf("expected UsageReported, got %T", events[3])
+		t.Fatalf("expected UsageReported, got %T", events[5])
 	}
 
-	// Fifth event: turn finished
-	turnEv, ok := events[4].(event.TurnFinished)
+	// Sixth event: turn finished
+	turnEv, ok := events[6].(event.TurnFinished)
 	if !ok {
-		t.Fatalf("expected event.TurnFinished, got %T", events[4])
+		t.Fatalf("expected event.TurnFinished, got %T", events[6])
 	}
 	if turnEv.Reply != "Hello, world!" {
 		t.Fatalf("expected 'Hello, world!', got %q", turnEv.Reply)
@@ -243,15 +256,21 @@ func TestExecuteEvents_StreamSession(t *testing.T) {
 		events = append(events, e)
 	}
 
-	// Expected: event.TextDelta (or two), event.TurnFinished
-	if len(events) < 2 {
-		t.Fatalf("expected at least 2 events, got %d", len(events))
+	// Expected: ContextEstimated, then event.TextDelta (one or two), event.TurnFinished
+	if len(events) < 3 {
+		t.Fatalf("expected at least 3 events, got %d", len(events))
+	}
+
+	// First event should be ContextEstimated
+	_, ok := events[0].(event.ContextEstimated)
+	if !ok {
+		t.Fatalf("expected ContextEstimated, got %T", events[0])
 	}
 
 	// The fake adapter sends content in two chunks (mid split), so we may have
 	// two event.TextDelta events
 	var gotText string
-	for _, e := range events[:len(events)-1] {
+	for _, e := range events[1:len(events)-1] {
 		deltaEv, ok := e.(event.TextDelta)
 		if !ok {
 			t.Fatalf("expected event.TextDelta, got %T", e)
