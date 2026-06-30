@@ -78,7 +78,9 @@ func (ss *StreamSession) Execute(ctx context.Context, sessionID, userInput strin
 func (ss *StreamSession) streamStep(session SessionView) stepFunc {
 	return func(ctx context.Context, msgs []Message, schemas []ToolSchema, events eventSender) (*llmStepResult, error) {
 		start := time.Now()
-		resultCh, err := ss.conv.router.Adapter(session).Stream(ctx, msgs, schemas, ss.conv.config.Options)
+		opts := ss.conv.config.Options
+		opts.SessionID = session.SessionID()
+		resultCh, err := ss.conv.router.Adapter(session).Stream(ctx, msgs, schemas, opts)
 		if err != nil {
 			return nil, err
 		}

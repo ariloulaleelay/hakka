@@ -47,14 +47,18 @@ type ToolCallFinished struct {
 
 func (ToolCallFinished) engineEvent() {}
 
-// UsageInfo carries token usage information for a single LLM call.
+// UsageInfo carries token usage and cost information for a single LLM call.
 // Duration is the wall-clock time of the LLM call (nanoseconds),
 // set by the engine as an informational metric.
+// Cost is the monetary cost in USD, extracted from the provider response.
+// TotalCost is the accumulated cost across the entire session.
 type UsageInfo struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
 	Duration         time.Duration
+	Cost             float64
+	TotalCost        float64
 }
 
 // UsageReported is emitted after every successful LLM call (including
@@ -76,12 +80,16 @@ type TextDelta struct {
 func (TextDelta) engineEvent() {}
 
 // TurnFinished is emitted once at the end of a turn, carrying the final
-// assistant message or an error.
+// assistant message or an error along with consolidated session stats.
 type TurnFinished struct {
-	SessionID   string
-	Reply       string
-	Err         error
-	TotalTokens int // accumulated token usage from the session
+	SessionID             string
+	Reply                 string
+	Err                   error
+	TotalTokens           int     // accumulated token usage from the session
+	TotalCost             float64 // accumulated monetary cost in USD
+	MessageCount          int     // total messages in session history
+	EstimatedContextTokens int    // last estimated context size in tokens
+	Model                 string  // model used for this turn
 }
 
 func (TurnFinished) engineEvent() {}

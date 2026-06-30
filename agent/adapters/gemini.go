@@ -244,9 +244,17 @@ func (ad *GeminiAdapter) streamEndpoint() string {
 // --- Complete ---------------------------------------------------------------
 
 func (ad *GeminiAdapter) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (*agent.LLMResponse, error) {
-	var geminiResp geminiResponse
-	if err := doJSONPost(ctx, ad.HTTPClient, ad.endpoint(), ad.buildRequest(msgs, tools, opts), &geminiResp, "gemini", nil); err != nil {
+	// First decode into raw JSON to extract cost
+	var rawBody json.RawMessage
+	if err := doJSONPost(ctx, ad.HTTPClient, ad.endpoint(), ad.buildRequest(msgs, tools, opts), &rawBody, "gemini", nil); err != nil {
 		return nil, err
+	}
+
+	cost := extractCostFromUsage(rawBody)
+
+	var geminiResp geminiResponse
+	if err := json.Unmarshal(rawBody, &geminiResp); err != nil {
+		return nil, fmt.Errorf("gemini: decode response: %w", err)
 	}
 	if len(geminiResp.Candidates) == 0 {
 		return nil, fmt.Errorf("gemini: no candidates")
@@ -259,6 +267,7 @@ func (ad *GeminiAdapter) Complete(ctx context.Context, msgs []agent.Message, too
 			PromptTokens:     geminiResp.UsageMetadata.PromptTokenCount,
 			CompletionTokens: geminiResp.UsageMetadata.CandidatesTokenCount,
 			TotalTokens:      geminiResp.UsageMetadata.TotalTokenCount,
+			Cost:             cost,
 		},
 	}
 	var text strings.Builder
@@ -347,10 +356,12 @@ func (ad *GeminiAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 				// Check finish reason
 				if candidate.FinishReason != "" {
 					if geminiResp.UsageMetadata.TotalTokenCount > 0 {
+						cost := extractCostFromUsage([]byte(payload))
 						pendingUsage = &agent.Usage{
 							PromptTokens:     geminiResp.UsageMetadata.PromptTokenCount,
 							CompletionTokens: geminiResp.UsageMetadata.CandidatesTokenCount,
 							TotalTokens:      geminiResp.UsageMetadata.TotalTokenCount,
+							Cost:             cost,
 						}
 					}
 					sendStreamFinal(resultCh, accum.flush(), pendingUsage)

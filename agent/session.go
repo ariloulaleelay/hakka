@@ -68,6 +68,7 @@ type SessionData struct {
 	Name             string
 	Model            string
 	TotalTokens      int
+	TotalCost        float64
 	EstimatedContextTokens int
 	EnabledTools     map[string]bool
 	BlockedTools     map[string]bool
@@ -385,6 +386,24 @@ func (sess *Session) SetTotalTokenUsage(tokens int) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	sess.data.TotalTokens = tokens
+}
+
+func (sess *Session) TotalCost() float64 {
+	sess.mu.RLock()
+	defer sess.mu.RUnlock()
+	return sess.data.TotalCost
+}
+
+func (sess *Session) AddCost(cost float64) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.data.TotalCost += cost
+}
+
+func (sess *Session) SetTotalCost(cost float64) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.data.TotalCost = cost
 }
 
 func (sess *Session) GetEstimatedContextTokens() int {

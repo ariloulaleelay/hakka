@@ -269,6 +269,7 @@ func (sc *SessionCommands) jsonSessionInfo(ctx context.Context, sessionID string
 			"model":             sc.modelName(session),
 			"message_count":     len(session.AllMessages()),
 			"total_tokens":              session.TotalTokenUsage(),
+			"total_cost":                session.TotalCost(),
 			"estimated_context_tokens": session.GetEstimatedContextTokens(),
 			"compact_soft_limit": session.GetCompactSoftLimit(),
 			"estimated_context": estimateTokenCount(session.History()),

@@ -238,7 +238,7 @@ func buildAdapter(name string, modelCfg ModelConfig, client *http.Client, llmDeb
 		cfg := openai.DefaultConfig("dummy-key")
 		cfg.BaseURL = modelCfg.BaseURL
 		// Wrap transport to inject extra body fields (e.g. session_id for OpenRouter).
-		client.Transport = adapters.WrapTransport(client.Transport, modelCfg.Extra)
+		client.Transport = adapters.WrapTransport(client.Transport, modelCfg.Extra, llmDebugDir)
 		cfg.HTTPClient = client
 		adapter := adapters.NewOpenAIAdapter(openai.NewClientWithConfig(cfg), modelCfg.Model)
 		adapter.LLMDebugDir = llmDebugDir

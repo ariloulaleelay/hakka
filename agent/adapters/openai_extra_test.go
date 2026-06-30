@@ -19,7 +19,7 @@ func newOpenAITestAdapterWithExtra(t *testing.T, handler http.HandlerFunc, extra
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	transport := WrapTransport(http.DefaultTransport, extra)
+	transport := WrapTransport(http.DefaultTransport, extra, "")
 	httpClient := &http.Client{Transport: transport}
 
 	cfg := openai.DefaultConfig("test-key")

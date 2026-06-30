@@ -262,10 +262,14 @@ func (conv *Conversation) runTurnWithStep(ctx context.Context, session SessionVi
 		}
 
 		eventCh <- event.TurnFinished{
-			SessionID:   session.SessionID(),
-			Reply:       reply,
-			Err:         err,
-			TotalTokens: session.TotalTokenUsage(),
+			SessionID:              session.SessionID(),
+			Reply:                  reply,
+			Err:                    err,
+			TotalTokens:            session.TotalTokenUsage(),
+			TotalCost:              session.TotalCost(),
+			MessageCount:           len(session.AllMessages()),
+			EstimatedContextTokens: session.GetEstimatedContextTokens(),
+			Model:                  session.GetModel(),
 		}
 	}()
 	return eventCh

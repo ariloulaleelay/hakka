@@ -165,6 +165,9 @@ func RunBatchWithOutput(ctx context.Context, p RunBatchParams, output io.Writer,
 			if aux != nil {
 				fmt.Fprintf(aux, "session: %s\n", tf.SessionID)
 				fmt.Fprintf(aux, "tokens: %d\n", tf.TotalTokens)
+				fmt.Fprintf(aux, "cost: $%.6f\n", tf.TotalCost)
+				fmt.Fprintf(aux, "messages: %d\n", tf.MessageCount)
+				fmt.Fprintf(aux, "model: %s\n", tf.Model)
 			}
 		}
 	}

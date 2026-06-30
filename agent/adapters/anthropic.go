@@ -3,6 +3,7 @@ package adapters
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -225,9 +226,17 @@ func (ad *AnthropicAdapter) extraHeaders() map[string]string {
 // --- Complete ---------------------------------------------------------------
 
 func (ad *AnthropicAdapter) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (*agent.LLMResponse, error) {
-	var anthResp anthResponse
-	if err := doJSONPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildRequest(msgs, tools, opts), &anthResp, "anthropic", ad.extraHeaders()); err != nil {
+	// First decode into raw JSON to extract cost
+	var rawBody json.RawMessage
+	if err := doJSONPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildRequest(msgs, tools, opts), &rawBody, "anthropic", ad.extraHeaders()); err != nil {
 		return nil, err
+	}
+
+	cost := extractCostFromUsage(rawBody)
+
+	var anthResp anthResponse
+	if err := json.Unmarshal(rawBody, &anthResp); err != nil {
+		return nil, fmt.Errorf("anthropic: decode response: %w", err)
 	}
 
 	out := &agent.LLMResponse{
@@ -237,6 +246,7 @@ func (ad *AnthropicAdapter) Complete(ctx context.Context, msgs []agent.Message, 
 			PromptTokens:     anthResp.Usage.InputTokens,
 			CompletionTokens: anthResp.Usage.OutputTokens,
 			TotalTokens:      anthResp.Usage.InputTokens + anthResp.Usage.OutputTokens,
+			Cost:             cost,
 		},
 	}
 	var text strings.Builder
@@ -400,11 +410,13 @@ func (ad *AnthropicAdapter) parseSSEPayload(payload string) (*parsedAnthEvent, e
 		if err := json.Unmarshal([]byte(payload), &evt); err != nil {
 			return nil, nil
 		}
+		cost := extractCostFromUsage([]byte(payload))
 		return &parsedAnthEvent{
 			Usage: &agent.Usage{
 				PromptTokens:     evt.Usage.InputTokens,
 				CompletionTokens: evt.Usage.OutputTokens,
 				TotalTokens:      evt.Usage.InputTokens + evt.Usage.OutputTokens,
+				Cost:             cost,
 			},
 		}, nil
 

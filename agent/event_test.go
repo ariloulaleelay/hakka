@@ -290,3 +290,64 @@ func TestExecuteEvents_StreamSession(t *testing.T) {
 		t.Fatalf("unexpected error: %v", turnEv.Err)
 	}
 }
+
+// TestTurnFinishedCarriesSessionStats verifies that TurnFinished events
+// carry consolidated session statistics (TotalCost, MessageCount,
+// EstimatedContextTokens, Model) for client-side display.
+func TestTurnFinishedCarriesSessionStats(t *testing.T) {
+	conv, _, _, _ := newTestComponents(t, []LLMResponse{
+		{
+			Message:      Message{Role: RoleAssistant, Content: "stats check"},
+			FinishReason: "stop",
+			Usage:        &Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, Cost: 0.0001},
+		},
+	})
+
+	eventCh, err := conv.Execute(context.Background(), "", "hello")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var turnFinished *event.TurnFinished
+	for e := range eventCh {
+		if tf, ok := e.(event.TurnFinished); ok {
+			turnFinished = &tf
+		}
+	}
+
+	if turnFinished == nil {
+		t.Fatal("expected TurnFinished event")
+	}
+
+	// TotalTokens should be accumulated
+	if turnFinished.TotalTokens <= 0 {
+		t.Fatalf("expected TotalTokens > 0, got %d", turnFinished.TotalTokens)
+	}
+
+	// TotalCost should be > 0 since we provided Cost in Usage
+	if turnFinished.TotalCost <= 0 {
+		t.Fatalf("expected TotalCost > 0, got %f", turnFinished.TotalCost)
+	}
+
+	// MessageCount: 1 user message + 1 assistant reply = 2
+	if turnFinished.MessageCount != 2 {
+		t.Fatalf("expected MessageCount=2, got %d", turnFinished.MessageCount)
+	}
+
+	// EstimatedContextTokens should be set by the engine before the LLM call
+	if turnFinished.EstimatedContextTokens <= 0 {
+		t.Fatalf("expected EstimatedContextTokens > 0, got %d", turnFinished.EstimatedContextTokens)
+	}
+
+	// Model should be non-empty (set by EnsureDefaultModel)
+	if turnFinished.Model == "" {
+		t.Fatal("expected Model to be non-empty")
+	}
+
+	if turnFinished.Err != nil {
+		t.Fatalf("unexpected error: %v", turnFinished.Err)
+	}
+	if turnFinished.Reply != "stats check" {
+		t.Fatalf("expected reply 'stats check', got %q", turnFinished.Reply)
+	}
+}

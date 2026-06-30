@@ -486,3 +486,83 @@ func newGatewayComponentsWithAdapter(adapter agent.LLMAdapter) (*agent.Conversat
 	cmd := commands.New(sm, conv, "", "tcp")
 	return conv, streamer, cmd
 }
+
+// TestWebSocketGatewayEmitsStatsMetaBeforeDone verifies that a meta
+// event with consolidated session stats (total_tokens, total_cost,
+// message_count, estimated_context_tokens, model) is emitted before
+// the final done frame at the end of a turn.
+func TestWebSocketGatewayEmitsStatsMetaBeforeDone(t *testing.T) {
+	conv, streamer, cmd := newGatewayComponents("stats-check")
+	addr := freeAddr(t)
+	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	if err := gw.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer gw.Stop(context.Background())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	url := "ws://" + addr + "/ws"
+	var (
+		c   *websocket.Conn
+		err error
+	)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		c, _, err = websocket.Dial(ctx, url, nil)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.CloseNow()
+
+	if err := c.Write(ctx, websocket.MessageText, []byte(`{"input":"check stats"}`)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	var (
+		metaSeen     bool
+		metaHasStats bool
+		doneSeen     bool
+	)
+	for !doneSeen {
+		_, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		var frame FrameResponse
+		if err := json.Unmarshal(data, &frame); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if frame.Error != "" {
+			t.Fatalf("unexpected error: %s", frame.Error)
+		}
+
+		if frame.Event == "meta" && frame.Data != nil {
+			metaSeen = true
+			if _, ok := frame.Data["total_tokens"]; ok {
+				metaHasStats = true
+				t.Logf("meta stats: total_tokens=%v, total_cost=%v, message_count=%v, estimated_context_tokens=%v, model=%v",
+					frame.Data["total_tokens"], frame.Data["total_cost"],
+					frame.Data["message_count"], frame.Data["estimated_context_tokens"],
+					frame.Data["model"])
+			}
+		}
+
+		if frame.Done {
+			doneSeen = true
+		}
+	}
+
+	if !metaSeen {
+		t.Fatal("BUG CONFIRMED: expected a meta event with stats before done frame, but none was seen")
+	}
+	if !metaHasStats {
+		t.Fatal("BUG CONFIRMED: meta event did not contain expected stats fields")
+	}
+}

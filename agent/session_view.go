@@ -60,13 +60,20 @@ type SessionModelBinding interface {
 	SetModel(name string)
 }
 
-// SessionTokenTracking tracks accumulated token usage.
+// SessionTokenTracking tracks accumulated token usage and cost.
 // SessionTokenTracking tracks accumulated token usage and estimated
 // context size for observability.
 type SessionTokenTracking interface {
 	TotalTokenUsage() int
 	AddTokenUsage(tokens int)
 	SetTotalTokenUsage(tokens int)
+
+	// TotalCost returns the accumulated monetary cost in USD.
+	TotalCost() float64
+	// AddCost adds to the accumulated monetary cost.
+	AddCost(cost float64)
+	// SetTotalCost sets the accumulated monetary cost.
+	SetTotalCost(cost float64)
 
 	// GetEstimatedContextTokens returns the last estimated context size in tokens.
 	GetEstimatedContextTokens() int

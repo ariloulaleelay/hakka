@@ -111,6 +111,7 @@ func sessionToMap(s *agent.Session) map[string]any {
 		"message_count":  len(s.AllMessages()),
 		"model":          s.GetModel(),
 		"total_tokens":              s.TotalTokenUsage(),
+		"total_cost":                s.TotalCost(),
 		"estimated_context_tokens": s.GetEstimatedContextTokens(),
 	}
 }
@@ -192,6 +193,10 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 		if d := e.Usage.Duration; d > 0 {
 			data["duration_ns"] = d.Nanoseconds()
 		}
+		if c := e.Usage.Cost; c > 0 {
+			data["cost"] = c
+		}
+		data["total_cost"] = e.Usage.TotalCost
 		return writeFrame(w, FrameResponse{
 			SessionID: e.SessionID,
 			Event:     "meta",
@@ -218,6 +223,23 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 		})
 	case event.TurnFinished:
 		sid := e.SessionID
+
+		// Emit consolidated session stats as a meta event before the
+		// final done frame. This gives clients a single reliable source
+		// of truth for end-of-turn state.
+		stats := map[string]any{
+			"total_tokens":              e.TotalTokens,
+			"total_cost":                e.TotalCost,
+			"message_count":             e.MessageCount,
+			"estimated_context_tokens":  e.EstimatedContextTokens,
+			"model":                     e.Model,
+		}
+		writeFrame(w, FrameResponse{
+			SessionID: sid,
+			Event:     "meta",
+			Data:      stats,
+		})
+
 		if e.Err != nil {
 			if errors.Is(e.Err, context.Canceled) {
 				return writeFrame(w, FrameResponse{
@@ -226,7 +248,7 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 					Done:      true,
 				})
 			}
-			return writeFrame(w, FrameResponse{SessionID: sid, Error: e.Err.Error()})
+			return writeFrame(w, FrameResponse{SessionID: sid, Error: e.Err.Error(), Done: true})
 		}
 		return writeFrame(w, FrameResponse{
 			SessionID: sid,

@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,30 +41,81 @@ type OpenAIAdapter struct {
 // The extraRoundTripper wraps the HTTP transport used by the go-openai client.
 // It intercepts every outgoing request, reads the JSON body, merges extra
 // fields (static + per-request), resolves placeholders, and forwards.
+// It also intercepts the response to extract usage.cost when available.
 // ---------------------------------------------------------------------------
 
 type ctxKey string
 
 const (
-	ctxExtraPerReq ctxKey = "extra_per_req"
-	ctxSessionID   ctxKey = "session_id"
+	ctxExtraPerReq  ctxKey = "extra_per_req"
+	ctxSessionID    ctxKey = "session_id"
+	ctxCostCapture  ctxKey = "cost_capture" // *float64 to receive extracted cost
 )
 
+// ContextWithCostCapture stores a *float64 pointer that the transport will
+// populate with the cost extracted from the provider response's usage.cost field.
+func ContextWithCostCapture(ctx context.Context, ptr *float64) context.Context {
+	return context.WithValue(ctx, ctxCostCapture, ptr)
+}
+
 // extraRoundTripper wraps an http.RoundTripper and injects extra fields
-// into the JSON request body before forwarding.
+// into the JSON request body before forwarding. It also captures cost
+// from response bodies.
 type extraRoundTripper struct {
-	base  http.RoundTripper
-	extra map[string]any // static extras from config (may contain placeholders)
+	base       http.RoundTripper
+	extra      map[string]any // static extras from config (may contain placeholders)
+	debugDir   string         // when non-empty, dump final wire body here
+}
+
+// costCaptureBody wraps an io.ReadCloser (SSE response body for streaming)
+// and scans for "usage" objects containing a "cost" field, storing the
+// last seen cost value into the provided pointer.
+type costCaptureBody struct {
+	io.ReadCloser
+	cost  *float64
+	remainder []byte
+}
+
+func (b *costCaptureBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 {
+		data := append(b.remainder, p[:n]...)
+		b.remainder = nil
+
+		// Process complete SSE lines
+		for {
+			idx := bytes.IndexByte(data, '\n')
+			if idx < 0 {
+				// Incomplete line — save for next read
+				b.remainder = append(b.remainder[:0], data...)
+				break
+			}
+			line := string(data[:idx])
+			data = data[idx+1:]
+
+			// Check for SSE data line containing usage
+			if strings.HasPrefix(line, "data: ") {
+				payload := strings.TrimSpace(line[6:])
+				if c := extractCostFromUsage([]byte(payload)); c > 0 {
+					*b.cost = c
+				}
+			}
+		}
+	}
+	return n, err
 }
 
 // RoundTrip intercepts the request, merges extras into the body, and forwards.
+// For non-streaming responses, it reads the full body to extract cost.
+// For streaming responses, it wraps the body to capture cost from SSE events.
 func (t *extraRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	perReqExtra, _ := req.Context().Value(ctxExtraPerReq).(map[string]any)
 	sessionID, _ := req.Context().Value(ctxSessionID).(string)
 
 	merged := mergeExtra(t.extra, perReqExtra, sessionID)
 	if len(merged) == 0 {
-		return t.base.RoundTrip(req)
+		resp, err := t.base.RoundTrip(req)
+		return t.handleResponse(req, resp, err)
 	}
 
 	// Read the existing JSON body
@@ -86,11 +140,52 @@ func (t *extraRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 		return nil, err
 	}
 
+	// Dump final wire body to debug directory if configured
+	if t.debugDir != "" {
+		n := reqCounter.Add(1)
+		ts := time.Now().UnixNano()
+		dumpPath := filepath.Join(t.debugDir, fmt.Sprintf("openai_wire_%d_%d_body.json", ts, n))
+		_ = os.MkdirAll(t.debugDir, 0755)
+		_ = os.WriteFile(dumpPath, newBody, 0644)
+	}
+
 	// Clone request with new body
 	newReq := req.Clone(req.Context())
 	newReq.Body = io.NopCloser(bytes.NewReader(newBody))
 	newReq.ContentLength = int64(len(newBody))
-	return t.base.RoundTrip(newReq)
+	resp, err := t.base.RoundTrip(newReq)
+	return t.handleResponse(newReq, resp, err)
+}
+
+// handleResponse processes the HTTP response to extract cost if needed.
+func (t *extraRoundTripper) handleResponse(req *http.Request, resp *http.Response, err error) (*http.Response, error) {
+	if err != nil || resp == nil {
+		return resp, err
+	}
+	costPtr, _ := req.Context().Value(ctxCostCapture).(*float64)
+	if costPtr == nil {
+		return resp, nil
+	}
+
+	// For streaming responses, wrap body to capture cost from SSE events
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		resp.Body = &costCaptureBody{ReadCloser: resp.Body, cost: costPtr}
+		return resp, nil
+	}
+
+	// For non-streaming responses, read full body and extract cost
+	body, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+
+	*costPtr = extractCostFromUsage(body)
+
+	// Reconstruct response body
+	newResp := *resp
+	newResp.Body = io.NopCloser(bytes.NewReader(body))
+	return &newResp, nil
 }
 
 // mergeExtra combines static extras (with placeholder resolution) and
@@ -129,11 +224,13 @@ func ContextWithExtras(ctx context.Context, sessionID string, perReqExtra map[st
 
 // WrapTransport wraps an http.RoundTripper with extra-body injection.
 // If extras is empty, the base transport is returned unchanged.
-func WrapTransport(base http.RoundTripper, extra map[string]any) http.RoundTripper {
+// debugDir, when non-empty, enables dumping the final wire body after
+// extra injection.
+func WrapTransport(base http.RoundTripper, extra map[string]any, debugDir string) http.RoundTripper {
 	if len(extra) == 0 {
 		return base
 	}
-	return &extraRoundTripper{base: base, extra: extra}
+	return &extraRoundTripper{base: base, extra: extra, debugDir: debugDir}
 }
 
 func NewOpenAIAdapter(client *openai.Client, model string) *OpenAIAdapter {
@@ -223,9 +320,12 @@ func (ad *OpenAIAdapter) Complete(ctx context.Context, msgs []agent.Message, too
 		ctx = ContextWithExtras(ctx, opts.SessionID, opts.Extra)
 	}
 
+	// Set up cost capture via transport
+	var cost float64
+	ctx = ContextWithCostCapture(ctx, &cost)
+
 	req := ad.buildRequest(msgs, tools, opts)
 	resp, err := retryOpenAI(ctx, req, func() (openai.ChatCompletionResponse, error) {
-		dumpDebugJSON(ad.LLMDebugDir, "openai", "req", req)
 		return ad.Client.CreateChatCompletion(ctx, req)
 	})
 	if err != nil {
@@ -246,6 +346,7 @@ func (ad *OpenAIAdapter) Complete(ctx context.Context, msgs []agent.Message, too
 			PromptTokens:     resp.Usage.PromptTokens,
 			CompletionTokens: resp.Usage.CompletionTokens,
 			TotalTokens:      resp.Usage.TotalTokens,
+			Cost:             cost,
 		},
 	}
 	for _, toolCall := range choice.Message.ToolCalls {
@@ -326,12 +427,15 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 		ctx = ContextWithExtras(ctx, opts.SessionID, opts.Extra)
 	}
 
+	// Set up cost capture via transport (captured from SSE events)
+	var cost float64
+	ctx = ContextWithCostCapture(ctx, &cost)
+
 	req := ad.buildRequest(msgs, tools, opts)
 	req.Stream = true
 	req.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
 
 	stream, err := retryOpenAI(ctx, req, func() (*openai.ChatCompletionStream, error) {
-		dumpDebugJSON(ad.LLMDebugDir, "openai", "req", req)
 		return ad.Client.CreateChatCompletionStream(ctx, req)
 	})
 	if err != nil {
@@ -350,7 +454,10 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 		for {
 			resp, err := stream.Recv()
 			if errors.Is(err, io.EOF) {
-				// Stream complete — flush accumulated tool calls if any.
+				// Stream complete — attach captured cost before finalizing
+				if pendingUsage != nil && cost > 0 {
+					pendingUsage.Cost = cost
+				}
 				sendStreamFinal(resultCh, accum.flush(), pendingUsage)
 				return
 			}
@@ -360,6 +467,18 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 			}
 
 			dumpDebugJSON(ad.LLMDebugDir, "openai", "stream_resp", resp)
+
+			// Capture usage if present. With stream_options: {"include_usage": true},
+			// the usage arrives as a separate SSE event AFTER the finish_reason chunk
+			// (no choices in this event), so we must capture it outside the choices loop.
+			if resp.Usage != nil && resp.Usage.TotalTokens > 0 {
+				pendingUsage = &agent.Usage{
+					PromptTokens:     resp.Usage.PromptTokens,
+					CompletionTokens: resp.Usage.CompletionTokens,
+					TotalTokens:      resp.Usage.TotalTokens,
+					Cost:             cost,
+				}
+			}
 
 			for _, choice := range resp.Choices {
 				// Merge tool call deltas by index using the shared accumulator.
@@ -381,20 +500,9 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 					}
 				}
 
-				// Capture usage if present
-				if resp.Usage != nil && resp.Usage.TotalTokens > 0 {
-					pendingUsage = &agent.Usage{
-						PromptTokens:     resp.Usage.PromptTokens,
-						CompletionTokens: resp.Usage.CompletionTokens,
-						TotalTokens:      resp.Usage.TotalTokens,
-					}
-				}
-
-				// Finish reason signals end of this assistant turn
-				if choice.FinishReason != "" {
-					sendStreamFinal(resultCh, accum.flush(), pendingUsage)
-					return
-				}
+				// Do NOT return on finish_reason — the usage SSE event comes AFTER
+				// the finish_reason chunk when IncludeUsage is set. Continue reading
+				// until io.EOF to capture usage, then finalize.
 			}
 		}
 	}()

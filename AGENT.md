@@ -287,12 +287,24 @@ All frames share the base fields in `FrameResponse`:
 
 *Token usage (after every LLM call):*
 ```json
-{"session_id": "<uuid>", "event": "meta", "data": {"prompt_tokens": 1234, "completion_tokens": 56, "total_tokens": 1290, "duration_ns": 1234567890}}
+{"session_id": "<uuid>", "event": "meta", "data": {"prompt_tokens": 1234, "completion_tokens": 56, "total_tokens": 1290, "duration_ns": 1234567890, "cost": 0.0000950625, "total_cost": 0.000190125}}
 ```
 
 The `duration_ns` field reports the wall-clock time of the LLM call in nanoseconds.
 It is available on every assistant message's `usage` field.
 Use `completion_tokens / (duration_ns / 1e9)` to compute tokens/second throughput.
+
+*End-of-turn session stats (before every `done: true` frame):*
+```json
+{"session_id": "<uuid>", "event": "meta", "data": {"total_tokens": 1290, "total_cost": 0.000190125, "message_count": 5, "estimated_context_tokens": 52000, "model": "deepseek"}}
+```
+
+This meta event is emitted **before** the final `done: true` frame at the end of every turn. It provides consolidated session statistics that clients can use to display updated totals after each interaction. The fields are:
+- `total_tokens` — accumulated token usage across the entire session
+- `total_cost` — accumulated monetary cost in USD
+- `message_count` — total messages in the session
+- `estimated_context_tokens` — last estimated context size in tokens
+- `model` — the model used for this turn
 
 *Estimated context size (before every LLM call):*
 ```json

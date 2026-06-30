@@ -16,6 +16,20 @@ import (
 // (Anthropic, Gemini). The OpenAI adapter uses the go-openai library instead.
 // ---------------------------------------------------------------------------
 
+// extractCostFromUsage parses raw provider response JSON and extracts the
+// "cost" field from the "usage" object. Returns 0 if not found or unparseable.
+func extractCostFromUsage(body []byte) float64 {
+	var resp struct {
+		Usage struct {
+			Cost float64 `json:"cost"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return 0
+	}
+	return resp.Usage.Cost
+}
+
 // errHTTPStatus is returned when the provider returns an HTTP error.
 type errHTTPStatus struct {
 	Prefix string // used in error message, e.g. "anthropic" or "gemini"

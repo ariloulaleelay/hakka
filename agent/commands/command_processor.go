@@ -296,6 +296,7 @@ func sessionToMap(s *agent.Session) map[string]any {
 		"message_count": len(d.Messages),
 		"model":         s.GetModel(),
 		"total_tokens":              s.TotalTokenUsage(),
+		"total_cost":                s.TotalCost(),
 		"estimated_context_tokens": s.GetEstimatedContextTokens(),
 		"client_cwd":    d.ClientCWD,
 		"created_at":    d.CreatedAt.Format(time.RFC3339),
