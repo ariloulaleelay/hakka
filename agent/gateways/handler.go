@@ -62,6 +62,10 @@ func NewTurnHandler(conv *agent.Conversation, streamer *agent.StreamSession, cmd
 	}
 }
 
+// Turns returns the underlying turnTracker, used by gateways for
+// session discovery (in_flight status) and subscription management.
+func (h *TurnHandler) Turns() *turnTracker { return h.turns }
+
 // CancelSession cancels an in-flight request for the given session.
 // Returns true if a running request was found and cancelled, false if
 // there was no active request for that session.
@@ -80,38 +84,37 @@ func (h *TurnHandler) executor(stream bool) agent.TurnExecutor {
 
 // HandleRequest processes a single user request.
 //
-// If the request has a Command field, it is handled as a structured JSON
-// command (no LLM invocation). Otherwise, it is treated as a chat/stream
-// request (text-based slash command parsing is handled by the client).
+// The request type (chat vs command) is determined by the "type" field:
+//   - "cmd": structured JSON command (no LLM invocation)
+//   - "chat": chat/stream turn (LLM invocation)
+//   - "": legacy fallback: if Command is set, treat as cmd; otherwise chat
 //
 // If there is already an active turn for this session (e.g. from a
 // previous client that disconnected), the new writer is subscribed to
 // the existing turn instead of starting a new one.
 func (h *TurnHandler) HandleRequest(ctx context.Context, req FrameRequest, w frameWriter, responseReader *InProcessResponseReader) {
-	// JSON command: structured command from a JSON-capable client.
-	if req.Command != nil && h.Cmd != nil {
+	// Determine if this is a command or chat request.
+	isCmd := req.Type == "cmd"
+	if req.Type == "" {
+		// Legacy: command field presence determines type.
+		isCmd = req.Command != nil && h.Cmd != nil
+	}
+
+	if isCmd {
 		h.handleJSONCommand(ctx, req, w, responseReader)
 		return
 	}
 
-	// Resolve session and set CWD *before* the turn starts, so that
-	// session.History() already contains the correct directory hint.
+	// Chat request.
 	sessionID := h.resolveSessionAndCWD(ctx, req)
 
-	// Check for an active turn for this session. If one exists,
-	// subscribe (or replace) the new writer — this handles reconnection
-	// when the input is empty (no user message) or when the new client
-	// joins mid-turn.
+	// Check for an active turn for this session.
 	if active := h.turns.Get(sessionID); active != nil {
 		if req.Input == "" {
-			// Empty input means this is a reconnection subscription
-			// (e.g. client reconnected and wants to catch the tail
-			// of the stream without sending new input).
+			// Empty input means reconnection subscription.
 			active.ReplaceSubscriber(ctx, w)
 		} else {
-			// Non-empty input while a turn is active: the client wants
-			// to send new input, but the previous turn hasn't finished.
-			// Cancel the old turn and start a new one.
+			// Non-empty input while turn is active: cancel old, start new.
 			h.turns.Cancel(sessionID)
 			h.startNewTurn(ctx, w, responseReader, req, sessionID, req.Input)
 		}
@@ -192,7 +195,7 @@ func (h *TurnHandler) handleJSONCommand(ctx context.Context, req FrameRequest, w
 func (h *TurnHandler) handleWithEngine(ctx context.Context, w frameWriter, sessionID, input string, exec agent.TurnExecutor, cancel context.CancelFunc) {
 	eventCh, err := exec.Execute(ctx, sessionID, input)
 	if err != nil {
-		_ = w.Write(FrameResponse{Error: err.Error()})
+		_ = w.Write(FrameResponse{Type: "error", SessionID: sessionID, Error: err.Error()})
 		return
 	}
 

@@ -447,9 +447,11 @@ function M.append_tool_event(name, status, snippet, data)
   end
 end
 
-function M.append_meta_event(data)
-  local ctx = data.prompt_tokens or 0
-  local total = data.total_tokens or 0
+--- Append a usage event (token usage after each LLM call).
+--- @param frame table The usage frame with direct fields: prompt_tokens, total_tokens, etc.
+function M.append_usage_event(frame)
+  local ctx = frame.prompt_tokens or 0
+  local total = frame.total_tokens or 0
   vim.g.hakka_tokens = string.format("%d ctx / %d req", ctx, total)
   vim.api.nvim_exec_autocmds("User", { pattern = "HakkaTokensUpdated" })
 end

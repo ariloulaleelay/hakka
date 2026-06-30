@@ -52,13 +52,15 @@ func (ToolCallFinished) engineEvent() {}
 // set by the engine as an informational metric.
 // Cost is the monetary cost in USD, extracted from the provider response.
 // TotalCost is the accumulated cost across the entire session.
+// EstimatedContextTokens is the last estimated context size before the LLM call.
 type UsageInfo struct {
-	PromptTokens     int
-	CompletionTokens int
-	TotalTokens      int
-	Duration         time.Duration
-	Cost             float64
-	TotalCost        float64
+	PromptTokens           int
+	CompletionTokens       int
+	TotalTokens            int
+	Duration               time.Duration
+	Cost                   float64
+	TotalCost              float64
+	EstimatedContextTokens int
 }
 
 // UsageReported is emitted after every successful LLM call (including

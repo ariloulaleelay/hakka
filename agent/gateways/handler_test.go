@@ -39,7 +39,7 @@ func (w *spyWriter) LastDone() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for i := len(w.frames) - 1; i >= 0; i-- {
-		if w.frames[i].Done {
+		if w.frames[i].Type == "done" {
 			return true
 		}
 	}
@@ -52,7 +52,7 @@ func (w *spyWriter) WaitForDone(t *testing.T, timeout time.Duration) bool {
 	for {
 		w.mu.Lock()
 		for i := len(w.frames) - 1; i >= 0; i-- {
-			if w.frames[i].Done {
+			if w.frames[i].Type == "done" {
 				w.mu.Unlock()
 				return true
 			}
@@ -171,7 +171,7 @@ func TestContinueCommand_TriggersLLM(t *testing.T) {
 	frames := writer.Frames()
 	var foundDone bool
 	for _, f := range frames {
-		if f.Done {
+		if f.Type == "done" {
 			foundDone = true
 			if f.Error != "" {
 				t.Fatalf("continue returned error: %s", f.Error)

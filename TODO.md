@@ -53,6 +53,7 @@ This file is for humans only, agent should not modify it!
     - [ ] Session tags
   - [ ] Better session persistence (dedicated table for messages, not a single json blob)
 - [x] Add standalone agentic mode (batch run without human, for real autonomous tasks)
+  - [ ] Better logging in batch mode (I want to see what actually happens)
 - [ ] Advanced session manipulation — on the fly context compression, guided context compression, stashes, forks
     - [x] Guided session compression
 - [x] Implement discovery tool.

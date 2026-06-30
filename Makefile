@@ -1,10 +1,9 @@
 .PHONY: build test cover run lint clean
 
-BIN := bin/hakka
+BIN := hakka
 DB ?= hakka.db
 
 build:
-	@mkdir -p bin
 	go build -o $(BIN) ./cmd/hakka
 
 test:
@@ -17,16 +16,16 @@ cover:
 	go test -cover ./...
 
 debug-run: build
-	$(BIN) --llm-debug logs --log-level debug --config hakka.json $(if $(DB),--db $(DB),)
+	./$(BIN) --llm-debug logs --log-level debug --config hakka.json $(if $(DB),--db $(DB),)
 
 run: build
-	$(BIN) --log-level info --config hakka.json $(if $(DB),--db $(DB),)
+	./$(BIN) --log-level info --config hakka.json $(if $(DB),--db $(DB),)
 
 failsafe-run: build
-	$(BIN) --log-level debug --config hakka.json
+	./$(BIN) --log-level debug --config hakka.json
 
 lint:
 	go vet ./...
 
 clean:
-	rm -rf bin
+	rm -rf $(BIN)

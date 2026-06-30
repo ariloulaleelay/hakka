@@ -52,33 +52,6 @@ func newNamedGatewayComponents(reply, ns string) (*agent.Conversation, *agent.St
 	return conv, streamer, cmd
 }
 
-func freeAddr(t *testing.T) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	return addr
-}
-
-func dialRetry(t *testing.T, addr string) net.Conn {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		c, err := net.Dial("tcp", addr)
-		if err == nil {
-			return c
-		}
-		lastErr = err
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("dial %s: %v", addr, lastErr)
-	return nil
-}
-
 // twoStageAdapter returns tool calls on the first Stream call and text on
 // the second, simulating a realistic streaming tool round-trip.
 type twoStageAdapter struct {
@@ -107,6 +80,59 @@ func (a *twoStageAdapter) Stream(_ context.Context, _ []agent.Message, _ []agent
 	return ch, nil
 }
 
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	return addr
+}
+
+// wsDial is a helper that dials a WebSocket gateway and returns the connection.
+func wsDial(t *testing.T, addr string) *websocket.Conn {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	url := "ws://" + addr + "/ws"
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		c, _, err := websocket.Dial(ctx, url, nil)
+		if err == nil {
+			return c
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("wsDial %s: timed out", url)
+	return nil
+}
+
+// readUntilDone reads WebSocket frames, discarding non-done frames, and
+// returns the final "done" frame data.
+func readUntilDone(t *testing.T, conn *websocket.Conn) []byte {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		var base struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(data, &base); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if base.Type == "done" {
+			return data
+		}
+	}
+}
+
 // --- WebSocket test cases ---------------------------------------------------
 
 func TestWebSocketGatewayRoundTrip(t *testing.T) {
@@ -118,54 +144,33 @@ func TestWebSocketGatewayRoundTrip(t *testing.T) {
 	}
 	defer gw.Stop(context.Background())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	url := "ws://" + addr + "/ws"
-	var (
-		c   *websocket.Conn
-		err error
-	)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		c, _, err = websocket.Dial(ctx, url, nil)
-		if err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	c := wsDial(t, addr)
 	defer c.CloseNow()
 
-	if err := c.Write(ctx, websocket.MessageText, []byte(`{"input":"hello"}`)); err != nil {
-		t.Fatalf("write: %v", err)
+	// Discard welcome frame
+	var welcome struct{ Type string }
+	readWSFrame(t, c, 3*time.Second, &welcome)
+
+	writeWSFrame(t, c, map[string]any{"type": "chat", "input": "hello"})
+
+	data := readUntilDone(t, c)
+	var done struct {
+		Type      string `json:"type"`
+		Output    string `json:"output"`
+		SessionID string `json:"session_id"`
+		Error     string `json:"error"`
 	}
-	var output string
-	var done bool
-	for !done {
-		_, data, err := c.Read(ctx)
-		if err != nil {
-			t.Fatalf("read: %v", err)
-		}
-		var resp FrameResponse
-		if err := json.Unmarshal(data, &resp); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if resp.Error != "" {
-			t.Fatalf("unexpected error: %s", resp.Error)
-		}
-		if resp.Output != "" {
-			output = resp.Output
-		}
-		done = resp.Done
-		if resp.SessionID == "" {
-			t.Fatal("expected non-empty session_id in every frame")
-		}
+	if err := json.Unmarshal(data, &done); err != nil {
+		t.Fatalf("unmarshal done: %v", err)
 	}
-	if output != "ws-pong" {
-		t.Fatalf("expected output %q, got: %q", "ws-pong", output)
+	if done.Error != "" {
+		t.Fatalf("unexpected error: %s", done.Error)
+	}
+	if done.Output != "ws-pong" {
+		t.Fatalf("expected output %q, got: %q", "ws-pong", done.Output)
+	}
+	if done.SessionID == "" {
+		t.Fatal("expected non-empty session_id in done frame")
 	}
 }
 
@@ -178,49 +183,40 @@ func TestWebSocketGatewayStream(t *testing.T) {
 	}
 	defer gw.Stop(context.Background())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	url := "ws://" + addr + "/ws"
-	var (
-		c   *websocket.Conn
-		err error
-	)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		c, _, err = websocket.Dial(ctx, url, nil)
-		if err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	c := wsDial(t, addr)
 	defer c.CloseNow()
 
-	if err := c.Write(ctx, websocket.MessageText, []byte(`{"input":"hi","stream":true}`)); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	// Discard welcome
+	var welcome struct{ Type string }
+	readWSFrame(t, c, 3*time.Second, &welcome)
 
-	var (
-		acc  strings.Builder
-		done bool
-	)
-	for !done {
+	writeWSFrame(t, c, map[string]any{"type": "chat", "input": "hi", "stream": true})
+
+	var acc strings.Builder
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
 		_, data, err := c.Read(ctx)
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
-		var frame FrameResponse
+		var frame struct {
+			Type  string `json:"type"`
+			Text  string `json:"text"`
+			Error string `json:"error"`
+		}
 		if err := json.Unmarshal(data, &frame); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
 		if frame.Error != "" {
 			t.Fatalf("frame error: %s", frame.Error)
 		}
-		acc.WriteString(frame.Delta)
-		done = frame.Done
+		if frame.Type == "delta" {
+			acc.WriteString(frame.Text)
+		}
+		if frame.Type == "done" {
+			break
+		}
 	}
 	if acc.String() != "streamed-payload" {
 		t.Fatalf("expected concatenated payload %q, got: %q", "streamed-payload", acc.String())
@@ -258,53 +254,52 @@ func TestWebSocketGatewayStreamToolFallbackUsesStreamNotComplete(t *testing.T) {
 	}
 	defer gw.Stop(context.Background())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	url := "ws://" + addr + "/ws"
-	var (
-		c   *websocket.Conn
-		err error
-	)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		c, _, err = websocket.Dial(ctx, url, nil)
-		if err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	c := wsDial(t, addr)
 	defer c.CloseNow()
 
-	if err := c.Write(ctx, websocket.MessageText, []byte(`{"session_id":"`+session.SessionID()+`","input":"hello","stream":true}`)); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	// Discard welcome
+	var welcome struct{ Type string }
+	readWSFrame(t, c, 3*time.Second, &welcome)
+
+	writeWSFrame(t, c, map[string]any{
+		"type":       "chat",
+		"session_id": session.SessionID(),
+		"input":      "hello",
+		"stream":     true,
+	})
 
 	var (
 		toolSeen bool
 		delta    strings.Builder
-		done     bool
 	)
-	for !done {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
 		_, data, err := c.Read(ctx)
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
-		var frame FrameResponse
+		var frame struct {
+			Type  string `json:"type"`
+			Text  string `json:"text"`
+			Event string `json:"event"`
+			Error string `json:"error"`
+		}
 		if err := json.Unmarshal(data, &frame); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
 		if frame.Error != "" {
 			t.Fatalf("frame error: %s", frame.Error)
 		}
-		if frame.Event == "tool" {
+		if frame.Type == "tool" {
 			toolSeen = true
 		}
-		delta.WriteString(frame.Delta)
-		done = frame.Done
+		if frame.Type == "delta" {
+			delta.WriteString(frame.Text)
+		}
+		if frame.Type == "done" {
+			break
+		}
 	}
 
 	if !toolSeen {
@@ -324,55 +319,46 @@ func TestWebSocketGatewayJSONCommandReturnsData(t *testing.T) {
 	}
 	defer gw.Stop(context.Background())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	url := "ws://" + addr + "/ws"
-	var (
-		c   *websocket.Conn
-		err error
-	)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		c, _, err = websocket.Dial(ctx, url, nil)
-		if err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	c := wsDial(t, addr)
 	defer c.CloseNow()
 
-	// Send a JSON command via the "command" field — text slash commands
-	// are NOT intercepted server-side; clients must use JSON commands.
-	if err := c.Write(ctx, websocket.MessageText, []byte(`{"command":{"cmd":"session_info"},"stream":true}`)); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	// Discard welcome
+	var welcome struct{ Type string }
+	readWSFrame(t, c, 3*time.Second, &welcome)
 
+	// Send a JSON command via the "cmd" type.
+	writeWSFrame(t, c, map[string]any{
+		"type":    "cmd",
+		"command": map[string]any{"cmd": "session_info"},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 	_, data, err := c.Read(ctx)
 	if err != nil {
 		t.Fatalf("read command reply: %v", err)
 	}
-	var reply FrameResponse
+	var reply struct {
+		Type      string         `json:"type"`
+		Cmd       string         `json:"cmd"`
+		Data      map[string]any `json:"data"`
+		SessionID string         `json:"session_id"`
+		Error     string         `json:"error"`
+	}
 	if err := json.Unmarshal(data, &reply); err != nil {
 		t.Fatalf("unmarshal reply %q: %v", data, err)
 	}
 	if reply.Error != "" {
 		t.Fatalf("unexpected error frame: %s", reply.Error)
 	}
-	if reply.Event != "command_result" {
-		t.Fatalf("expected event 'command_result', got event=%q", reply.Event)
+	if reply.Type != "result" {
+		t.Fatalf("expected type 'result', got type=%q", reply.Type)
 	}
 	if reply.Cmd != "session_info" {
 		t.Fatalf("expected cmd 'session_info', got cmd=%q", reply.Cmd)
 	}
 	if reply.Data == nil {
 		t.Fatalf("expected structured data in response, got: %+v", reply)
-	}
-	if !reply.Done {
-		t.Fatalf("expected done=true for command result, got: %+v", reply)
 	}
 	if reply.SessionID == "" {
 		t.Fatalf("expected session_id in response, got: %+v", reply)
@@ -389,38 +375,31 @@ func TestWebSocketGatewayStreamingLLMErrorSendsErrorFrame(t *testing.T) {
 	}
 	defer gw.Stop(context.Background())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	url := "ws://" + addr + "/ws"
-	var (
-		c   *websocket.Conn
-		err error
-	)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		c, _, err = websocket.Dial(ctx, url, nil)
-		if err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	c := wsDial(t, addr)
 	defer c.CloseNow()
 
-	if err := c.Write(ctx, websocket.MessageText, []byte(`{"input":"trigger timeout","stream":true}`)); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	// Discard welcome
+	var welcome struct{ Type string }
+	readWSFrame(t, c, 3*time.Second, &welcome)
+
+	writeWSFrame(t, c, map[string]any{
+		"type":  "chat",
+		"input": "trigger timeout",
+		"stream": true,
+	})
 
 	var foundError string
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	for {
 		_, data, err := c.Read(ctx)
 		if err != nil {
 			t.Fatalf("read error frame: %v", err)
 		}
-		var frame FrameResponse
+		var frame struct {
+			Type  string `json:"type"`
+			Error string `json:"error"`
+		}
 		if err := json.Unmarshal(data, &frame); err != nil {
 			t.Fatalf("unmarshal %q: %v", data, err)
 		}
@@ -428,7 +407,7 @@ func TestWebSocketGatewayStreamingLLMErrorSendsErrorFrame(t *testing.T) {
 			foundError = frame.Error
 			break
 		}
-		if frame.Done {
+		if frame.Type == "done" {
 			break
 		}
 	}
@@ -487,11 +466,10 @@ func newGatewayComponentsWithAdapter(adapter agent.LLMAdapter) (*agent.Conversat
 	return conv, streamer, cmd
 }
 
-// TestWebSocketGatewayEmitsStatsMetaBeforeDone verifies that a meta
-// event with consolidated session stats (total_tokens, total_cost,
-// message_count, estimated_context_tokens, model) is emitted before
-// the final done frame at the end of a turn.
-func TestWebSocketGatewayEmitsStatsMetaBeforeDone(t *testing.T) {
+// TestWebSocketGatewayDoneFrameHasStats verifies that the done frame
+// carries embedded stats (total_tokens, total_cost, etc.) instead of
+// a separate meta event.
+func TestWebSocketGatewayDoneFrameHasStats(t *testing.T) {
 	conv, streamer, cmd := newGatewayComponents("stats-check")
 	addr := freeAddr(t)
 	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
@@ -500,69 +478,41 @@ func TestWebSocketGatewayEmitsStatsMetaBeforeDone(t *testing.T) {
 	}
 	defer gw.Stop(context.Background())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	url := "ws://" + addr + "/ws"
-	var (
-		c   *websocket.Conn
-		err error
-	)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		c, _, err = websocket.Dial(ctx, url, nil)
-		if err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	c := wsDial(t, addr)
 	defer c.CloseNow()
 
-	if err := c.Write(ctx, websocket.MessageText, []byte(`{"input":"check stats"}`)); err != nil {
-		t.Fatalf("write: %v", err)
+	// Discard welcome
+	var welcome struct{ Type string }
+	readWSFrame(t, c, 3*time.Second, &welcome)
+
+	writeWSFrame(t, c, map[string]any{"type": "chat", "input": "check stats"})
+
+	data := readUntilDone(t, c)
+	var done struct {
+		Type  string `json:"type"`
+		Stats *struct {
+			TotalTokens  int    `json:"total_tokens"`
+			MessageCount int    `json:"message_count"`
+			Model        string `json:"model"`
+		} `json:"stats"`
+		Error string `json:"error"`
 	}
-
-	var (
-		metaSeen     bool
-		metaHasStats bool
-		doneSeen     bool
-	)
-	for !doneSeen {
-		_, data, err := c.Read(ctx)
-		if err != nil {
-			t.Fatalf("read: %v", err)
-		}
-		var frame FrameResponse
-		if err := json.Unmarshal(data, &frame); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if frame.Error != "" {
-			t.Fatalf("unexpected error: %s", frame.Error)
-		}
-
-		if frame.Event == "meta" && frame.Data != nil {
-			metaSeen = true
-			if _, ok := frame.Data["total_tokens"]; ok {
-				metaHasStats = true
-				t.Logf("meta stats: total_tokens=%v, total_cost=%v, message_count=%v, estimated_context_tokens=%v, model=%v",
-					frame.Data["total_tokens"], frame.Data["total_cost"],
-					frame.Data["message_count"], frame.Data["estimated_context_tokens"],
-					frame.Data["model"])
-			}
-		}
-
-		if frame.Done {
-			doneSeen = true
-		}
+	if err := json.Unmarshal(data, &done); err != nil {
+		t.Fatalf("unmarshal done: %v", err)
 	}
-
-	if !metaSeen {
-		t.Fatal("BUG CONFIRMED: expected a meta event with stats before done frame, but none was seen")
+	if done.Error != "" {
+		t.Fatalf("unexpected error: %s", done.Error)
 	}
-	if !metaHasStats {
-		t.Fatal("BUG CONFIRMED: meta event did not contain expected stats fields")
+	if done.Type != "done" {
+		t.Fatalf("expected type 'done', got %q", done.Type)
+	}
+	if done.Stats == nil {
+		t.Fatal("expected stats in done frame")
+	}
+	if done.Stats.Model == "" {
+		t.Fatalf("expected non-empty model in stats, got %q", done.Stats.Model)
+	}
+	if done.Stats.MessageCount <= 0 {
+		t.Fatalf("expected positive message_count in stats, got %d", done.Stats.MessageCount)
 	}
 }

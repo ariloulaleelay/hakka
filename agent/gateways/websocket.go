@@ -72,7 +72,7 @@ func (gw *WebSocketGateway) Stop(ctx context.Context) error {
 
 func (gw *WebSocketGateway) handle(w http.ResponseWriter, r *http.Request) {
 	wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true, // intended for local dev; harden as needed
+		InsecureSkipVerify: true,
 	})
 	if err != nil {
 		return
@@ -81,12 +81,17 @@ func (gw *WebSocketGateway) handle(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// Per-connection response reader for vim tool callbacks.
+	// Per-connection response reader for tool callbacks.
 	responseReader := NewInProcessResponseReader()
 	defer responseReader.Stop()
 
 	readCtx, readCancel := context.WithCancel(ctx)
 	defer readCancel()
+
+	writer := wsWriter(readCtx, wsConn)
+
+	// Send welcome frame immediately on connect.
+	gw.sendWelcome(readCtx, writer, responseReader)
 
 	for {
 		_, data, err := wsConn.Read(readCtx)
@@ -97,100 +102,166 @@ func (gw *WebSocketGateway) handle(w http.ResponseWriter, r *http.Request) {
 		frameData := make([]byte, len(data))
 		copy(frameData, data)
 
-		// Peek at type field for response routing
-		var env struct {
-			Type      string          `json:"type"`
-			RequestID string          `json:"request_id"`
-			Result    json.RawMessage `json:"result"`
-			ReqError  string          `json:"error"`
+		// Parse based on type field.
+		var base struct {
+			Type string `json:"type"`
 		}
-		if err := json.Unmarshal(frameData, &env); err != nil {
-			writer := wsWriter(readCtx, wsConn)
-			if writer.Write(FrameResponse{Error: err.Error()}) != nil {
-				return // client disconnected
+		if err := json.Unmarshal(frameData, &base); err != nil {
+			if writer.Write(FrameResponse{Type: "error", Error: err.Error()}) != nil {
+				return
 			}
 			continue
 		}
 
-		// Route response frames to the waiting vim tool immediately
-		if env.Type == "response" && env.RequestID != "" {
+		switch base.Type {
+		case "resp":
+			// Client response to a server request (e.g. Neovim Lua eval).
+			var resp struct {
+				RequestID string          `json:"request_id"`
+				Result    json.RawMessage `json:"result"`
+				ReqError  string          `json:"error"`
+			}
+			if err := json.Unmarshal(frameData, &resp); err != nil {
+				if writer.Write(FrameResponse{Type: "error", Error: "invalid resp frame: " + err.Error()}) != nil {
+					return
+				}
+				continue
+			}
 			responseReader.Deliver(&event.ClientResponse{
-				RequestID: env.RequestID,
-				Result:    env.Result,
-				Error:     env.ReqError,
+				RequestID: resp.RequestID,
+				Result:    resp.Result,
+				Error:     resp.ReqError,
 			})
 			continue
-		}
 
-		// Handle cancel frames
-		if env.Type == "cancel" {
+		case "cancel":
 			var cancelReq struct {
 				SessionID string `json:"session_id"`
 			}
 			if err := json.Unmarshal(frameData, &cancelReq); err != nil {
-				writer := wsWriter(readCtx, wsConn)
-				if writer.Write(FrameResponse{Error: "invalid cancel frame: " + err.Error()}) != nil {
+				if writer.Write(FrameResponse{Type: "error", Error: "invalid cancel frame: " + err.Error()}) != nil {
 					return
 				}
 				continue
 			}
 			cancelled := gw.Handler.CancelSession(cancelReq.SessionID)
-			writer := wsWriter(readCtx, wsConn)
 			if writer.Write(FrameResponse{
-				Event:     "cancel",
+				Type:      "done",
 				SessionID: cancelReq.SessionID,
-				Data:      map[string]any{"cancelled": cancelled},
+				Cancelled: cancelled,
 			}) != nil {
 				return
 			}
 			continue
-		}
 
-		// Handle list_sessions — session discovery without a session.
-		if env.Type == "list_sessions" {
-			writer := wsWriter(readCtx, wsConn)
-			gw.handleListSessions(readCtx, writer)
-			continue
-		}
-
-		// Normal request — process in a separate goroutine so the read
-		// loop stays available for incoming response frames.
-		go func(data []byte) {
-			writer := wsWriter(readCtx, wsConn)
-			var req FrameRequest
-			if err := json.Unmarshal(data, &req); err != nil {
-				if writer.Write(FrameResponse{Error: err.Error()}) != nil {
-					readCancel() // client disconnected, abort everything
+		case "chat", "cmd", "":
+			// "chat" = normal chat turn, "cmd" = JSON command, "" = legacy (treat as chat).
+			go func(data []byte) {
+				var req FrameRequest
+				if err := json.Unmarshal(data, &req); err != nil {
+					if writer.Write(FrameResponse{Type: "error", Error: err.Error()}) != nil {
+						readCancel()
+					}
+					return
 				}
+				gw.Handler.HandleRequest(readCtx, req, writer, responseReader)
+			}(frameData)
+
+		default:
+			if writer.Write(FrameResponse{Type: "error", Error: fmt.Sprintf("unknown frame type: %q", base.Type)}) != nil {
 				return
 			}
-			gw.Handler.HandleRequest(readCtx, req, writer, responseReader)
-		}(frameData)
+		}
 	}
 }
 
-// handleListSessions responds with a command_result frame containing all
-// sessions in the gateway's namespace. This allows clients to discover
-// existing sessions before joining one.
-func (gw *WebSocketGateway) handleListSessions(ctx context.Context, w frameWriter) {
+// sendWelcome sends a "welcome" frame on connect with session list and
+// auto-subscribes to the best session.
+func (gw *WebSocketGateway) sendWelcome(ctx context.Context, w frameWriter, responseReader *InProcessResponseReader) {
 	nsCtx := event.ContextWithNamespace(ctx, gw.Handler.Namespace)
 
-	// Use the command processor to build the session list response.
-	if gw.Handler.Cmd == nil {
-		if w.Write(FrameResponse{Error: "no command processor configured"}) != nil {
-			return
+	// Get all sessions in this namespace.
+	sessions := []*agent.Session{}
+	if gw.Handler.Conv != nil {
+		var err error
+		sessions, err = gw.Handler.Conv.Sessions().List(nsCtx, gw.Handler.Namespace)
+		if err != nil {
+			// Non-fatal — send empty session list.
+			sessions = nil
 		}
-		return
 	}
 
-	// Execute session_list command with an empty session ID (no active session).
-	cmdRes := gw.Handler.Cmd.ExecuteJSON(nsCtx, "", "session_list", nil)
-	writeCommandResult(w, cmdRes)
+	// Build session list with in_flight status.
+	type sessionEntry struct {
+		ID       string `json:"id"`
+		ShortID  string `json:"short_id"`
+		Name     string `json:"name"`
+		Model    string `json:"model"`
+		MsgCount int    `json:"message_count"`
+		InFlight bool   `json:"in_flight"`
+	}
+	entries := make([]sessionEntry, 0, len(sessions))
+	for _, s := range sessions {
+		entries = append(entries, sessionEntry{
+			ID:       s.SessionID(),
+			ShortID:  shortID(s.SessionID()),
+			Name:     s.SessionName(),
+			Model:    s.GetModel(),
+			MsgCount: len(s.AllMessages()),
+			InFlight: gw.Handler.Turns().Get(s.SessionID()) != nil,
+		})
+	}
+
+	// Send welcome.
+	w.Write(FrameResponse{
+		Type:            "welcome",
+		ProtocolVersion: "2",
+		Data: map[string]any{
+			"sessions": entries,
+		},
+	})
+
+	// Auto-subscribe to the best session:
+	// 1. In-flight session (most recent)
+	// 2. Latest session
+	// 3. Nothing
+	var bestSession *agent.Session
+	for _, s := range sessions {
+		if gw.Handler.Turns().Get(s.SessionID()) != nil {
+			bestSession = s
+			break
+		}
+	}
+	if bestSession == nil && len(sessions) > 0 {
+		bestSession = sessions[len(sessions)-1]
+	}
+
+	if bestSession != nil {
+		// Issue a get_session to auto-subscribe.
+		nsCtx := event.ContextWithNamespace(ctx, gw.Handler.Namespace)
+		cmdRes := gw.Handler.Cmd.ExecuteJSON(nsCtx, bestSession.SessionID(), "get_session", nil)
+
+		// Subscribe to the active turn if one exists.
+		if active := gw.Handler.Turns().Get(bestSession.SessionID()); active != nil {
+			active.ReplaceSubscriber(ctx, w)
+		}
+
+		// Send the session data as a "session" event.
+		if cmdRes.Session != nil {
+			data := map[string]any{
+				"session": sessionToMap(cmdRes.Session),
+			}
+			w.Write(FrameResponse{
+				Type:      "session",
+				SessionID: bestSession.SessionID(),
+				SessionEvent: "get_session",
+				Data:      data,
+			})
+		}
+	}
 }
 
-// wsWriter adapts a websocket.Conn to frameWriter. Returns a
-// mutex-protected writer because the main loop and request goroutines
-// both write to the same WebSocket connection concurrently.
+// wsWriter adapts a websocket.Conn to frameWriter.
 func wsWriter(ctx context.Context, wsConn *websocket.Conn) frameWriter {
 	return &wsSyncWriter{ctx: ctx, conn: wsConn}
 }

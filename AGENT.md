@@ -132,79 +132,80 @@ is gateway-fixed.
 
 ---
 
-## Wire Protocol
+## Wire Protocol (v2)
 
-Hakka uses a **WebSocket JSON API**. Every message in both directions is a
-single JSON object (one per WebSocket text frame). All fields are optional
-unless noted otherwise.
+Hakka uses a **WebSocket JSON API** (v2 protocol). Every message in both
+directions is a single JSON object with a mandatory `type` field as the
+sole discriminant.
 
 ### Connection & Session Lifecycle (for client authors)
 
 A typical client follows this sequence:
 
 1. **Connect** — open a WebSocket to `/ws`.
-2. **Discover sessions** — send `{"type":"list_sessions"}` to see available sessions.
-3. **Pick or create a session**:
-   - To join an existing session: send any request with its `session_id`.
-   - To create a new one: send `{"command":{"cmd":"session_create"}}`.
-4. **Set working directory** — `{"command":{"cmd":"cwd_set","params":{"cwd":"/path"}}}`.
-5. **Enable tools** — `{"command":{"cmd":"tool_allow","params":{"name":"#all"}}}`.
-6. **Send input** — `{"session_id":"...","input":"Hello!","stream":true}`.
-7. **Receive responses** — deltas, tool events, and finally `done: true`.
-8. **Fetch a session** — `{"command":{"cmd":"get_session","params":{"id":"..."}}}`.
+2. **Receive welcome** — the server immediately sends a `"type":"welcome"`
+   frame with all sessions and their `in_flight` status. The client is
+   auto-subscribed to the best session (one with an active turn, or the
+   most recent).
+3. **Pick or create a session** — if no session exists, send
+   `{"type":"cmd","command":{"cmd":"session_create"}}`. If you want a
+   different session, send `{"type":"cmd","command":{"cmd":"get_session","params":{"id":"..."}}}`.
+4. **Set working directory** — `{"type":"cmd","command":{"cmd":"cwd_set","params":{"cwd":"/path"}}}`.
+5. **Enable tools** — `{"type":"cmd","command":{"cmd":"tool_allow","params":{"name":"#all"}}}`.
+6. **Send input** — `{"type":"chat","session_id":"...","input":"Hello!","stream":true}`.
+7. **Receive responses** — `delta` (text chunks), `tool` (tool lifecycle),
+   `usage` (token counts), and finally `type:"done"`.
+8. **Fetch a session** — `{"type":"cmd","command":{"cmd":"get_session","params":{"id":"..."}}}`.
 
 **Key rules for client authors:**
 
-- Text-based slash commands (like `/help`, `/model`, `/session list`) are **not**
-  intercepted by the server. Clients are responsible for parsing slash commands
-  and converting them to structured JSON commands (see the `command` field below).
-  The Telegram gateway includes a built-in `parseSlashCommand()` function for this.
 - Always include `session_id` on every request once you have one.
-  Omitting it on the first request auto-creates a session (backward compatibility).
-- `stream: true` gives incremental `delta` frames; `stream: false` (or omitted)
-  gives a single `output` + `done` frame at the end.
-- The `done: true` frame **always** arrives — even on errors, even after cancel.
-  It is your signal that the turn is complete and the engine is ready for new input.
-- Tool events (`event: "tool"`) and meta events (`event: "meta"`) may arrive
-  interleaved with deltas. A stream may produce `delta`, `tool`, `delta`, `meta`,
-  `delta`, `done` in any order. Buffer deltas and accumulate the full response;
-  render tool events at the position they occurred in the stream.
-- If the LLM calls `vim_run_command`, you will receive a `client_request` event.
-  You **must** reply with `{"type":"response","request_id":"...","result":...}`
-  or the tool will block until timeout. If your client does not support Neovim,
-  reply with `{"type":"response","request_id":"...","error":"unsupported"}`.
+- `stream: true` gives incremental `type:"delta"` frames with `text` field;
+  `stream: false` gives a single `type:"done"` frame with `output`.
+- The `type:"done"` frame **always** arrives — even on errors, even after
+  cancel. It is your signal that the turn is complete.
+- Tool events (`type:"tool"`) and usage events (`type:"usage"`) may arrive
+  interleaved with deltas. Each tool event carries a unique `id` field
+  that correlates `status:"start"` with `status:"ok"`/`status:"err"`.
+- If the LLM calls `vim_run_command`, you will receive a `type:"req"` event.
+  You **must** reply with `{"type":"resp","request_id":"...","result":...}`
+  or the tool will block until timeout.
 - Cancel an in-flight turn by sending `{"type":"cancel","session_id":"..."}`.
-  The server replies with `{"event":"cancel","done":true,"data":{"cancelled":true}}`.
-- Set CWD before sending substantive input. CWD persists on the session and is
-  injected as a system message into every turn's context. Send `cwd_set` again
-  whenever the user changes directory.
+  The server replies with `{"type":"done","cancelled":true}`.
+- Set CWD before sending substantive input via `cwd_set` command.
 
 ---
 
 ### Inbound Frames (Client → Server)
 
-All frames share the base fields in `FrameRequest`:
+Every inbound frame has a mandatory `type` field:
 
-| Field | Type | Description |
+| `type` | Purpose | Key fields |
 |---|---|---|
-| `type` | string | `"request"` (default), `"cancel"`, `"response"`, `"list_sessions"` |
-| `session_id` | string | Session UUID. Omit to auto-create; always send thereafter. |
-| `input` | string | User text. Sent directly to the LLM — slash commands are **not** intercepted server-side; clients must use the `command` field for structured commands. |
-| `stream` | bool | `true` for token-by-token deltas. |
-| `cwd` | string | Client's working directory. Preferred: use `cwd_set` command instead. |
-| `command` | object | Structured JSON command — see table below. |
-| `request_id` | string | Only with `type: "response"` — echoes the `request_id` from a `client_request`. |
-| `result` | any | Only with `type: "response"` — the JSON result from client. |
-| `error` | string | Only with `type: "response"` — error message from client. |
+| `"chat"` | Normal chat turn | `session_id`, `input`, `stream` |
+| `"cmd"` | JSON command | `session_id`, `command: {cmd, params}` |
+| `"resp"` | Reply to client_request | `request_id`, `result`, `error` |
+| `"cancel"` | Cancel running turn | `session_id` |
 
-**Frame types:**
+**Chat:**
+```json
+{"type":"chat", "session_id":"<uuid>", "input":"Hello!", "stream":true}
+```
 
-| `type` | Purpose |
-|---|---|
-| *(omitted)* | Normal chat turn (sends `input` to the LLM directly — no slash-command interception). |
-| `"cancel"` | Cancel the in-flight turn for `session_id`. |
-| `"response"` | Client reply to a `client_request` (Neovim Lua eval result). |
-| `"list_sessions"` | Discover sessions in the namespace. Server replies with `command_result` + session list. |
+**JSON command:**
+```json
+{"type":"cmd", "session_id":"...", "command":{"cmd":"session_list"}}
+```
+
+**Response to server request:**
+```json
+{"type":"resp", "request_id":"req-1", "result":[1,2,3]}
+```
+
+**Cancel:**
+```json
+{"type":"cancel", "session_id":"<uuid>"}
+```
 
 **Structured JSON commands** (`command` object with `cmd` + optional `params`):
 
@@ -213,180 +214,115 @@ All frames share the base fields in `FrameRequest`:
 | `help` | — | List available commands. |
 | `continue` | — | Continue LLM turn without new user input. |
 | `start` | — | Create fresh session with **all tools enabled**. |
-| `compact` | `{"n": <int>}` | Set context soft limit in tokens (0 = off). Omit params to read current value. |
+| `compact` | `{"n": <int>}` | Set context soft limit in tokens (0 = off). |
 | `cwd_set` | `{"cwd": "/path"}` | Persist working directory on the session. |
 | `session_list` | — | List all sessions in the namespace. |
 | `session_create` | — | Create a new empty session. |
-| `get_session` | `{"id": "<uuid or prefix>"}` | Fetch session data and messages by ID. **Fails** if not found. |
-| `session_delete` | `{"id": "<uuid>"}` | Delete a session. Use `"this"` for the current session. |
+| `get_session` | `{"id": "<uuid or prefix>"}` | Fetch session data and messages by ID. |
+| `session_delete` | `{"id": "<uuid>"}` | Delete a session. Use `"this"` for the current. |
 | `session_info` | — | Show current session details. |
 | `session_rename` | `{"name": "..."}` | Rename the current session. |
 | `session_autorename` | — | Ask the LLM to generate a session name. |
-| `model_list` | — | List registered models (current marked with `current: true`). |
+| `model_list` | — | List registered models. |
 | `model_switch` | `{"name": "..."}` | Switch the session to a different model. |
-| `tool_list` | — | List tools with `enabled`/`allowed`/`denied` status and tags. |
+| `tool_list` | — | List tools with `enabled`/`allowed` status and tags. |
 | `tool_allow` | `{"name": "tool_or_#tag"}` | Allow and enable a tool or all tools with a `#tag`. |
 | `tool_deny` | `{"name": "tool_or_#tag"}` | Deny (hide) a tool or all tools with a `#tag`. |
 
-**Tool tags** for use with `tool_allow`/`tool_deny`:
-
-| Tag | Included tools |
-|---|---|
-| `filesystem` | `read_file`, `list_dir`, `write_file`, `edit_file`, `search` |
-| `network` | `http_get` |
-| `exec` | `shell` |
-| `utility` | `random`, `feedback`, session tools |
-| `vim` | `vim_list_buffers`, `vim_read_buffer`, `vim_run_command` |
-| `session` | All session management tools |
-| `all` | Every registered tool |
-
 ### Outbound Frames (Server → Client)
 
-All frames share the base fields in `FrameResponse`:
+Every outbound frame has a mandatory `type` field — the sole discriminant.
 
-| Field | Type | Description |
+| `type` | When emitted | Terminal? |
 |---|---|---|
-| `session_id` | string | Session this frame belongs to. |
-| `output` | string | Full assistant reply (non-streaming only). |
-| `delta` | string | Streaming text chunk. |
-| `done` | bool | **Terminal frame** — when `true`, the turn is complete and the engine is ready for new input. Always emitted. |
-| `error` | string | Error message. When present, the turn failed. |
-| `event` | string | Event type: `"tool"`, `"meta"`, `"command_result"`, `"get_session"`, `"session_create"`, `"session_renamed"`, `"cancel"`, `"client_request"`. |
-| `tool` | string | Tool name (only with `event: "tool"`). |
-| `status` | string | Tool status: `"start"`, `"ok"`, `"err"` (only with `event: "tool"`). |
-| `args` | object | Structured tool arguments as JSON object. |
-| `exec_snippet` | string | Human-readable one-liner of what the tool call does. |
-| `data` | object | Payload for `meta`, `command_result`, `cancel`, and `session_*` events. |
-| `cmd` | string | Command name that produced this `command_result`. |
-| `client_request` | object | Contains `request_id` + `command` — code the server asks the client to run. |
+| `"welcome"` | Immediately on WebSocket connect | No |
+| `"delta"` | Mid-stream text chunk | No |
+| `"output"` | Full non-stream reply (before `done`) | No |
+| `"done"` | Turn/command is complete | **Yes** |
+| `"tool"` | Tool lifecycle (start/ok/err) | No |
+| `"usage"` | Token usage after each LLM call | No |
+| `"req"` | Server asks client to run something | No |
+| `"result"` | Command output (session_list, etc.) | No |
+| `"session"` | Session lifecycle (created/renamed) | No |
+| `"error"` | Error before any turn | Yes |
 
-**Frame patterns by scenario:**
-
-*Non-stream reply:*
-```json
-{"session_id": "<uuid>", "output": "Hello!", "done": true}
-```
-
-*Stream reply (multiple frames):*
-```json
-{"session_id": "<uuid>", "delta": "Hel"}
-{"session_id": "<uuid>", "delta": "lo!"}
-{"session_id": "<uuid>", "done": true}
-```
-
-*Error:*
-```json
-{"session_id": "<uuid>", "error": "something went wrong", "done": true}
-```
-
-*Tool call lifecycle (status: "start" → "ok" or "err"):*
-```json
-{"session_id": "<uuid>", "event": "tool", "tool": "read_file", "status": "start", "args": {"path": "README.md"}, "exec_snippet": "read_file 'README.md'"}
-{"session_id": "<uuid>", "event": "tool", "tool": "read_file", "status": "ok",   "args": {"path": "README.md"}, "exec_snippet": "read_file 'README.md'", "data": {"result": "..."}}
-```
-
-*Token usage (after every LLM call):*
-```json
-{"session_id": "<uuid>", "event": "meta", "data": {"prompt_tokens": 1234, "completion_tokens": 56, "total_tokens": 1290, "duration_ns": 1234567890, "cost": 0.0000950625, "total_cost": 0.000190125}}
-```
-
-The `duration_ns` field reports the wall-clock time of the LLM call in nanoseconds.
-It is available on every assistant message's `usage` field.
-Use `completion_tokens / (duration_ns / 1e9)` to compute tokens/second throughput.
-
-*End-of-turn session stats (before every `done: true` frame):*
-```json
-{"session_id": "<uuid>", "event": "meta", "data": {"total_tokens": 1290, "total_cost": 0.000190125, "message_count": 5, "estimated_context_tokens": 52000, "model": "deepseek"}}
-```
-
-This meta event is emitted **before** the final `done: true` frame at the end of every turn. It provides consolidated session statistics that clients can use to display updated totals after each interaction. The fields are:
-- `total_tokens` — accumulated token usage across the entire session
-- `total_cost` — accumulated monetary cost in USD
-- `message_count` — total messages in the session
-- `estimated_context_tokens` — last estimated context size in tokens
-- `model` — the model used for this turn
-
-*Estimated context size (before every LLM call):*
-```json
-{"session_id": "<uuid>", "event": "meta", "data": {"estimated_context_tokens": 52000}}
-```
-
-*Client request (server asks client to run code — Neovim Lua):*
-```json
-{"session_id": "<uuid>", "event": "client_request", "client_request": {"request_id": "req-1", "command": "return vim.api.nvim_buf_get_name(0)"}}
-```
-
-*Cancel acknowledgment:*
-```json
-{"session_id": "<uuid>", "event": "cancel", "done": true, "data": {"cancelled": true}}
-```
-
-*Session list (response to `list_sessions` or `session_list` command):*
-```json
-{"event": "command_result", "cmd": "session_list", "data": {
-  "sessions": [
-    {
-      "id": "<uuid>",
-      "short_id": "a1b2c3d4",
-      "name": "Bug hunt",
-      "message_count": 42,
-      "current": true,
-      "in_flight": false,
-      "client_cwd": "/home/user/project",
-      "created": "2025-01-15T10:30:00Z",
-      "updated_at": "2025-01-15T14:22:00Z"
-    }
-  ]
-}}
-```
-
-*Session fetch event (includes message history for UI reload):*
+**Welcome frame** (sent automatically on connect):
 ```json
 {
-  "session_id": "<uuid>",
-  "event": "get_session",
+  "type": "welcome",
+  "protocol_version": "2",
   "data": {
-    "session": {"id": "<uuid>", "short_id": "a1b2c3d4", "name": "Bug hunt", "message_count": 42, "model": "deepseek", "total_tokens": 5000, "estimated_context_tokens": 52000},
-    "messages": [
-      {"role": "user", "content": "What is a segmentation fault?"},
-      {"role": "assistant", "content": "A segmentation fault is...", "usage": {"PromptTokens": 50, "CompletionTokens": 42, "TotalTokens": 92, "duration_ns": 1234567890}}
+    "sessions": [
+      {"id": "<uuid>", "short_id": "a1b2c3d4", "name": "Bug hunt", "model": "deepseek", "message_count": 42, "in_flight": true}
     ]
   }
 }
 ```
 
-Each assistant message carries a `usage` field with token counts and `duration_ns` — the
-wall-clock time of the LLM call in nanoseconds. Duration is zero for messages stored before
-this metric was introduced. Use `completion_tokens / (duration_ns / 1e9)` to compute
-tokens/second throughput.
-```
-
-*Session created event:*
+**Delta (streaming text):**
 ```json
-{"session_id": "<uuid>", "event": "session_create", "data": {"session": {"id": "<uuid>", "short_id": "...", "name": "", "message_count": 0, "model": "deepseek", "total_tokens": 0, "estimated_context_tokens": 0}}}
+{"type":"delta", "session_id":"<uuid>", "text":"Hel"}
 ```
 
-*Session renamed event:*
+**Tool lifecycle:**
 ```json
-{"session_id": "<uuid>", "event": "session_renamed", "data": {"session_id": "<uuid>", "old_name": "bug", "name": "Bug investigation"}}
+{"type":"tool", "session_id":"<uuid>", "id":"call_abc123", "tool":"read_file", "status":"start", "args":{"path":"README.md"}, "snippet":"read_file 'README.md'"}
+{"type":"tool", "session_id":"<uuid>", "id":"call_abc123", "tool":"read_file", "status":"ok", "result":"file content..."}
+{"type":"tool", "session_id":"<uuid>", "id":"call_abc123", "tool":"read_file", "status":"err", "error":"file not found"}
 ```
 
----
+**Usage (after every LLM call, includes estimated context):**
+```json
+{"type":"usage", "session_id":"<uuid>", "prompt_tokens":1234, "completion_tokens":56, "total_tokens":1290, "duration_ns":1234567890, "estimated_context_tokens":52000, "cost":0.000095, "total_cost":0.000190}
+```
+
+**Done (terminal frame — always emitted at end of turn):**
+```json
+{"type":"done", "session_id":"<uuid>", "output":"Final answer", "stats":{"total_tokens":1290, "total_cost":0.000190, "message_count":5, "estimated_context_tokens":52000, "model":"deepseek"}}
+```
+
+**Cancelled:**
+```json
+{"type":"done", "session_id":"<uuid>", "cancelled":true, "stats":{...}}
+```
+
+**Error:**
+```json
+{"type":"done", "session_id":"<uuid>", "error":"something went wrong", "stats":{...}}
+```
+
+**Server request (client must reply with `type:"resp"`):**
+```json
+{"type":"req", "session_id":"<uuid>", "request_id":"req-1", "command":"return vim.api.nvim_buf_get_name(0)"}
+```
+
+**Command result:**
+```json
+{"type":"result", "session_id":"<uuid>", "cmd":"session_list", "data":{"sessions":[...]}}
+```
+
+**Session lifecycle:**
+```json
+{"type":"session", "session_id":"<uuid>", "event":"created", ...}
+{"type":"session", "session_id":"<uuid>", "event":"renamed", "old_name":"old", "name":"new"}
+```
 
 ### Client Implementation Checklist
 
 - [ ] **Connect** to `ws://<host>:<port>/ws`.
-- [ ] **Send `{"type":"list_sessions"}`** on startup to populate the session picker.
-- [ ] **Handle `done: true`** — the engine is not ready for new input until this frame arrives.
-- [ ] **Render tool events** inline — `status: "start"` shows a spinner, `"ok"` renders the result, `"err"` renders the error.
-- [ ] **Handle `client_request`** — if your client supports Neovim, evaluate the Lua and reply with `{"type":"response","request_id":"...","result":...}`. If not, reply with `{"type":"response","request_id":"...","error":"unsupported"}` so the tool doesn't hang.
-- [ ] **Handle `get_session`** — reload the entire message view from `data.messages`.
-- [ ] **Handle `command_result`** — parse `data` according to `cmd` (e.g. `session_list`, `tool_list`, `model_list`).
-- [ ] **Handle `session_renamed`** — update the session name in the sidebar without reloading.
-- [ ] **Send `cwd`** (via `cwd_set` command or per-request `cwd` field) on startup and when the user changes directory.
-- [ ] **Send `cancel`** when the user hits Escape to abort a long turn.
-- [ ] **Handle `error` frames** — show the error and consider the turn complete.
-- [ ] **Stream interleaving** — frames can arrive in any order during streaming. Always buffer `delta` text; tool/meta events are informational and should be rendered at the stream position they occurred.
+- [ ] **Wait for `type:"welcome"`** on startup — contains session list and auto-subscribes.
+- [ ] **Handle `type:"done"`** — the engine is not ready for new input until this frame arrives.
+- [ ] **Render tool events** inline — `status:"start"` shows a spinner, `"ok"` renders the result.
+  Match `start` → `ok`/`err` via the `id` field.
+- [ ] **Handle `type:"req"`** — if your client supports Neovim, evaluate the Lua and reply
+  with `{"type":"resp","request_id":"...","result":...}`. If not, reply with
+  `{"type":"resp","request_id":"...","error":"unsupported"}`.
+- [ ] **Handle `type:"session"`** — update the session list accordingly.
+- [ ] **Send `type:"cmd"` with `cwd_set`** on startup and when the user changes directory.
+- [ ] **Send `type:"cancel"`** when the user hits Escape to abort a long turn.
+- [ ] **Handle `type:"done"` errors** — show the error and consider the turn complete.
+- [ ] **Stream interleaving** — frames can arrive in any order during streaming.
+  Always buffer `type:"delta"` text; tool/usage events are informational.
 
 ---
 

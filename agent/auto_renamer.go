@@ -159,12 +159,13 @@ func recordLLMResponse(session SessionView, resp *llmStepResult, hooks Hooks, ev
 		sendEngineEvent(events, event.UsageReported{
 			SessionID: session.SessionID(),
 			Usage: event.UsageInfo{
-				PromptTokens:     resp.usage.PromptTokens,
-				CompletionTokens: resp.usage.CompletionTokens,
-				TotalTokens:      resp.usage.TotalTokens,
-				Duration:         resp.usage.Duration,
-				Cost:             resp.usage.Cost,
-				TotalCost:        session.TotalCost(),
+				PromptTokens:           resp.usage.PromptTokens,
+				CompletionTokens:       resp.usage.CompletionTokens,
+				TotalTokens:            resp.usage.TotalTokens,
+				Duration:               resp.usage.Duration,
+				Cost:                   resp.usage.Cost,
+				TotalCost:              session.TotalCost(),
+				EstimatedContextTokens: session.GetEstimatedContextTokens(),
 			},
 		})
 	}

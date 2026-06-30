@@ -247,35 +247,42 @@ MCP tools are automatically discovered on startup and registered in the tool reg
 
 ---
 
-## Wire Protocol
+## Wire Protocol (v2)
 
 **Request** (WebSocket frame):
 
 ```json
-{ "session_id": "<uuid>", "input": "...", "stream": true }
+{"type":"chat", "session_id":"<uuid>", "input":"...", "stream":true}
 ```
 
-**Non-stream response** (single frame):
+**Non-stream response** (single `type:"done"` frame):
 
 ```json
-{ "session_id": "...", "output": "...", "done": true }
+{"type":"done", "session_id":"...", "output":"...", "stats":{"total_tokens":..., "model":"..."}}
 ```
 
-**Stream response** (many delta frames, terminated by `done`):
+**Stream response** (many `type:"delta"` frames, terminated by `type:"done"`):
 
 ```json
-{ "session_id": "...", "delta": "chunk" }
+{"type":"delta", "session_id":"...", "text":"chunk"}
 ...
-{ "session_id": "...", "done": true }
+{"type":"done", "session_id":"...", "stats":{...}}
 ```
 
-If the model requests tools mid-stream, the gateway transparently falls back to a non-streaming tool loop and emits the final reply as a single `delta` followed by `done`.
-
-**Observability events** (for Neovim and other rich clients):
+**Observability events** (tool lifecycle, token usage):
 
 ```json
-{ "session_id": "...", "event": "tool", "data": {"tool": "read_file", "status": "start"} }
+{"type":"tool", "session_id":"...", "id":"call_1", "tool":"read_file", "status":"start", "args":{"path":"README.md"}}
+{"type":"usage", "session_id":"...", "prompt_tokens":1234, "completion_tokens":56, "total_tokens":1290}
 ```
+
+**Welcome on connect** (no more `list_sessions` dance):
+
+```json
+{"type":"welcome", "protocol_version":"2", "data":{"sessions":[...]}}
+```
+
+See `protocol.md` or `AGENT.md` for the full protocol specification.
 
 ---
 
