@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -32,7 +33,8 @@ type OpenAIAdapter struct {
 	// Extra carries static body fields to inject into every LLM request.
 	// Values may contain placeholders like "$session_id" that are resolved
 	// at request time using values from CompleteOptions.
-	Extra map[string]any
+	Extra   map[string]any
+	Pricing agent.Pricing // per-token pricing for cost calculation when provider doesn't return cost
 }
 
 // ---------------------------------------------------------------------------
@@ -47,15 +49,16 @@ type OpenAIAdapter struct {
 type ctxKey string
 
 const (
-	ctxExtraPerReq  ctxKey = "extra_per_req"
-	ctxSessionID    ctxKey = "session_id"
-	ctxCostCapture  ctxKey = "cost_capture" // *float64 to receive extracted cost
+	ctxExtraPerReq    ctxKey = "extra_per_req"
+	ctxSessionID      ctxKey = "session_id"
+	ctxCapturedUsage  ctxKey = "captured_usage" // *RawUsage to receive extracted usage extras
 )
 
-// ContextWithCostCapture stores a *float64 pointer that the transport will
-// populate with the cost extracted from the provider response's usage.cost field.
-func ContextWithCostCapture(ctx context.Context, ptr *float64) context.Context {
-	return context.WithValue(ctx, ctxCostCapture, ptr)
+// ContextWithCapturedUsage stores a *RawUsage pointer that the transport will
+// populate with cost, prompt_cache_hit_tokens, and prompt_cache_miss_tokens
+// extracted from the provider response.
+func ContextWithCapturedUsage(ctx context.Context, ptr *RawUsage) context.Context {
+	return context.WithValue(ctx, ctxCapturedUsage, ptr)
 }
 
 // extraRoundTripper wraps an http.RoundTripper and injects extra fields
@@ -67,16 +70,16 @@ type extraRoundTripper struct {
 	debugDir   string         // when non-empty, dump final wire body here
 }
 
-// costCaptureBody wraps an io.ReadCloser (SSE response body for streaming)
-// and scans for "usage" objects containing a "cost" field, storing the
-// last seen cost value into the provided pointer.
-type costCaptureBody struct {
+// usageCaptureBody wraps an io.ReadCloser (SSE response body for streaming)
+// and scans for "usage" objects containing cost and cache token fields,
+// storing the last seen usage extras into the provided RawUsage pointer.
+type usageCaptureBody struct {
 	io.ReadCloser
-	cost  *float64
+	raw       *RawUsage
 	remainder []byte
 }
 
-func (b *costCaptureBody) Read(p []byte) (int, error) {
+func (b *usageCaptureBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if n > 0 {
 		data := append(b.remainder, p[:n]...)
@@ -96,8 +99,17 @@ func (b *costCaptureBody) Read(p []byte) (int, error) {
 			// Check for SSE data line containing usage
 			if strings.HasPrefix(line, "data: ") {
 				payload := strings.TrimSpace(line[6:])
-				if c := extractCostFromUsage([]byte(payload)); c > 0 {
-					*b.cost = c
+				raw := extractRawUsage([]byte(payload))
+				// Capture any usage data — standard tokens, cost, or cache tokens.
+				if raw.totalTokens > 0 || raw.cost > 0 || raw.promptCacheHit > 0 || raw.promptCacheMiss > 0 {
+					*b.raw = raw
+					slog.Debug("usage_capture_body: captured usage from SSE",
+						"prompt_tokens", raw.promptTokens,
+						"completion_tokens", raw.completionTokens,
+						"total_tokens", raw.totalTokens,
+						"cost", raw.cost,
+						"cache_hit", raw.promptCacheHit,
+						"cache_miss", raw.promptCacheMiss)
 				}
 			}
 		}
@@ -157,30 +169,39 @@ func (t *extraRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 	return t.handleResponse(newReq, resp, err)
 }
 
-// handleResponse processes the HTTP response to extract cost if needed.
+// handleResponse processes the HTTP response to extract usage extras (cost, cache tokens).
 func (t *extraRoundTripper) handleResponse(req *http.Request, resp *http.Response, err error) (*http.Response, error) {
 	if err != nil || resp == nil {
 		return resp, err
 	}
-	costPtr, _ := req.Context().Value(ctxCostCapture).(*float64)
-	if costPtr == nil {
+	rawPtr, _ := req.Context().Value(ctxCapturedUsage).(*RawUsage)
+	if rawPtr == nil {
+		slog.Debug("openai_handle_response: no captured usage pointer in context")
 		return resp, nil
 	}
 
-	// For streaming responses, wrap body to capture cost from SSE events
+	// For streaming responses, wrap body to capture usage extras from SSE events
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		resp.Body = &costCaptureBody{ReadCloser: resp.Body, cost: costPtr}
+		slog.Debug("openai_handle_response: streaming response, wrapping body for usage capture")
+		resp.Body = &usageCaptureBody{ReadCloser: resp.Body, raw: rawPtr}
 		return resp, nil
 	}
 
-	// For non-streaming responses, read full body and extract cost
+	// For non-streaming responses, read full body and extract usage extras
 	body, readErr := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if readErr != nil {
 		return nil, readErr
 	}
 
-	*costPtr = extractCostFromUsage(body)
+	*rawPtr = extractRawUsage(body)
+	slog.Debug("openai_handle_response: non-streaming, extracted usage",
+		"prompt_tokens", rawPtr.promptTokens,
+		"completion_tokens", rawPtr.completionTokens,
+		"total_tokens", rawPtr.totalTokens,
+		"cost", rawPtr.cost,
+		"cache_hit", rawPtr.promptCacheHit,
+		"cache_miss", rawPtr.promptCacheMiss)
 
 	// Reconstruct response body
 	newResp := *resp
@@ -222,14 +243,11 @@ func ContextWithExtras(ctx context.Context, sessionID string, perReqExtra map[st
 	return ctx
 }
 
-// WrapTransport wraps an http.RoundTripper with extra-body injection.
-// If extras is empty, the base transport is returned unchanged.
-// debugDir, when non-empty, enables dumping the final wire body after
-// extra injection.
+// WrapTransport wraps an http.RoundTripper with extra-body injection and
+// response usage capture. When extras is non-empty, body fields are merged.
+// Always wraps when debugDir is non-empty or usage capture may be needed
+// (the transport checks context for captured usage pointers at runtime).
 func WrapTransport(base http.RoundTripper, extra map[string]any, debugDir string) http.RoundTripper {
-	if len(extra) == 0 {
-		return base
-	}
 	return &extraRoundTripper{base: base, extra: extra, debugDir: debugDir}
 }
 
@@ -320,9 +338,9 @@ func (ad *OpenAIAdapter) Complete(ctx context.Context, msgs []agent.Message, too
 		ctx = ContextWithExtras(ctx, opts.SessionID, opts.Extra)
 	}
 
-	// Set up cost capture via transport
-	var cost float64
-	ctx = ContextWithCostCapture(ctx, &cost)
+	// Set up usage extras capture via transport
+	var raw RawUsage
+	ctx = ContextWithCapturedUsage(ctx, &raw)
 
 	req := ad.buildRequest(msgs, tools, opts)
 	resp, err := retryOpenAI(ctx, req, func() (openai.ChatCompletionResponse, error) {
@@ -336,6 +354,24 @@ func (ad *OpenAIAdapter) Complete(ctx context.Context, msgs []agent.Message, too
 		return nil, errors.New("openai: empty response")
 	}
 	choice := resp.Choices[0]
+
+	// Determine cost: use provider's cost if available, otherwise calculate from pricing
+	cost := raw.cost
+	if cost == 0 && (ad.Pricing.Input != 0 || ad.Pricing.Output != 0) {
+		cost = calculateCostFromPricing(ad.Pricing, raw)
+		slog.Debug("openai_complete: calculated cost from pricing",
+			"input", ad.Pricing.Input, "output", ad.Pricing.Output,
+			"cache_hit_input", ad.Pricing.CacheHitInput,
+			"prompt_tokens", raw.promptTokens,
+			"completion_tokens", raw.completionTokens,
+			"prompt_cache_hit", raw.promptCacheHit,
+			"prompt_cache_miss", raw.promptCacheMiss,
+			"cost", cost)
+	} else {
+		slog.Debug("openai_complete: using provider cost",
+			"cost", cost, "pricing_configured", ad.Pricing.Input != 0 || ad.Pricing.Output != 0)
+	}
+
 	out := &agent.LLMResponse{
 		Message: agent.Message{
 			Role:    agent.RoleAssistant,
@@ -343,10 +379,12 @@ func (ad *OpenAIAdapter) Complete(ctx context.Context, msgs []agent.Message, too
 		},
 		FinishReason: string(choice.FinishReason),
 		Usage: &agent.Usage{
-			PromptTokens:     resp.Usage.PromptTokens,
-			CompletionTokens: resp.Usage.CompletionTokens,
-			TotalTokens:      resp.Usage.TotalTokens,
-			Cost:             cost,
+			PromptTokens:          resp.Usage.PromptTokens,
+			CompletionTokens:      resp.Usage.CompletionTokens,
+			TotalTokens:           resp.Usage.TotalTokens,
+			PromptCacheHitTokens:  raw.promptCacheHit,
+			PromptCacheMissTokens: raw.promptCacheMiss,
+			Cost:                  cost,
 		},
 	}
 	for _, toolCall := range choice.Message.ToolCalls {
@@ -427,9 +465,9 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 		ctx = ContextWithExtras(ctx, opts.SessionID, opts.Extra)
 	}
 
-	// Set up cost capture via transport (captured from SSE events)
-	var cost float64
-	ctx = ContextWithCostCapture(ctx, &cost)
+	// Set up usage extras capture via transport (captured from SSE events)
+	var raw RawUsage
+	ctx = ContextWithCapturedUsage(ctx, &raw)
 
 	req := ad.buildRequest(msgs, tools, opts)
 	req.Stream = true
@@ -454,9 +492,27 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 		for {
 			resp, err := stream.Recv()
 			if errors.Is(err, io.EOF) {
-				// Stream complete — attach captured cost before finalizing
-				if pendingUsage != nil && cost > 0 {
-					pendingUsage.Cost = cost
+				// Stream complete — determine cost: provider's cost or pricing fallback
+				cost := raw.cost
+				if cost == 0 && (ad.Pricing.Input != 0 || ad.Pricing.Output != 0) {
+					cost = calculateCostFromPricing(ad.Pricing, raw)
+					slog.Debug("openai_stream_eof: calculated cost from pricing",
+						"input", ad.Pricing.Input, "output", ad.Pricing.Output,
+						"cache_hit_input", ad.Pricing.CacheHitInput,
+						"prompt_tokens", raw.promptTokens,
+						"completion_tokens", raw.completionTokens,
+						"cost", cost)
+				} else {
+					slog.Debug("openai_stream_eof: using provider cost",
+						"cost", cost,
+						"pricing_configured", ad.Pricing.Input != 0 || ad.Pricing.Output != 0)
+				}
+				if pendingUsage != nil {
+					if cost > 0 {
+						pendingUsage.Cost = cost
+					}
+					pendingUsage.PromptCacheHitTokens = raw.promptCacheHit
+					pendingUsage.PromptCacheMissTokens = raw.promptCacheMiss
 				}
 				sendStreamFinal(resultCh, accum.flush(), pendingUsage)
 				return
@@ -472,11 +528,29 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 			// the usage arrives as a separate SSE event AFTER the finish_reason chunk
 			// (no choices in this event), so we must capture it outside the choices loop.
 			if resp.Usage != nil && resp.Usage.TotalTokens > 0 {
+				cost := raw.cost
+				if cost == 0 && (ad.Pricing.Input != 0 || ad.Pricing.Output != 0) {
+					cost = calculateCostFromPricing(ad.Pricing, raw)
+					slog.Debug("openai_stream_usage: calculated cost from pricing",
+						"input", ad.Pricing.Input, "output", ad.Pricing.Output,
+						"cache_hit_input", ad.Pricing.CacheHitInput,
+						"prompt_tokens", raw.promptTokens,
+						"completion_tokens", raw.completionTokens,
+						"prompt_cache_hit", raw.promptCacheHit,
+						"prompt_cache_miss", raw.promptCacheMiss,
+						"cost", cost)
+				} else {
+					slog.Debug("openai_stream_usage: using provider cost",
+						"cost", cost,
+						"pricing_configured", ad.Pricing.Input != 0 || ad.Pricing.Output != 0)
+				}
 				pendingUsage = &agent.Usage{
-					PromptTokens:     resp.Usage.PromptTokens,
-					CompletionTokens: resp.Usage.CompletionTokens,
-					TotalTokens:      resp.Usage.TotalTokens,
-					Cost:             cost,
+					PromptTokens:          resp.Usage.PromptTokens,
+					CompletionTokens:      resp.Usage.CompletionTokens,
+					TotalTokens:           resp.Usage.TotalTokens,
+					PromptCacheHitTokens:  raw.promptCacheHit,
+					PromptCacheMissTokens: raw.promptCacheMiss,
+					Cost:                  cost,
 				}
 			}
 

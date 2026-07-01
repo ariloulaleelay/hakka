@@ -17,7 +17,7 @@ func TestNewSession(t *testing.T) {
 	if s.Read().SystemPrompt != "you are helpful" {
 		t.Fatalf("unexpected system prompt: %q", s.Read().SystemPrompt)
 	}
-	if len(s.AllMessages()) != 0 {
+	if len(s.Messages()) != 0 {
 		t.Fatal("new session must have no messages")
 	}
 	if s.Read().CreatedAt.IsZero() {
@@ -30,24 +30,27 @@ func TestSessionAppendAndHistory(t *testing.T) {
 	s.Append(Message{Role: RoleUser, Content: "hello"})
 	s.Append(Message{Role: RoleAssistant, Content: "hi"})
 
-	h := s.History()
-	if len(h) != 3 {
-		t.Fatalf("expected 3 messages incl. system, got %d", len(h))
+	if sp := s.SystemPrompt(); sp != "sys" {
+		t.Fatalf("expected system prompt 'sys', got %q", sp)
 	}
-	if h[0].Role != RoleSystem || h[0].Content != "sys" {
-		t.Fatalf("first message must be system: %+v", h[0])
+	msgs := s.Messages()
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
 	}
-	if h[1].Role != RoleUser || h[2].Role != RoleAssistant {
-		t.Fatalf("unexpected ordering: %+v", h)
+	if msgs[0].Role != RoleUser || msgs[1].Role != RoleAssistant {
+		t.Fatalf("unexpected ordering: %+v", msgs)
 	}
 }
 
 func TestSessionHistoryWithoutSystem(t *testing.T) {
 	s := NewSession("testns", "")
 	s.Append(Message{Role: RoleUser, Content: "hi"})
-	h := s.History()
-	if len(h) != 1 || h[0].Role != RoleUser {
-		t.Fatalf("unexpected history: %+v", h)
+	if sp := s.SystemPrompt(); sp != "" {
+		t.Fatalf("expected empty system prompt, got %q", sp)
+	}
+	msgs := s.Messages()
+	if len(msgs) != 1 || msgs[0].Role != RoleUser {
+		t.Fatalf("unexpected messages: %+v", msgs)
 	}
 }
 
@@ -64,7 +67,7 @@ func TestSessionConcurrentAppend(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if got := len(s.History()); got != N {
+	if got := len(s.Messages()); got != N {
 		t.Fatalf("expected %d messages, got %d", N, got)
 	}
 }

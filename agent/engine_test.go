@@ -42,7 +42,7 @@ func TestUsageDurationIsMeasured(t *testing.T) {
 	}
 
 	var found bool
-	for _, m := range session.AllMessages() {
+	for _, m := range session.Messages() {
 		if m.Role == RoleAssistant && m.Content == "measured reply" {
 			found = true
 			if m.Usage == nil {
@@ -143,7 +143,7 @@ func TestUsageDurationViaStream(t *testing.T) {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
 	var found bool
-	for _, m := range session.AllMessages() {
+	for _, m := range session.Messages() {
 		if m.Role == RoleAssistant && m.Content == "stream duration" {
 			found = true
 			if m.Usage == nil {
@@ -272,8 +272,8 @@ func TestEngineChatNoTools(t *testing.T) {
 	if adapter.calls != 1 {
 		t.Fatalf("expected 1 LLM call, got %d", adapter.calls)
 	}
-	if len(session.AllMessages()) != 2 {
-		t.Fatalf("expected 2 messages (user + assistant) in session, got %d", len(session.AllMessages()))
+	if len(session.Messages()) != 2 {
+		t.Fatalf("expected 2 messages (user + assistant) in session, got %d", len(session.Messages()))
 	}
 	if adapter.lastMsgs[0].Role != RoleSystem {
 		t.Fatalf("system prompt not forwarded: %+v", adapter.lastMsgs[0])
@@ -405,7 +405,7 @@ func TestMessageUsageStored(t *testing.T) {
 
 	// Find the assistant message — it should have Usage set.
 	var found bool
-	for _, m := range session.AllMessages() {
+	for _, m := range session.Messages() {
 		if m.Role == RoleAssistant && m.Content == "hi there" {
 			found = true
 			if m.Usage == nil {
@@ -490,7 +490,7 @@ func TestMessageUsageViaStream(t *testing.T) {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
 	var found bool
-	for _, m := range session.AllMessages() {
+	for _, m := range session.Messages() {
 		if m.Role == RoleAssistant && m.Content == "streamed reply" {
 			found = true
 			if m.Usage == nil {
@@ -692,7 +692,7 @@ func TestConversationExecuteEmptyInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Execute: %v", err)
 	}
-	initialMsgCount := len(session.AllMessages())
+	initialMsgCount := len(session.Messages())
 
 	// Now resume — should NOT add a user message.
 	eventCh, err := conv.Execute(context.Background(), "resume-test", "")
@@ -717,10 +717,10 @@ func TestConversationExecuteEmptyInput(t *testing.T) {
 
 	// Verify no new user message was appended.
 	session, _ = conv.sessions.GetOrCreate(context.Background(), "testns", "resume-test")
-	if len(session.AllMessages()) != initialMsgCount+1 {
-		t.Fatalf("expected %d messages (initial + new assistant reply), got %d", initialMsgCount+1, len(session.AllMessages()))
+	if len(session.Messages()) != initialMsgCount+1 {
+		t.Fatalf("expected %d messages (initial + new assistant reply), got %d", initialMsgCount+1, len(session.Messages()))
 	}
-	lastMsg := session.AllMessages()[len(session.AllMessages())-1]
+	lastMsg := session.Messages()[len(session.Messages())-1]
 	if lastMsg.Role != RoleAssistant {
 		t.Fatalf("expected last message to be assistant, got %s", lastMsg.Role)
 	}
@@ -752,7 +752,7 @@ func TestStreamSessionExecuteEmptyInput(t *testing.T) {
 	// Count existing messages.
 	sm := streamer.conv.sessions
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "stream-empty-test")
-	initialMsgCount := len(session.AllMessages())
+	initialMsgCount := len(session.Messages())
 
 	// Now execute with empty input — should NOT add a user message.
 	eventCh2, err := streamer.Execute(context.Background(), "stream-empty-test", "")
@@ -777,10 +777,10 @@ func TestStreamSessionExecuteEmptyInput(t *testing.T) {
 
 	// Verify no new user message was appended.
 	session, _ = sm.GetOrCreate(context.Background(), "testns", "stream-empty-test")
-	if len(session.AllMessages()) != initialMsgCount+1 {
-		t.Fatalf("expected %d messages (initial + new assistant reply), got %d", initialMsgCount+1, len(session.AllMessages()))
+	if len(session.Messages()) != initialMsgCount+1 {
+		t.Fatalf("expected %d messages (initial + new assistant reply), got %d", initialMsgCount+1, len(session.Messages()))
 	}
-	lastMsg := session.AllMessages()[len(session.AllMessages())-1]
+	lastMsg := session.Messages()[len(session.Messages())-1]
 	if lastMsg.Role != RoleAssistant {
 		t.Fatalf("expected last message to be assistant, got %s", lastMsg.Role)
 	}

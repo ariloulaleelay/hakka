@@ -39,8 +39,8 @@ func TestSessionManagerReusesExisting(t *testing.T) {
 	if b != a {
 		t.Fatal("expected same session pointer from memory store")
 	}
-	if len(b.AllMessages()) != 1 || b.AllMessages()[0].Content != "marker" {
-		t.Fatalf("messages not retained: %+v", b.AllMessages())
+	if len(b.Messages()) != 1 || b.Messages()[0].Content != "marker" {
+		t.Fatalf("messages not retained: %+v", b.Messages())
 	}
 }
 
@@ -53,7 +53,7 @@ func TestSessionManagerDrop(t *testing.T) {
 	}
 	// next GetOrCreate with the same id should create a brand new session
 	again, _ := sm.GetOrCreate(ctx, "testns", "to-drop")
-	if len(again.AllMessages()) != 0 {
+	if len(again.Messages()) != 0 {
 		t.Fatal("dropped session leaked messages")
 	}
 }

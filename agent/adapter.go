@@ -22,13 +22,30 @@ type CompleteOptions struct {
 // Duration is the wall-clock time of the LLM call in nanoseconds,
 // set by the engine as an informational metric.
 // Cost is the monetary cost of the LLM call in USD, extracted from
-// the provider's response (usage.cost field) when available.
+// the provider's response (usage.cost field) when available or
+// calculated from pricing config when the provider doesn't return it.
 type Usage struct {
-	PromptTokens     int
-	CompletionTokens int
-	TotalTokens      int
-	Duration         time.Duration `json:"duration_ns,omitempty"`
-	Cost             float64       `json:"cost,omitempty"`
+	PromptTokens          int
+	CompletionTokens      int
+	TotalTokens           int
+	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens,omitempty"`
+	Duration              time.Duration `json:"duration_ns,omitempty"`
+	Cost                  float64       `json:"cost,omitempty"`
+}
+
+// Pricing defines per-token costs for LLM providers that do not return
+// cost in their response. When set on a model config, the adapter
+// calculates the monetary cost from the actual token usage after each
+// LLM call.
+//
+// All values are per-token in USD. For providers like DeepSeek that
+// charge differently for cached vs uncached prompt tokens, set
+// CacheHitInput to the reduced rate.
+type Pricing struct {
+	Input         float64 `json:"input"`
+	Output        float64 `json:"output"`
+	CacheHitInput float64 `json:"cache_hit_input,omitempty"`
 }
 
 // LLMResponse is the normalized result of a single completion call.

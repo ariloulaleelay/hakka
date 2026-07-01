@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/ariloulaleelay/hakka/agent"
 )
 
 // ---------------------------------------------------------------------------
@@ -16,18 +19,82 @@ import (
 // (Anthropic, Gemini). The OpenAI adapter uses the go-openai library instead.
 // ---------------------------------------------------------------------------
 
+// RawUsage carries the raw token and cost fields extracted from a provider
+// response JSON body. It is an intermediate representation for parsing
+// provider-specific usage shapes before translating into agent.Usage.
+type RawUsage struct {
+	cost             float64
+	promptTokens     int
+	completionTokens int
+	totalTokens      int
+	promptCacheHit   int
+	promptCacheMiss  int
+}
+
 // extractCostFromUsage parses raw provider response JSON and extracts the
 // "cost" field from the "usage" object. Returns 0 if not found or unparseable.
 func extractCostFromUsage(body []byte) float64 {
+	return extractRawUsage(body).cost
+}
+
+// extractRawUsage parses raw provider response JSON and extracts all known
+// usage fields: cost, prompt_cache_hit_tokens, prompt_cache_miss_tokens,
+// and standard token counts. Returns zero values for missing fields.
+func extractRawUsage(body []byte) RawUsage {
 	var resp struct {
 		Usage struct {
-			Cost float64 `json:"cost"`
+			Cost             float64 `json:"cost"`
+			PromptTokens     int     `json:"prompt_tokens"`
+			CompletionTokens int     `json:"completion_tokens"`
+			TotalTokens      int     `json:"total_tokens"`
+			PromptCacheHit   int     `json:"prompt_cache_hit_tokens"`
+			PromptCacheMiss  int     `json:"prompt_cache_miss_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
+		return RawUsage{}
+	}
+	return RawUsage{
+		cost:             resp.Usage.Cost,
+		promptTokens:     resp.Usage.PromptTokens,
+		completionTokens: resp.Usage.CompletionTokens,
+		totalTokens:      resp.Usage.TotalTokens,
+		promptCacheHit:   resp.Usage.PromptCacheHit,
+		promptCacheMiss:  resp.Usage.PromptCacheMiss,
+	}
+}
+
+// calculateCostFromPricing computes the monetary cost from token usage
+// using the configured per-token prices. When cache breakdown is available
+// (promptCacheHit + promptCacheMiss == promptTokens), cached tokens are
+// priced at CacheHitInput and uncached at Input. Otherwise all prompt
+// tokens use Input. Returns 0 when pricing is zero-valued (not configured).
+func calculateCostFromPricing(pricing agent.Pricing, raw RawUsage) float64 {
+	if pricing.Input == 0 && pricing.Output == 0 {
+		slog.Debug("pricing_calculate: no pricing configured, cost=0")
 		return 0
 	}
-	return resp.Usage.Cost
+	var inputCost float64
+	if raw.promptCacheHit+raw.promptCacheMiss == raw.promptTokens && raw.promptCacheMiss > 0 {
+		// Cache breakdown available — price hit and miss separately
+		inputCost = float64(raw.promptCacheMiss)*pricing.Input + float64(raw.promptCacheHit)*pricing.CacheHitInput
+		slog.Debug("pricing_calculate: cache breakdown",
+			"miss_tokens", raw.promptCacheMiss, "miss_rate", pricing.Input,
+			"hit_tokens", raw.promptCacheHit, "hit_rate", pricing.CacheHitInput,
+			"input_cost", inputCost)
+	} else {
+		// No cache breakdown — price all prompt tokens at input rate
+		inputCost = float64(raw.promptTokens) * pricing.Input
+		slog.Debug("pricing_calculate: no cache breakdown",
+			"prompt_tokens", raw.promptTokens, "input_rate", pricing.Input,
+			"input_cost", inputCost)
+	}
+	outputCost := float64(raw.completionTokens) * pricing.Output
+	total := inputCost + outputCost
+	slog.Debug("pricing_calculate: total",
+		"output_tokens", raw.completionTokens, "output_rate", pricing.Output,
+		"output_cost", outputCost, "total", total)
+	return total
 }
 
 // errHTTPStatus is returned when the provider returns an HTTP error.

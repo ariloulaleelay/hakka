@@ -168,10 +168,17 @@ func (sess *Session) SessionName() string {
 	return sess.data.Name
 }
 
+func (sess *Session) SystemPrompt() string {
+	sess.mu.RLock()
+	defer sess.mu.RUnlock()
+	return sess.data.SystemPrompt
+}
+
 func (sess *Session) SetSessionName(name string) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	sess.data.Name = name
+	sess.data.UpdatedAt = time.Now()
 }
 
 func (sess *Session) DisplayName() string {
@@ -189,20 +196,10 @@ func (sess *Session) Append(msg Message) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	sess.data.Messages = append(sess.data.Messages, msg)
+	sess.data.UpdatedAt = time.Now()
 }
 
-func (sess *Session) History() []Message {
-	sess.mu.RLock()
-	defer sess.mu.RUnlock()
-	out := make([]Message, 0, len(sess.data.Messages)+1)
-	if sess.data.SystemPrompt != "" {
-		out = append(out, Message{Role: RoleSystem, Content: sess.data.SystemPrompt})
-	}
-	out = append(out, sess.data.Messages...)
-	return out
-}
-
-func (sess *Session) AllMessages() []Message {
+func (sess *Session) Messages() []Message {
 	sess.mu.RLock()
 	defer sess.mu.RUnlock()
 	out := make([]Message, len(sess.data.Messages))
@@ -366,6 +363,7 @@ func (sess *Session) SetModel(name string) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	sess.data.Model = name
+	sess.data.UpdatedAt = time.Now()
 }
 
 // --- SessionTokenTracking ---
@@ -432,6 +430,45 @@ func (sess *Session) SetCompactSoftLimit(n int) {
 	sess.data.CompactSoftLimit = n
 }
 
+// Metadata returns a canonical map of session metadata fields.
+// This is the single point of truth for session metadata format.
+// All consumers (get_session, session_info, session_create, session_list,
+// welcome, type:"session" frames) must use this method to ensure
+// consistent field names and values.
+func (sess *Session) Metadata() map[string]any {
+	sess.mu.RLock()
+	defer sess.mu.RUnlock()
+	d := sess.data
+	return map[string]any{
+		"id":                      d.ID,
+		"name":                    d.Name,
+		"short_id":                shortID(d.ID),
+		"model":                   d.Model,
+		"message_count":           len(d.Messages),
+		"total_tokens":            d.TotalTokens,
+		"total_cost":              d.TotalCost,
+		"estimated_context_tokens": d.EstimatedContextTokens,
+		"client_cwd":              d.ClientCWD,
+		"compact_soft_limit":      d.CompactSoftLimit,
+		"created_at":              d.CreatedAt.Format(time.RFC3339),
+		"updated_at":              formatTime(d.UpdatedAt, d.CreatedAt),
+	}
+}
+
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+func formatTime(t, fallback time.Time) string {
+	if t.IsZero() {
+		return fallback.Format(time.RFC3339)
+	}
+	return t.Format(time.RFC3339)
+}
+
 // --- Non-interface helpers ---
 
 func (sess *Session) SetNamespace(ns string) {
@@ -450,6 +487,7 @@ func (sess *Session) SetClientCWD(cwd string) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	sess.data.ClientCWD = cwd
+	sess.data.UpdatedAt = time.Now()
 }
 
 func (sess *Session) SetUpdatedAt(t time.Time) {

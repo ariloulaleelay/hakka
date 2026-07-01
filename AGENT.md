@@ -132,11 +132,19 @@ is gateway-fixed.
 
 ---
 
-## Wire Protocol (v2)
+## Wire Protocol
 
-Hakka uses a **WebSocket JSON API** (v2 protocol). Every message in both
-directions is a single JSON object with a mandatory `type` field as the
-sole discriminant.
+Hakka uses a **WebSocket JSON API**. Every message in both
+directions is a single JSON object with a mandatory `type` field as
+the sole discriminant.
+
+Key points:
+- LLM content is always in a field called `text` — whether streaming (`delta`) or final (`done`)
+- No `protocol_version` field — versioning is implicit
+- `type:"req"` frames have flat `request_id`/`command` fields (no nested `client_request`)
+- `type:"welcome"` has `sessions` at the top level (not inside `data`)
+- `type:"session"` has `session`/`messages` at the top level (not inside `data`)
+- The `ContextEstimated` event is not emitted on the wire (estimated context is in the `usage` frame)
 
 ### Connection & Session Lifecycle (for client authors)
 
@@ -161,182 +169,21 @@ A typical client follows this sequence:
 
 - Always include `session_id` on every request once you have one.
 - `stream: true` gives incremental `type:"delta"` frames with `text` field;
-  `stream: false` gives a single `type:"done"` frame with `output`.
+  `stream: false` gives a single `type:"done"` frame with `text` field.
 - The `type:"done"` frame **always** arrives — even on errors, even after
   cancel. It is your signal that the turn is complete.
 - Tool events (`type:"tool"`) and usage events (`type:"usage"`) may arrive
   interleaved with deltas. Each tool event carries a unique `id` field
   that correlates `status:"start"` with `status:"ok"`/`status:"err"`.
-- If the LLM calls `vim_run_command`, you will receive a `type:"req"` event.
-  You **must** reply with `{"type":"resp","request_id":"...","result":...}`
-  or the tool will block until timeout.
+- If the LLM calls `vim_run_command`, you will receive a `type:"req"` event
+  with flat `request_id` and `command` fields. You **must** reply with
+  `{"type":"resp","request_id":"...","result":...}` or the tool will block
+  until timeout.
 - Cancel an in-flight turn by sending `{"type":"cancel","session_id":"..."}`.
   The server replies with `{"type":"done","cancelled":true}`.
 - Set CWD before sending substantive input via `cwd_set` command.
 
----
-
-### Inbound Frames (Client → Server)
-
-Every inbound frame has a mandatory `type` field:
-
-| `type` | Purpose | Key fields |
-|---|---|---|
-| `"chat"` | Normal chat turn | `session_id`, `input`, `stream` |
-| `"cmd"` | JSON command | `session_id`, `command: {cmd, params}` |
-| `"resp"` | Reply to client_request | `request_id`, `result`, `error` |
-| `"cancel"` | Cancel running turn | `session_id` |
-
-**Chat:**
-```json
-{"type":"chat", "session_id":"<uuid>", "input":"Hello!", "stream":true}
-```
-
-**JSON command:**
-```json
-{"type":"cmd", "session_id":"...", "command":{"cmd":"session_list"}}
-```
-
-**Response to server request:**
-```json
-{"type":"resp", "request_id":"req-1", "result":[1,2,3]}
-```
-
-**Cancel:**
-```json
-{"type":"cancel", "session_id":"<uuid>"}
-```
-
-**Structured JSON commands** (`command` object with `cmd` + optional `params`):
-
-| `cmd` | `params` | Description |
-|---|---|---|
-| `help` | — | List available commands. |
-| `continue` | — | Continue LLM turn without new user input. |
-| `start` | — | Create fresh session with **all tools enabled**. |
-| `compact` | `{"n": <int>}` | Set context soft limit in tokens (0 = off). |
-| `cwd_set` | `{"cwd": "/path"}` | Persist working directory on the session. |
-| `session_list` | — | List all sessions in the namespace. |
-| `session_create` | — | Create a new empty session. |
-| `get_session` | `{"id": "<uuid or prefix>"}` | Fetch session data and messages by ID. |
-| `session_delete` | `{"id": "<uuid>"}` | Delete a session. Use `"this"` for the current. |
-| `session_info` | — | Show current session details. |
-| `session_rename` | `{"name": "..."}` | Rename the current session. |
-| `session_autorename` | — | Ask the LLM to generate a session name. |
-| `model_list` | — | List registered models. |
-| `model_switch` | `{"name": "..."}` | Switch the session to a different model. |
-| `tool_list` | — | List tools with `enabled`/`allowed` status and tags. |
-| `tool_allow` | `{"name": "tool_or_#tag"}` | Allow and enable a tool or all tools with a `#tag`. |
-| `tool_deny` | `{"name": "tool_or_#tag"}` | Deny (hide) a tool or all tools with a `#tag`. |
-
-### Outbound Frames (Server → Client)
-
-Every outbound frame has a mandatory `type` field — the sole discriminant.
-
-| `type` | When emitted | Terminal? |
-|---|---|---|
-| `"welcome"` | Immediately on WebSocket connect | No |
-| `"delta"` | Mid-stream text chunk | No |
-| `"output"` | Full non-stream reply (before `done`) | No |
-| `"done"` | Turn/command is complete | **Yes** |
-| `"tool"` | Tool lifecycle (start/ok/err) | No |
-| `"usage"` | Token usage after each LLM call | No |
-| `"req"` | Server asks client to run something | No |
-| `"result"` | Command output (session_list, etc.) | No |
-| `"session"` | Session lifecycle (created/renamed) | No |
-| `"error"` | Error before any turn | Yes |
-
-**Welcome frame** (sent automatically on connect):
-```json
-{
-  "type": "welcome",
-  "protocol_version": "2",
-  "data": {
-    "sessions": [
-      {"id": "<uuid>", "short_id": "a1b2c3d4", "name": "Bug hunt", "model": "deepseek", "message_count": 42, "in_flight": true}
-    ]
-  }
-}
-```
-
-**Delta (streaming text):**
-```json
-{"type":"delta", "session_id":"<uuid>", "text":"Hel"}
-```
-
-**Tool lifecycle:**
-```json
-{"type":"tool", "session_id":"<uuid>", "id":"call_abc123", "tool":"read_file", "status":"start", "args":{"path":"README.md"}, "snippet":"read_file 'README.md'"}
-{"type":"tool", "session_id":"<uuid>", "id":"call_abc123", "tool":"read_file", "status":"ok", "result":"file content..."}
-{"type":"tool", "session_id":"<uuid>", "id":"call_abc123", "tool":"read_file", "status":"err", "error":"file not found"}
-```
-
-**Usage (after every LLM call, includes estimated context):**
-```json
-{"type":"usage", "session_id":"<uuid>", "prompt_tokens":1234, "completion_tokens":56, "total_tokens":1290, "duration_ns":1234567890, "estimated_context_tokens":52000, "cost":0.000095, "total_cost":0.000190}
-```
-
-**Done (terminal frame — always emitted at end of turn):**
-```json
-{"type":"done", "session_id":"<uuid>", "output":"Final answer", "stats":{"total_tokens":1290, "total_cost":0.000190, "message_count":5, "estimated_context_tokens":52000, "model":"deepseek"}}
-```
-
-**Cancelled:**
-```json
-{"type":"done", "session_id":"<uuid>", "cancelled":true, "stats":{...}}
-```
-
-**Error:**
-```json
-{"type":"done", "session_id":"<uuid>", "error":"something went wrong", "stats":{...}}
-```
-
-**Server request (client must reply with `type:"resp"`):**
-```json
-{"type":"req", "session_id":"<uuid>", "request_id":"req-1", "command":"return vim.api.nvim_buf_get_name(0)"}
-```
-
-**Command result:**
-```json
-{"type":"result", "session_id":"<uuid>", "cmd":"session_list", "data":{"sessions":[...]}}
-```
-
-**Session lifecycle:**
-```json
-{"type":"session", "session_id":"<uuid>", "event":"created", ...}
-{"type":"session", "session_id":"<uuid>", "event":"renamed", "old_name":"old", "name":"new"}
-```
-
-### Client Implementation Checklist
-
-- [ ] **Connect** to `ws://<host>:<port>/ws`.
-- [ ] **Wait for `type:"welcome"`** on startup — contains session list and auto-subscribes.
-- [ ] **Handle `type:"done"`** — the engine is not ready for new input until this frame arrives.
-- [ ] **Render tool events** inline — `status:"start"` shows a spinner, `"ok"` renders the result.
-  Match `start` → `ok`/`err` via the `id` field.
-- [ ] **Handle `type:"req"`** — if your client supports Neovim, evaluate the Lua and reply
-  with `{"type":"resp","request_id":"...","result":...}`. If not, reply with
-  `{"type":"resp","request_id":"...","error":"unsupported"}`.
-- [ ] **Handle `type:"session"`** — update the session list accordingly.
-- [ ] **Send `type:"cmd"` with `cwd_set`** on startup and when the user changes directory.
-- [ ] **Send `type:"cancel"`** when the user hits Escape to abort a long turn.
-- [ ] **Handle `type:"done"` errors** — show the error and consider the turn complete.
-- [ ] **Stream interleaving** — frames can arrive in any order during streaming.
-  Always buffer `type:"delta"` text; tool/usage events are informational.
-
----
-
-### Key Architectural Patterns
-
-1. **Session Autonomy** — Sessions live in the store, not in connections. A turn runs on `context.Background()` so it survives client disconnect. Reconnecting clients subscribe to the ongoing turn via `TurnTracker`.
-2. **Cooperative Streaming** — Stream tokens by default; if the model requests tools mid-stream, execute them, then stream the next response.
-3. **Client/Response Loop** — `vim_run_command` sends a `client_request` frame, blocks on `ResponseReader`, and the client replies asynchronously over the same WebSocket.
-4. **Model Switching at Runtime** — `/model <name>` or `model_switch` command changes the active model per-session, persisted in the store.
-5. **LLM-Driven Context Compaction** — When estimated context exceeds `CompactSoftLimit` (default 200K), [N] message indices are injected and the LLM is prompted to call `context_compactify`. Compacted ranges become `[Compacted N messages: …]` markers. Full session data is never modified.
-6. **Unified Command Path** — All session operations (create, fetch, delete, CWD, tools, models) go through the same JSON `command` dispatch in `CommandProcessor.ExecuteJSON`. Text-based slash commands are **not parsed server-side** — clients (or gateway-specific `parseSlashCommand` functions like the one in the Telegram gateway) convert them to JSON commands before sending.
-
----
-
+See `protocol.md` for the complete frame reference.
 ## Extending
 
 | Need | Interface/Component |

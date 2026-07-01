@@ -9,7 +9,7 @@ package agent
 //   - Router depends on SessionModelBinding
 //   - ToolRegistry.SchemasForSession depends on SessionToolAuth
 //   - ToolRegistry.ExecuteForSession depends on SessionToolAuth + SessionIdentity
-//   - BuildContext depends on SessionHistory
+//   - SessionHistory used by context builders
 //   - Conversation / StreamSession use the full SessionView composite
 // ---------------------------------------------------------------------------
 
@@ -24,8 +24,8 @@ type SessionIdentity interface {
 // SessionHistory provides read/write access to conversation messages.
 type SessionHistory interface {
 	Append(msg Message)
-	History() []Message      // system prompt + conversation messages
-	AllMessages() []Message  // raw conversation messages only (no system prompt)
+	SystemPrompt() string  // system prompt text (empty if none)
+	Messages() []Message   // conversation messages only (no system prompt)
 	CWDMessage() *Message
 }
 

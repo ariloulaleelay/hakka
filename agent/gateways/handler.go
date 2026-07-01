@@ -2,7 +2,6 @@ package gateways
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/ariloulaleelay/hakka/agent"
 	"github.com/ariloulaleelay/hakka/agent/commands"
@@ -105,8 +104,9 @@ func (h *TurnHandler) HandleRequest(ctx context.Context, req FrameRequest, w fra
 		return
 	}
 
-	// Chat request.
-	sessionID := h.resolveSessionAndCWD(ctx, req)
+	// Chat request. Use the session ID from the request as-is;
+	// CWD is set via the cwd_set command, not inline on chat frames.
+	sessionID := req.SessionID
 
 	// Check for an active turn for this session.
 	if active := h.turns.Get(sessionID); active != nil {
@@ -137,7 +137,7 @@ func (h *TurnHandler) startNewTurn(ctx context.Context, w frameWriter, responseR
 	// Enrich context with client communication channels, namespace, and CWD for tools.
 	turnCtx = event.ContextWithNamespace(turnCtx, h.Namespace)
 	turnCtx = clientCtx(turnCtx, w, responseReader, sessionID)
-	turnCtx = enrichCtxWithCWD(turnCtx, h.Conv, req)
+	turnCtx = enrichCtxWithCWD(turnCtx, h.Conv, sessionID)
 
 	h.handleWithEngine(turnCtx, w, sessionID, input, h.executor(req.Stream), turnCancel)
 }
@@ -152,19 +152,22 @@ func (h *TurnHandler) startNewTurn(ctx context.Context, w frameWriter, responseR
 func (h *TurnHandler) handleJSONCommand(ctx context.Context, req FrameRequest, w frameWriter, responseReader *InProcessResponseReader) {
 	cmdReq := req.Command
 
-	// Resolve session for commands that have an explicit session_id.
-	// When session_id is empty, skip resolution — commands like
-	// session_list must never create one.
+	// Use the session ID from the request as-is.
+	// CWD is set via the cwd_set command, not inline on command frames.
 	sessionID := req.SessionID
-	if sessionID != "" {
-		sessionID = h.resolveSessionAndCWD(ctx, req)
-	}
 
 	reqCtx := event.ContextWithNamespace(ctx, h.Namespace)
 	reqCtx = clientCtx(reqCtx, w, responseReader, sessionID)
-	reqCtx = enrichCtxWithCWD(reqCtx, h.Conv, req)
+	reqCtx = enrichCtxWithCWD(reqCtx, h.Conv, sessionID)
 
 	cmdRes := h.Cmd.ExecuteJSON(reqCtx, sessionID, cmdReq.Cmd, cmdReq.Params)
+
+	// Check in_flight status for get_session so writeCommandResult can
+	// decide whether to append a "done" event to the events replay.
+	if cmdReq.Cmd == "get_session" && cmdRes.Session != nil {
+		cmdRes.InFlight = h.turns.Get(cmdRes.Session.SessionID()) != nil
+	}
+
 	writeCommandResult(w, cmdRes)
 
 	// After get_session, subscribe the new writer to the target
@@ -208,24 +211,4 @@ func (h *TurnHandler) handleWithEngine(ctx context.Context, w frameWriter, sessi
 	// On write failure we do NOT cancel the turn — other subscribers
 	// may still be connected, or a client may reconnect later.
 	at.Subscribe(ctx, w)
-}
-
-// resolveSessionAndCWD ensures the session exists and its ClientCWD is
-// set from the request. Returns the (possibly new) session ID.
-func (h *TurnHandler) resolveSessionAndCWD(ctx context.Context, req FrameRequest) string {
-	if req.Cwd == "" || h.Conv == nil {
-		return req.SessionID
-	}
-	session, err := h.Conv.Sessions().GetOrCreate(ctx, h.Namespace, req.SessionID)
-	if err != nil || session == nil {
-		return req.SessionID
-	}
-	if session.Read().ClientCWD != req.Cwd {
-		session.SetClientCWD(req.Cwd)
-		if saveErr := h.Conv.Sessions().Save(ctx, h.Namespace, session); saveErr != nil {
-			slog.Warn("failed to persist session CWD",
-				"session", session.SessionID(), "cwd", req.Cwd, "error", saveErr)
-		}
-	}
-	return session.SessionID()
 }

@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 )
 
 // SessionStore persists sessions, keyed by (namespace, id).
@@ -42,7 +41,6 @@ func (ms *MemoryStore) Put(_ context.Context, namespace string, s *Session) erro
 	defer ms.mu.Unlock()
 	s.Update(func(d *SessionData) {
 		d.Namespace = namespace
-		d.UpdatedAt = time.Now()
 	})
 	ms.data[storeKey(namespace, s.SessionID())] = s
 	return nil

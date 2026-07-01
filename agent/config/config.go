@@ -23,6 +23,7 @@ type ModelConfig struct {
 	Model   string            `json:"model"`             // provider model id
 	Headers map[string]string `json:"headers,omitempty"` // extra HTTP headers
 	Extra   map[string]any    `json:"extra,omitempty"`   // provider-specific knobs (anthropic_version, max_tokens, ...)
+	Pricing *agent.Pricing    `json:"pricing,omitempty"` // per-token pricing for cost calculation when provider doesn't return cost
 }
 
 // File is the on-disk shape of the configuration.
@@ -243,6 +244,9 @@ func buildAdapter(name string, modelCfg ModelConfig, client *http.Client, llmDeb
 		adapter := adapters.NewOpenAIAdapter(openai.NewClientWithConfig(cfg), modelCfg.Model)
 		adapter.LLMDebugDir = llmDebugDir
 		adapter.Extra = modelCfg.Extra
+		if modelCfg.Pricing != nil {
+			adapter.Pricing = *modelCfg.Pricing
+		}
 		return adapter, nil
 	case "anthropic":
 		adapter := adapters.NewAnthropicAdapter(client, modelCfg.BaseURL, modelCfg.Model)
@@ -252,9 +256,16 @@ func buildAdapter(name string, modelCfg ModelConfig, client *http.Client, llmDeb
 		if maxTokens, ok := modelCfg.Extra["max_tokens"].(float64); ok {
 			adapter.MaxTokens = int(maxTokens)
 		}
+		if modelCfg.Pricing != nil {
+			adapter.Pricing = *modelCfg.Pricing
+		}
 		return adapter, nil
 	case "gemini", "google":
-		return adapters.NewGeminiAdapter(client, modelCfg.BaseURL, modelCfg.Model), nil
+		adapter := adapters.NewGeminiAdapter(client, modelCfg.BaseURL, modelCfg.Model)
+		if modelCfg.Pricing != nil {
+			adapter.Pricing = *modelCfg.Pricing
+		}
+		return adapter, nil
 	default:
 		return nil, fmt.Errorf("config: model %q: unknown dialect %q", name, modelCfg.Dialect)
 	}

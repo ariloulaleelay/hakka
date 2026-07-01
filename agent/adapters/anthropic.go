@@ -19,6 +19,7 @@ type AnthropicAdapter struct {
 	Model      string
 	Version    string // anthropic-version header; default "2023-06-01"
 	MaxTokens  int    // required by Anthropic; default 1024
+	Pricing    agent.Pricing
 }
 
 func NewAnthropicAdapter(client *http.Client, baseURL, model string) *AnthropicAdapter {
@@ -232,21 +233,29 @@ func (ad *AnthropicAdapter) Complete(ctx context.Context, msgs []agent.Message, 
 		return nil, err
 	}
 
-	cost := extractCostFromUsage(rawBody)
+	raw := extractRawUsage(rawBody)
 
 	var anthResp anthResponse
 	if err := json.Unmarshal(rawBody, &anthResp); err != nil {
 		return nil, fmt.Errorf("anthropic: decode response: %w", err)
 	}
 
+	// Determine cost: use provider's cost if available, otherwise calculate from pricing
+	cost := raw.cost
+	if cost == 0 && (ad.Pricing.Input != 0 || ad.Pricing.Output != 0) {
+		cost = calculateCostFromPricing(ad.Pricing, raw)
+	}
+
 	out := &agent.LLMResponse{
 		Message:      agent.Message{Role: agent.RoleAssistant},
 		FinishReason: anthResp.StopReason,
 		Usage: &agent.Usage{
-			PromptTokens:     anthResp.Usage.InputTokens,
-			CompletionTokens: anthResp.Usage.OutputTokens,
-			TotalTokens:      anthResp.Usage.InputTokens + anthResp.Usage.OutputTokens,
-			Cost:             cost,
+			PromptTokens:          anthResp.Usage.InputTokens,
+			CompletionTokens:      anthResp.Usage.OutputTokens,
+			TotalTokens:           anthResp.Usage.InputTokens + anthResp.Usage.OutputTokens,
+			PromptCacheHitTokens:  raw.promptCacheHit,
+			PromptCacheMissTokens: raw.promptCacheMiss,
+			Cost:                  cost,
 		},
 	}
 	var text strings.Builder
@@ -410,13 +419,19 @@ func (ad *AnthropicAdapter) parseSSEPayload(payload string) (*parsedAnthEvent, e
 		if err := json.Unmarshal([]byte(payload), &evt); err != nil {
 			return nil, nil
 		}
-		cost := extractCostFromUsage([]byte(payload))
+		raw := extractRawUsage([]byte(payload))
+		cost := raw.cost
+		if cost == 0 && (ad.Pricing.Input != 0 || ad.Pricing.Output != 0) {
+			cost = calculateCostFromPricing(ad.Pricing, raw)
+		}
 		return &parsedAnthEvent{
 			Usage: &agent.Usage{
-				PromptTokens:     evt.Usage.InputTokens,
-				CompletionTokens: evt.Usage.OutputTokens,
-				TotalTokens:      evt.Usage.InputTokens + evt.Usage.OutputTokens,
-				Cost:             cost,
+				PromptTokens:          evt.Usage.InputTokens,
+				CompletionTokens:      evt.Usage.OutputTokens,
+				TotalTokens:           evt.Usage.InputTokens + evt.Usage.OutputTokens,
+				PromptCacheHitTokens:  raw.promptCacheHit,
+				PromptCacheMissTokens: raw.promptCacheMiss,
+				Cost:                  cost,
 			},
 		}, nil
 

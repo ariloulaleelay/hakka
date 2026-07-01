@@ -99,6 +99,9 @@ This file is for humans only, agent should not modify it!
 # Minor bugs
 - [ ] Snippet stripping for `\n` makes one character longer for each backslash. And tabs make string appear longer too.
 - [ ] When run multiple tools, nvim statuses not updated properly
+- [x] Remove protocol_version from wire
+- [ ] Migrate from client_cwd to cwd on the wire
+- [ ] Fix nvim leaking foreign session info
 
 # Architecture
 - [ ] Clean Architecture fix: route vim_request through the engine event system (more architectural, but larger change)

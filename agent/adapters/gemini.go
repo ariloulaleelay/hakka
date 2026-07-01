@@ -24,6 +24,7 @@ type GeminiAdapter struct {
 	HTTPClient *http.Client
 	BaseURL    string
 	Model      string
+	Pricing    agent.Pricing
 }
 
 func NewGeminiAdapter(client *http.Client, baseURL, model string) *GeminiAdapter {
@@ -250,7 +251,7 @@ func (ad *GeminiAdapter) Complete(ctx context.Context, msgs []agent.Message, too
 		return nil, err
 	}
 
-	cost := extractCostFromUsage(rawBody)
+	raw := extractRawUsage(rawBody)
 
 	var geminiResp geminiResponse
 	if err := json.Unmarshal(rawBody, &geminiResp); err != nil {
@@ -260,14 +261,22 @@ func (ad *GeminiAdapter) Complete(ctx context.Context, msgs []agent.Message, too
 		return nil, fmt.Errorf("gemini: no candidates")
 	}
 
+	// Determine cost: use provider's cost if available, otherwise calculate from pricing
+	cost := raw.cost
+	if cost == 0 && (ad.Pricing.Input != 0 || ad.Pricing.Output != 0) {
+		cost = calculateCostFromPricing(ad.Pricing, raw)
+	}
+
 	out := &agent.LLMResponse{
 		Message:      agent.Message{Role: agent.RoleAssistant},
 		FinishReason: geminiResp.Candidates[0].FinishReason,
 		Usage: &agent.Usage{
-			PromptTokens:     geminiResp.UsageMetadata.PromptTokenCount,
-			CompletionTokens: geminiResp.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:      geminiResp.UsageMetadata.TotalTokenCount,
-			Cost:             cost,
+			PromptTokens:          geminiResp.UsageMetadata.PromptTokenCount,
+			CompletionTokens:      geminiResp.UsageMetadata.CandidatesTokenCount,
+			TotalTokens:           geminiResp.UsageMetadata.TotalTokenCount,
+			PromptCacheHitTokens:  raw.promptCacheHit,
+			PromptCacheMissTokens: raw.promptCacheMiss,
+			Cost:                  cost,
 		},
 	}
 	var text strings.Builder
@@ -356,12 +365,18 @@ func (ad *GeminiAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 				// Check finish reason
 				if candidate.FinishReason != "" {
 					if geminiResp.UsageMetadata.TotalTokenCount > 0 {
-						cost := extractCostFromUsage([]byte(payload))
+						raw := extractRawUsage([]byte(payload))
+						cost := raw.cost
+						if cost == 0 && (ad.Pricing.Input != 0 || ad.Pricing.Output != 0) {
+							cost = calculateCostFromPricing(ad.Pricing, raw)
+						}
 						pendingUsage = &agent.Usage{
-							PromptTokens:     geminiResp.UsageMetadata.PromptTokenCount,
-							CompletionTokens: geminiResp.UsageMetadata.CandidatesTokenCount,
-							TotalTokens:      geminiResp.UsageMetadata.TotalTokenCount,
-							Cost:             cost,
+							PromptTokens:          geminiResp.UsageMetadata.PromptTokenCount,
+							CompletionTokens:      geminiResp.UsageMetadata.CandidatesTokenCount,
+							TotalTokens:           geminiResp.UsageMetadata.TotalTokenCount,
+							PromptCacheHitTokens:  raw.promptCacheHit,
+							PromptCacheMissTokens: raw.promptCacheMiss,
+							Cost:                  cost,
 						}
 					}
 					sendStreamFinal(resultCh, accum.flush(), pendingUsage)

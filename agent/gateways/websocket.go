@@ -175,8 +175,8 @@ func (gw *WebSocketGateway) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sendWelcome sends a "welcome" frame on connect with session list and
-// auto-subscribes to the best session.
+// sendWelcome sends a "welcome" frame on connect with the sessions list
+// at the top level, and auto-subscribes to the best session.
 func (gw *WebSocketGateway) sendWelcome(ctx context.Context, w frameWriter, responseReader *InProcessResponseReader) {
 	nsCtx := event.ContextWithNamespace(ctx, gw.Handler.Namespace)
 
@@ -207,18 +207,23 @@ func (gw *WebSocketGateway) sendWelcome(ctx context.Context, w frameWriter, resp
 			ShortID:  shortID(s.SessionID()),
 			Name:     s.SessionName(),
 			Model:    s.GetModel(),
-			MsgCount: len(s.AllMessages()),
+			MsgCount: len(s.Messages()),
 			InFlight: gw.Handler.Turns().Get(s.SessionID()) != nil,
 		})
 	}
 
-	// Send welcome.
+	// Build session maps for top-level sessions field.
+	sessionMaps := make([]map[string]any, 0, len(sessions))
+	for _, s := range sessions {
+		m := s.Metadata()
+		m["in_flight"] = gw.Handler.Turns().Get(s.SessionID()) != nil
+		sessionMaps = append(sessionMaps, m)
+	}
+
+	// Send welcome with sessions at top level (always present, even if empty).
 	w.Write(FrameResponse{
-		Type:            "welcome",
-		ProtocolVersion: "2",
-		Data: map[string]any{
-			"sessions": entries,
-		},
+		Type:     "welcome",
+		Sessions: sessionMaps,
 	})
 
 	// Auto-subscribe to the best session:
@@ -239,24 +244,41 @@ func (gw *WebSocketGateway) sendWelcome(ctx context.Context, w frameWriter, resp
 	if bestSession != nil {
 		// Issue a get_session to auto-subscribe.
 		nsCtx := event.ContextWithNamespace(ctx, gw.Handler.Namespace)
-		cmdRes := gw.Handler.Cmd.ExecuteJSON(nsCtx, bestSession.SessionID(), "get_session", nil)
+		params, _ := json.Marshal(map[string]string{"id": bestSession.SessionID()})
+		cmdRes := gw.Handler.Cmd.ExecuteJSON(nsCtx, bestSession.SessionID(), "get_session", json.RawMessage(params))
 
-		// Subscribe to the active turn if one exists.
-		if active := gw.Handler.Turns().Get(bestSession.SessionID()); active != nil {
-			active.ReplaceSubscriber(ctx, w)
-		}
+		// Check in_flight status for the session before any subscription.
+		isInFlight := gw.Handler.Turns().Get(bestSession.SessionID()) != nil
+		cmdRes.InFlight = isInFlight
 
-		// Send the session data as a "session" event.
+		// Send the session data as a "session" event with top-level fields.
 		if cmdRes.Session != nil {
-			data := map[string]any{
-				"session": sessionToMap(cmdRes.Session),
-			}
-			w.Write(FrameResponse{
+			sessionMap := cmdRes.Session.Metadata()
+			fr := FrameResponse{
 				Type:      "session",
 				SessionID: bestSession.SessionID(),
-				SessionEvent: "get_session",
-				Data:      data,
-			})
+				Event:     "get_session",
+				Session:   sessionMap,
+			}
+			if msgs := cmdRes.Session.Messages(); len(msgs) > 0 {
+				fr.Messages = messagesToMap(msgs)
+				fr.Events = messagesToEvents(msgs)
+				// Append "done" terminal event only if the session is
+				// NOT in-flight. If it IS in-flight, live events will
+				// arrive after subscription (below).
+				if !isInFlight {
+					fr.Events = append(fr.Events, map[string]any{"type": "done"})
+				}
+			}
+			w.Write(fr)
+		}
+
+		// Subscribe to the active turn if one exists.
+		// This is done in a goroutine so sendWelcome does NOT block —
+		// the WebSocket read loop must start immediately to process
+		// subsequent client commands (like get_session).
+		if active := gw.Handler.Turns().Get(bestSession.SessionID()); active != nil {
+			go active.ReplaceSubscriber(ctx, w)
 		}
 	}
 }
@@ -289,3 +311,4 @@ func (w *wsSyncWriter) ConnKey() string {
 }
 
 var _ Gateway = (*WebSocketGateway)(nil)
+

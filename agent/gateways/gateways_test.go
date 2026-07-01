@@ -156,7 +156,7 @@ func TestWebSocketGatewayRoundTrip(t *testing.T) {
 	data := readUntilDone(t, c)
 	var done struct {
 		Type      string `json:"type"`
-		Output    string `json:"output"`
+		Text      string `json:"text"`
 		SessionID string `json:"session_id"`
 		Error     string `json:"error"`
 	}
@@ -166,8 +166,8 @@ func TestWebSocketGatewayRoundTrip(t *testing.T) {
 	if done.Error != "" {
 		t.Fatalf("unexpected error: %s", done.Error)
 	}
-	if done.Output != "ws-pong" {
-		t.Fatalf("expected output %q, got: %q", "ws-pong", done.Output)
+	if done.Text != "ws-pong" {
+		t.Fatalf("expected text %q, got: %q", "ws-pong", done.Text)
 	}
 	if done.SessionID == "" {
 		t.Fatal("expected non-empty session_id in done frame")

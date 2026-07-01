@@ -139,8 +139,8 @@ func TestContinueCommand_TriggersLLM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get session: %v", err)
 	}
-	if len(session.AllMessages()) != 2 {
-		t.Fatalf("expected 2 messages in session (user + assistant), got %d", len(session.AllMessages()))
+	if len(session.Messages()) != 2 {
+		t.Fatalf("expected 2 messages in session (user + assistant), got %d", len(session.Messages()))
 	}
 
 	// ── Step 2: Send a continue command ───────────────────────────────
@@ -163,8 +163,8 @@ func TestContinueCommand_TriggersLLM(t *testing.T) {
 
 	// Verify the session now has 3 messages (user + assistant + assistant)
 	session, _, _ = sm.Get(context.Background(), ns, "test-session")
-	if len(session.AllMessages()) != 3 {
-		t.Fatalf("expected 3 messages in session (user + 2 assistants), got %d", len(session.AllMessages()))
+	if len(session.Messages()) != 3 {
+		t.Fatalf("expected 3 messages in session (user + 2 assistants), got %d", len(session.Messages()))
 	}
 
 	// Check that the continue frame was a proper Done frame (not an error)
@@ -355,8 +355,8 @@ func TestContinueCommand_Integration(t *testing.T) {
 	frames := writer2.Frames()
 	var output string
 	for _, f := range frames {
-		if f.Output != "" {
-			output = f.Output
+		if f.Text != "" {
+			output = f.Text
 		}
 	}
 	if output == "" {

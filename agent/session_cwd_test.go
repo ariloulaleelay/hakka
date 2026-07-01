@@ -21,36 +21,42 @@ func TestSessionClientCWD(t *testing.T) {
 	}
 }
 
-func TestHistoryDoesNotIncludeCWD(t *testing.T) {
+func TestMessagesDoesNotIncludeCWD(t *testing.T) {
 	s := NewSession("testns", "you are helpful")
 	s.SetClientCWD("/home/user/project")
 	s.Append(Message{Role: RoleUser, Content: "hello"})
 
-	h := s.History()
-	// Should be exactly 2: system prompt and user message (no CWD injection)
-	if len(h) != 2 {
-		t.Fatalf("expected 2 messages (system + user), got %d: %+v", len(h), h)
+	if sp := s.SystemPrompt(); sp != "you are helpful" {
+		t.Fatalf("expected system prompt 'you are helpful', got %q", sp)
 	}
-	if h[0].Role != RoleSystem || h[1].Role != RoleUser {
-		t.Fatalf("unexpected roles: %+v", h)
+	msgs := s.Messages()
+	// Should be exactly 1: user message (CWD is not injected into Messages)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != RoleUser {
+		t.Fatalf("unexpected roles: %+v", msgs)
 	}
 	// No message should contain the CWD path
-	for _, msg := range h {
+	for _, msg := range msgs {
 		if strings.Contains(msg.Content, "/home/user/project") {
-			t.Fatalf("History() should not contain CWD, got: %+v", h)
+			t.Fatalf("Messages() should not contain CWD, got: %+v", msgs)
 		}
 	}
 }
 
-func TestHistoryDoesNotIncludeCWDWhenEmpty(t *testing.T) {
+func TestMessagesDoesNotIncludeCWDWhenEmpty(t *testing.T) {
 	s := NewSession("testns", "you are helpful")
 	s.SetClientCWD("") // explicitly clear it
 	s.Append(Message{Role: RoleUser, Content: "hello"})
 
-	h := s.History()
-	// Should be exactly 2: system prompt and user message
-	if len(h) != 2 {
-		t.Fatalf("expected 2 messages, got %d: %+v", len(h), h)
+	if sp := s.SystemPrompt(); sp != "you are helpful" {
+		t.Fatalf("expected system prompt 'you are helpful', got %q", sp)
+	}
+	msgs := s.Messages()
+	// Should be exactly 1: user message
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d: %+v", len(msgs), msgs)
 	}
 }
 
@@ -80,55 +86,6 @@ func TestCWDMessageReturnsNilWhenEmpty(t *testing.T) {
 	msg := s.CWDMessage()
 	if msg != nil {
 		t.Fatalf("expected nil CWDMessage when ClientCWD is empty, got %+v", msg)
-	}
-}
-
-func TestBuildContextIncludesCWD(t *testing.T) {
-	s := NewSession("testns", "sys prompt")
-	s.SetClientCWD("/workspace")
-	s.Append(Message{Role: RoleUser, Content: "hello"})
-
-	ctx := BuildContext(s)
-	if len(ctx) != 3 {
-		t.Fatalf("expected 3 messages (system + CWD + user), got %d: %+v", len(ctx), ctx)
-	}
-	if ctx[0].Role != RoleSystem || ctx[0].Content != "sys prompt" {
-		t.Fatalf("first message should be system prompt, got: %+v", ctx[0])
-	}
-	if ctx[1].Role != RoleSystem || !strings.Contains(ctx[1].Content, "/workspace") {
-		t.Fatalf("second message should be CWD info, got: %+v", ctx[1])
-	}
-	if ctx[2].Role != RoleUser || ctx[2].Content != "hello" {
-		t.Fatalf("third message should be user, got: %+v", ctx[2])
-	}
-}
-
-func TestBuildContextWithoutCWD(t *testing.T) {
-	s := NewSession("testns", "sys prompt")
-	s.SetClientCWD("") // explicitly clear
-	s.Append(Message{Role: RoleUser, Content: "hello"})
-
-	ctx := BuildContext(s)
-	// Should be exactly 2: system prompt and user message
-	if len(ctx) != 2 {
-		t.Fatalf("expected 2 messages (system + user), got %d: %+v", len(ctx), ctx)
-	}
-}
-
-func TestBuildContextWithoutSystemPrompt(t *testing.T) {
-	s := NewSession("testns", "")
-	s.SetClientCWD("/project")
-	s.Append(Message{Role: RoleUser, Content: "hi"})
-
-	ctx := BuildContext(s)
-	if len(ctx) != 2 {
-		t.Fatalf("expected 2 messages (CWD + user), got %d: %+v", len(ctx), ctx)
-	}
-	if ctx[0].Role != RoleSystem || !strings.Contains(ctx[0].Content, "/project") {
-		t.Fatalf("first message should be CWD info, got: %+v", ctx[0])
-	}
-	if ctx[1].Role != RoleUser || ctx[1].Content != "hi" {
-		t.Fatalf("second message should be user, got: %+v", ctx[1])
 	}
 }
 

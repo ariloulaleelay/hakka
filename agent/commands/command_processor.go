@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/ariloulaleelay/hakka/agent"
 	"github.com/ariloulaleelay/hakka/agent/event"
@@ -19,6 +18,10 @@ type CommandResult struct {
 	Session *agent.Session
 	Error   error
 	Reply   string // fallback text (kept for backward compat, not used by JSON clients)
+	// InFlight indicates that the session has an active turn running.
+	// Used by get_session to decide whether to append a "done" event
+	// to the events replay.
+	InFlight bool
 }
 
 // CommandAction describes what effect the command had on the session.
@@ -283,37 +286,11 @@ func (cp *CommandProcessor) execCompact(ctx context.Context, sessionID string, p
 	return CommandResult{Handled: true, Cmd: "compact", Data: data}
 }
 
-// sessionToMap helper.
+// sessionToMap returns the canonical session metadata via agent.Session.Metadata().
+// This is the single point of truth for session metadata across all commands.
 func sessionToMap(s *agent.Session) map[string]any {
 	if s == nil {
 		return nil
 	}
-	d := s.Read()
-	return map[string]any{
-		"id":            d.ID,
-		"name":          d.Name,
-		"short_id":      shortID(d.ID),
-		"message_count": len(d.Messages),
-		"model":         s.GetModel(),
-		"total_tokens":              s.TotalTokenUsage(),
-		"total_cost":                s.TotalCost(),
-		"estimated_context_tokens": s.GetEstimatedContextTokens(),
-		"client_cwd":    d.ClientCWD,
-		"created_at":    d.CreatedAt.Format(time.RFC3339),
-		"updated_at":    formatTime(d.UpdatedAt, d.CreatedAt),
-	}
-}
-
-func formatTime(t, fallback time.Time) string {
-	if t.IsZero() {
-		return fallback.Format(time.RFC3339)
-	}
-	return t.Format(time.RFC3339)
-}
-
-func shortID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
-	}
-	return id
+	return s.Metadata()
 }

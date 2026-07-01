@@ -137,7 +137,7 @@ func TestEngineExecutePreEnabledToolInFreshSession(t *testing.T) {
 
 	// Verify that show_tool was actually executed and its result is in the session.
 	var sawToolResult bool
-	for _, m := range session.AllMessages() {
+	for _, m := range session.Messages() {
 		if m.Role == RoleTool && m.Name == "show_tool" {
 			sawToolResult = true
 			if strings.Contains(m.Content, "denied") {

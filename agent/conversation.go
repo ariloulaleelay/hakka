@@ -59,7 +59,7 @@ type TurnExecutor interface {
 // Conversation depends on SessionView (not the concrete Session type)
 // to decouple orchestration policy from session data structures
 // (Dependency Inversion Principle). Where possible, internal helpers
-// accept narrower interfaces (e.g. BuildContext takes SessionHistory)
+// accept narrower interfaces (e.g. SessionHistory)
 // to follow the Interface Segregation Principle.
 type Conversation struct {
 	router    *Router
@@ -267,7 +267,7 @@ func (conv *Conversation) runTurnWithStep(ctx context.Context, session SessionVi
 			Err:                    err,
 			TotalTokens:            session.TotalTokenUsage(),
 			TotalCost:              session.TotalCost(),
-			MessageCount:           len(session.AllMessages()),
+			MessageCount:           len(session.Messages()),
 			EstimatedContextTokens: session.GetEstimatedContextTokens(),
 			Model:                  session.GetModel(),
 		}
@@ -313,46 +313,6 @@ var errNoRouter = &errMsg{"conversation: no router configured"}
 type errMsg struct{ msg string }
 
 func (e *errMsg) Error() string { return e.msg }
-
-// BuildContext returns the full message history enriched with the CWD
-// system message (if set) and the tool list system message (if a
-// ToolRegistry is available via the context or conversation).
-//
-// This is the method that produces the context sent to the LLM adapter.
-// It is used by both Conversation and StreamSession so that CWD injection
-// and tool listing happen in one place.
-//
-// Depends only on SessionHistory — the narrowest interface needed.
-func BuildContext(session SessionHistory) []Message {
-	return buildContext(session, nil)
-}
-
-// buildContext is the internal implementation that optionally receives a
-// ToolRegistry reference. When tools is non-nil, a tool list system message
-// is injected.
-func buildContext(session SessionHistory, tools *ToolRegistry) []Message {
-	history := session.History()
-	if cwdMsg := session.CWDMessage(); cwdMsg != nil {
-		insertAt := 0
-		if len(history) > 0 && history[0].Role == RoleSystem {
-			insertAt = 1
-		}
-		enriched := make([]Message, 0, len(history)+2)
-		enriched = append(enriched, history[:insertAt]...)
-		enriched = append(enriched, *cwdMsg)
-		// Inject tool list after CWD if we have a registry
-		if tools != nil {
-			if auth, ok := session.(SessionToolAuth); ok {
-				if toolMsg := BuildToolListMessage(tools, auth); toolMsg != "" {
-					enriched = append(enriched, Message{Role: RoleSystem, Content: toolMsg})
-				}
-			}
-		}
-		enriched = append(enriched, history[insertAt:]...)
-		return enriched
-	}
-	return history
-}
 
 // finishTurn persists the session.
 func (conv *Conversation) finishTurn(ctx context.Context, session SessionView) error {
@@ -405,7 +365,7 @@ func (conv *Conversation) autoRenameIfNeeded(ctx context.Context, session Sessio
 	}
 
 	userCount := 0
-	for _, m := range session.AllMessages() {
+	for _, m := range session.Messages() {
 		if m.Role == RoleUser {
 			userCount++
 		}

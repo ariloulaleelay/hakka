@@ -182,10 +182,9 @@ func TestMidTurnToolEditor_ContextInjection(t *testing.T) {
 	}
 }
 
-// TestContextEstimatedEvent verifies that the turn runner emits a
-// ContextEstimated event with the estimated token count before each
-// LLM call, and that the session stores the latest estimate.
-func TestContextEstimatedEvent(t *testing.T) {
+// TestContextEstimatedStoredOnSession verifies that the turn runner stores
+// the estimated context token count on the session before each LLM call.
+func TestContextEstimatedStoredOnSession(t *testing.T) {
 	store := newCopyBackStore()
 	sm := NewSessionManager(store, "sys")
 	session, err := sm.GetOrCreate(context.Background(), "testns", "")
@@ -224,22 +223,6 @@ func TestContextEstimatedEvent(t *testing.T) {
 
 	if reply != "hello" {
 		t.Fatalf("unexpected reply: %q", reply)
-	}
-
-	// Drain events channel — should find a ContextEstimated event
-	var found bool
-	for i := 0; i < cap(eventCh); i++ {
-		select {
-		case evt := <-eventCh:
-			if _, ok := evt.(event.ContextEstimated); ok {
-				found = true
-			}
-		default:
-			break
-		}
-	}
-	if !found {
-		t.Fatal("expected a ContextEstimated event")
 	}
 
 	// The session should have the estimated context tokens stored

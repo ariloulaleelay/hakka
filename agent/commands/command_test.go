@@ -209,6 +209,72 @@ func TestSessionList_ShowsActiveEmptySession(t *testing.T) {
 
 // --- Session create tests ---
 
+// serializingStore wraps a MemoryStore but deep-copies on Put,
+// simulating the behaviour of a serialising store like SQLite.
+// This exposes bugs where session mutations after GetOrCreate are
+// never saved back to the store.
+type serializingStore struct {
+	inner *agent.MemoryStore
+}
+
+func (s *serializingStore) Get(ctx context.Context, ns, id string) (*agent.Session, bool, error) {
+	return s.inner.Get(ctx, ns, id)
+}
+func (s *serializingStore) Put(ctx context.Context, ns string, sess *agent.Session) error {
+	// Deep-copy to simulate serialisation (like SQLite does)
+	data := sess.Read()
+	clone := agent.NewSessionFromData(&data)
+	return s.inner.Put(ctx, ns, clone)
+}
+func (s *serializingStore) Delete(ctx context.Context, ns, id string) error {
+	return s.inner.Delete(ctx, ns, id)
+}
+func (s *serializingStore) List(ctx context.Context, ns string) ([]*agent.Session, error) {
+	return s.inner.List(ctx, ns)
+}
+
+func TestSessionCreate_PersistsCWD(t *testing.T) {
+	// Use a serialising store so that post-creation mutations
+	// (like inheritCWD) don't magically "stick" via pointer sharing.
+	store := &serializingStore{inner: agent.NewMemoryStore()}
+	sm := agent.NewSessionManager(store, "")
+	reg := agent.NewRegistry()
+	reg.Register("alpha", &fakeAdapter{})
+	reg.Register("beta", &fakeAdapter{})
+	router := agent.NewRouter(reg)
+	tools := agent.NewToolRegistry()
+	cfg := agent.EngineConfig{MaxToolIterations: 4}
+	ns := "testns"
+	conv := agent.NewConversation(sm, router, tools, ns, cfg)
+	cmd := New(sm, conv, "", ns)
+
+	oldSession, _ := sm.GetOrCreate(context.Background(), "testns", "old-session")
+	oldSession.SetClientCWD("/client/project")
+	sm.Save(context.Background(), "testns", oldSession)
+
+	createRes := cmd.ExecuteJSON(context.Background(), "old-session", "session_create", nil)
+	if createRes.Error != nil {
+		t.Fatalf("session_create error: %v", createRes.Error)
+	}
+	newID := createRes.Session.SessionID()
+
+	// In-memory must be correct (inherited from old session)
+	if cwd := createRes.Session.Read().ClientCWD; cwd != "/client/project" {
+		t.Fatalf("expected in-memory CWD %q, got %q", "/client/project", cwd)
+	}
+
+	// The store must also have the inherited CWD, NOT the process default.
+	// With the bug, GetOrCreate saves the session with os.Getwd() before
+	// inheritCWD runs, and the store is never updated afterwards.
+	stored, ok, _ := sm.Store.Get(context.Background(), "testns", newID)
+	if !ok {
+		t.Fatalf("session %q not found in store", newID)
+	}
+	if cwd := stored.Read().ClientCWD; cwd != "/client/project" {
+		t.Fatalf("expected stored CWD %q, got %q", "/client/project", cwd)
+	}
+}
+
 func TestSessionCreate_ReturnsNewSession(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
 	sm.GetOrCreate(context.Background(), "testns", "session1")
@@ -928,6 +994,192 @@ func TestCompact_SetsValue(t *testing.T) {
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "sid")
 	if session.GetCompactSoftLimit() != 50000 {
 		t.Fatalf("expected compact limit 50000, got %d", session.GetCompactSoftLimit())
+	}
+}
+
+// --- Help command tests ---
+
+// --- Session metadata consistency tests ---
+//
+// These tests verify that get_session, session_info, and session_create
+// all return the same canonical session metadata format with client_cwd,
+// created_at, updated_at, short_id, etc.
+
+func TestSessionMetadata_ConsistentAcrossGetSessionAndSessionInfo(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	session, _ := sm.GetOrCreate(context.Background(), "testns", "meta-test")
+	session.SetSessionName("Meta Test")
+	session.SetClientCWD("/home/test/project")
+	session.SetEstimatedContextTokens(54321)
+	session.Append(agent.Message{Role: agent.RoleUser, Content: "hi"})
+	sm.Save(context.Background(), "testns", session)
+
+	// get_session returns session metadata and messages
+	getRes := cmd.ExecuteJSON(context.Background(), "meta-test", "get_session", params(map[string]any{"id": "meta-test"}))
+	if getRes.Error != nil {
+		t.Fatalf("get_session error: %v", getRes.Error)
+	}
+	var getData struct {
+		Session  map[string]any `json:"session"`
+		Messages []any          `json:"messages"`
+	}
+	if err := json.Unmarshal(getRes.Data, &getData); err != nil {
+		t.Fatalf("get_session unmarshal: %v", err)
+	}
+
+	// session_info returns only metadata
+	infoRes := cmd.ExecuteJSON(context.Background(), "meta-test", "session_info", nil)
+	if infoRes.Error != nil {
+		t.Fatalf("session_info error: %v", infoRes.Error)
+	}
+	var infoData struct {
+		Session map[string]any `json:"session"`
+	}
+	if err := json.Unmarshal(infoRes.Data, &infoData); err != nil {
+		t.Fatalf("session_info unmarshal: %v", err)
+	}
+
+	// Common fields must match between the two
+	commonFields := []string{"id", "name", "short_id", "model", "message_count",
+		"total_tokens", "total_cost", "estimated_context_tokens",
+		"client_cwd", "created_at", "updated_at"}
+	for _, field := range commonFields {
+		gv, gok := getData.Session[field]
+		iv, iok := infoData.Session[field]
+		if !gok {
+			t.Errorf("get_session missing field %q", field)
+			continue
+		}
+		if !iok {
+			t.Errorf("session_info missing field %q", field)
+			continue
+		}
+		if gv != iv {
+			t.Errorf("field %q mismatch: get_session=%v session_info=%v", field, gv, iv)
+		}
+	}
+
+	// Verify specific values
+	if name, _ := getData.Session["name"].(string); name != "Meta Test" {
+		t.Errorf("expected name 'Meta Test', got %q", name)
+	}
+	if cwd, _ := getData.Session["client_cwd"].(string); cwd != "/home/test/project" {
+		t.Errorf("expected client_cwd '/home/test/project', got %q", cwd)
+	}
+	if sid, _ := getData.Session["short_id"].(string); sid == "" {
+		t.Error("expected non-empty short_id")
+	}
+	if ca, _ := getData.Session["created_at"].(string); ca == "" {
+		t.Error("expected non-empty created_at")
+	}
+	if ua, _ := getData.Session["updated_at"].(string); ua == "" {
+		t.Error("expected non-empty updated_at")
+	}
+}
+
+func TestSessionMetadata_GetSessionIncludesMessages(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	session, _ := sm.GetOrCreate(context.Background(), "testns", "msg-session")
+	session.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
+	session.Append(agent.Message{Role: agent.RoleAssistant, Content: "world"})
+	sm.Save(context.Background(), "testns", session)
+
+	getRes := cmd.ExecuteJSON(context.Background(), "msg-session", "get_session", params(map[string]any{"id": "msg-session"}))
+	if getRes.Error != nil {
+		t.Fatalf("get_session error: %v", getRes.Error)
+	}
+	var getData struct {
+		Session  map[string]any `json:"session"`
+		Messages []any          `json:"messages"`
+	}
+	if err := json.Unmarshal(getRes.Data, &getData); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(getData.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(getData.Messages))
+	}
+	if getData.Session["message_count"] != float64(2) {
+		t.Fatalf("expected message_count=2, got %v", getData.Session["message_count"])
+	}
+
+	// session_info should NOT have messages
+	infoRes := cmd.ExecuteJSON(context.Background(), "msg-session", "session_info", nil)
+	var infoData struct {
+		Session map[string]any `json:"session"`
+	}
+	if err := json.Unmarshal(infoRes.Data, &infoData); err != nil {
+		t.Fatalf("session_info unmarshal: %v", err)
+	}
+	if _, ok := infoData.Session["messages"]; ok {
+		t.Error("session_info should not contain messages")
+	}
+}
+
+func TestSessionMetadata_NewSessionHasClientCWD(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	session, _ := sm.GetOrCreate(context.Background(), "testns", "cwd-session")
+	session.SetClientCWD("/initial/cwd")
+	sm.Save(context.Background(), "testns", session)
+
+	createRes := cmd.ExecuteJSON(context.Background(), "cwd-session", "session_create", nil)
+	if createRes.Error != nil {
+		t.Fatalf("session_create error: %v", createRes.Error)
+	}
+
+	var createData struct {
+		Session map[string]any `json:"session"`
+	}
+	if err := json.Unmarshal(createRes.Data, &createData); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// New session inherits CWD from the previous session
+	cwd, _ := createData.Session["client_cwd"].(string)
+	if cwd == "" {
+		t.Fatal("expected new session to have client_cwd (inherited from previous)")
+	}
+	if sid, _ := createData.Session["short_id"].(string); sid == "" {
+		t.Fatal("expected non-empty short_id in session_create response")
+	}
+	if ca, _ := createData.Session["created_at"].(string); ca == "" {
+		t.Fatal("expected non-empty created_at in session_create response")
+	}
+	if ua, _ := createData.Session["updated_at"].(string); ua == "" {
+		t.Fatal("expected non-empty updated_at in session_create response")
+	}
+}
+
+func TestSessionMetadata_SessionInfoIncludesClientCWD(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+	session, _ := sm.GetOrCreate(context.Background(), "testns", "info-cwd")
+	session.SetClientCWD("/my/project")
+	sm.Save(context.Background(), "testns", session)
+
+	infoRes := cmd.ExecuteJSON(context.Background(), "info-cwd", "session_info", nil)
+	if infoRes.Error != nil {
+		t.Fatalf("session_info error: %v", infoRes.Error)
+	}
+	var infoData struct {
+		Session map[string]any `json:"session"`
+	}
+	if err := json.Unmarshal(infoRes.Data, &infoData); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	cwd, ok := infoData.Session["client_cwd"]
+	if !ok {
+		t.Fatal("session_info must include client_cwd")
+	}
+	if cwd != "/my/project" {
+		t.Fatalf("expected client_cwd '/my/project', got %v", cwd)
+	}
+
+	sid, ok := infoData.Session["short_id"]
+	if !ok {
+		t.Fatal("session_info must include short_id")
+	}
+	if sid == "" {
+		t.Fatal("short_id must be non-empty")
 	}
 }
 

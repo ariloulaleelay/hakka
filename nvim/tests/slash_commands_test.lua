@@ -99,7 +99,7 @@ local function parse_slash_command(text)
     elseif sub == "delete" then
       local target = parts[3] or ""
       return { cmd = "session_delete", params = { id = target } }
-    elseif sub == "get" then
+    elseif sub == "get" or sub == "switch" then
       local target = parts[3] or ""
       return { cmd = "get_session", params = { id = target } }
     elseif sub == "rename" then
@@ -224,6 +224,12 @@ assert_table_eq(r, { cmd = "session_delete", params = { id = "abc123" } }, "/ses
 r = parse_slash_command("/session get abc123")
 assert_table_eq(r, { cmd = "get_session", params = { id = "abc123" } }, "/session get abc123")
 
+r = parse_slash_command("/session switch abc123")
+assert_table_eq(r, { cmd = "get_session", params = { id = "abc123" } }, "/session switch abc123 (alias for get)")
+
+r = parse_slash_command("/session switch")
+assert_table_eq(r, { cmd = "get_session", params = { id = "" } }, "/session switch without id")
+
 r = parse_slash_command("/session rename My Chat Room")
 assert_table_eq(r, { cmd = "session_rename", params = { name = "My Chat Room" } }, "/session rename My Chat Room")
 
@@ -343,6 +349,9 @@ assert_table_eq(r, { cmd = "session_delete", params = { id = "abc123" } }, "/ses
 
 r = parse_slash_command("/session_get abc123")
 assert_table_eq(r, { cmd = "get_session", params = { id = "abc123" } }, "/session_get abc123 (combined)")
+
+r = parse_slash_command("/session_switch abc123")
+assert_table_eq(r, { cmd = "get_session", params = { id = "abc123" } }, "/session_switch abc123 (combined)")
 
 r = parse_slash_command("/session_rename My Chat")
 assert_table_eq(r, { cmd = "session_rename", params = { name = "My Chat" } }, "/session_rename My Chat (combined)")

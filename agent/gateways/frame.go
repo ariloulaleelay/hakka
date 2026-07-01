@@ -2,20 +2,21 @@ package gateways
 
 import (
 	"encoding/json"
-
-	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // ---------------------------------------------------------------------------
-// v2 Wire Protocol
+// Wire Protocol
 //
 // Every frame (inbound and outbound) has a mandatory "type" field that
-// acts as the sole discriminant. No more ambiguous "event" / "data" / "done"
-// combinations.
+// acts as the sole discriminant.
 //
 // Inbound types:  "chat", "cmd", "resp", "cancel"
-// Outbound types: "welcome", "delta", "output", "done", "tool", "usage",
+// Outbound types: "welcome", "delta", "done", "tool", "usage",
 //                 "req", "result", "session", "error"
+//
+// LLM content is always carried in a field called "text" — whether it's
+// a streaming delta, a non-stream output, or the final done payload.
+// The discriminator is the "type" field alone.
 // ---------------------------------------------------------------------------
 
 // CommandRequest is a structured command sent by a JSON-capable client.
@@ -25,14 +26,12 @@ type CommandRequest struct {
 }
 
 // FrameRequest is the inbound envelope.
-// Every frame has a mandatory "type" field.
 type FrameRequest struct {
 	Type      string          `json:"type"`                   // "chat", "cmd", "resp", "cancel"
 	SessionID string          `json:"session_id,omitempty"`
 	Input     string          `json:"input,omitempty"`        // for "chat"
 	Stream    bool            `json:"stream,omitempty"`       // for "chat"
 	Command   *CommandRequest `json:"command,omitempty"`      // for "cmd"
-	Cwd       string          `json:"cwd,omitempty"`          // for "chat" or "cmd"
 	RequestID string          `json:"request_id,omitempty"`   // for "resp"
 	Result    json.RawMessage `json:"result,omitempty"`       // for "resp"
 	ReqError  string          `json:"error,omitempty"`        // for "resp"
@@ -50,20 +49,16 @@ type TurnStats struct {
 // FrameResponse is the outbound envelope.
 // Every frame has a mandatory "type" field — the sole discriminant.
 //
-// Some fields are context-sensitive (e.g. "error" is used both for
-// done-level errors and tool-level errors). This is safe because they
-// are set in mutually exclusive frame types — never simultaneously.
+// Fields are shared across frame types but always set in mutually exclusive
+// combinations — the type field tells the client which fields to expect.
 type FrameResponse struct {
 	// Common fields
-	Type      string `json:"type"`                // discriminant
+	Type      string `json:"type"`
 	SessionID string `json:"session_id,omitempty"`
 
-	// --- "welcome" fields ---
-	ProtocolVersion string `json:"protocol_version,omitempty"`
-
-	// --- "delta" / "output" fields ---
-	Text   string `json:"text,omitempty"`         // streaming text chunk
-	Output string `json:"output,omitempty"`       // full non-stream reply
+	// --- "delta" / "done" fields ---
+	// LLM content is always "text", regardless of streaming or final.
+	Text   string `json:"text,omitempty"`
 
 	// --- "done" fields ---
 	Error     string     `json:"error,omitempty"`     // turn error (done) or tool error (tool.status=="err")
@@ -87,21 +82,28 @@ type FrameResponse struct {
 	TotalCost        *float64 `json:"total_cost,omitempty"`
 	EstimatedTokens  *int     `json:"estimated_context_tokens,omitempty"`
 
-	// --- "req" fields ---
-	ClientReq *event.ClientRequest `json:"client_request,omitempty"`
+	// --- "req" fields (flat — no nested client_request object) ---
+	RequestID string `json:"request_id,omitempty"`
+	Command   string `json:"command,omitempty"` // client-specific command (e.g. Lua code for Neovim)
 
 	// --- "result" fields ---
 	Cmd  string         `json:"cmd,omitempty"`
 	Data map[string]any `json:"data,omitempty"`
 
-	// --- "session" fields ---
-	SessionEvent string `json:"event,omitempty"` // "created", "renamed", "deleted"
-	OldName      string `json:"old_name,omitempty"`
-	Name         string `json:"name,omitempty"`
+	// --- "session" / "welcome" fields ---
+	// Sessions list (welcome) / session object (session events) /
+	// messages list (get_session) are at top level, not nested in "data".
+	Sessions []map[string]any `json:"sessions"`
+	Session  map[string]any   `json:"session,omitempty"`
+	Messages []map[string]any `json:"messages,omitempty"`
+	// Events is a replay-friendly sequence of typed events (chat, delta, tool,
+	// usage, done) that mirrors the live wire protocol. Returned alongside
+	// Messages for backward compatibility. Clients can use Events to render
+	// history with the same code path as live streaming frames.
+	Events []map[string]any `json:"events,omitempty"`
 
-	// --- Legacy fields (kept for backward compat during migration) ---
-	Delta       string `json:"delta,omitempty"`
-	Done        bool   `json:"done,omitempty"`
-	Event       string `json:"event,omitempty"`
-	ExecSnippet string `json:"exec_snippet,omitempty"`
+	// --- "session" lifecycle fields ---
+	Event   string `json:"event,omitempty"` // "session_create", "get_session", "renamed", "deleted"
+	OldName string `json:"old_name,omitempty"`
+	Name    string `json:"name,omitempty"`
 }

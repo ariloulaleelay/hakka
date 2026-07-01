@@ -602,7 +602,7 @@ func TestConversation_DefenseInDepth_DeniedToolReturnsError(t *testing.T) {
 	// The tool result should be in the session messages and contain "denied"
 	session, _ = sm.GetOrCreate(context.Background(), "testns", "defense-session")
 	foundDeniedErr := false
-	for _, m := range session.AllMessages() {
+	for _, m := range session.Messages() {
 		if m.Role == RoleTool && strings.Contains(m.Content, "denied") {
 			foundDeniedErr = true
 			break

@@ -1,77 +1,25 @@
 --- Hakka Neovim plugin — v2 protocol.
 ---
+--- Thin coordinator that wires connection, session, and UI together.
+---
 --- Frame type handling:
 ---   Inbound:  welcome, delta, done, tool, usage, req, result, session, error
 ---   Outbound: chat, cmd, resp, cancel
+
 local config = require("hakka.config")
-local client = require("hakka.client")
+local connection = require("hakka.connection")
+local session = require("hakka.session")
 local ui = require("hakka.ui")
 
 local M = {}
 
-local session_id = nil
-local session_name = nil
 local pending = false
 local _cancelling = false
 
 function M.setup(opts)
   config.setup(opts)
-end
-
---- Send init handshake to the server. Creates a session,
---- stores the current working directory.
---- @param on_done fun(err: string|nil, resp: table|nil)
-local function send_init(on_done)
-  local addr = config.values.addr
-
-  -- Create a new session with all tools enabled.
-  -- Sends {"type":"cmd","command":{"cmd":"session_create"}}
-  client.execute(addr, nil, "session_create", {}, function(err, resp)
-    if err then
-      ui.append_error("init: " .. err)
-      if on_done then on_done(err, nil) end
-      return
-    end
-    if not resp then
-      if on_done then on_done("no response from server", nil) end
-      return
-    end
-
-    -- v2: "session" frame with event="session_create"
-    if resp.type == "session" and resp.event == "session_create" and resp.data and resp.data.session then
-      session_id = resp.data.session.id
-      ui.set_session_id(session_id)
-      if resp.data.session.model then
-        ui.set_model(resp.data.session.model)
-      end
-    -- v2: "result" frame with cmd="session_create"
-    elseif resp.type == "result" and resp.cmd == "session_create" and resp.data and resp.data.session then
-      session_id = resp.data.session.id
-      ui.set_session_id(session_id)
-      if resp.data.session.model then
-        ui.set_model(resp.data.session.model)
-      end
-    -- v2: "result" frame with cmd="start" (from "start" command)
-    elseif resp.type == "result" and resp.cmd == "start" and resp.data and resp.data.session then
-      session_id = resp.data.session.id
-      ui.set_session_id(session_id)
-      if resp.data.session.model then
-        ui.set_model(resp.data.session.model)
-      end
-    -- Legacy / fallback: session_id on the frame itself
-    elseif resp.session_id then
-      session_id = resp.session_id
-      ui.set_session_id(session_id)
-    end
-
-    -- Set CWD using the cwd_set command
-    local cwd = vim.fn.getcwd()
-    if cwd and cwd ~= "" then
-      client.execute(addr, session_id, "cwd_set", { cwd = cwd }, function() end)
-    end
-
-    if on_done then on_done(nil, resp) end
-  end)
+  connection.setup(opts)
+  session.setup({ connection = connection })
 end
 
 --- Map a slash command text to a JSON command.
@@ -150,7 +98,7 @@ local function parse_slash_command(text)
     elseif sub == "delete" then
       local target = parts[3] or ""
       return { cmd = "session_delete", params = { id = target } }
-    elseif sub == "get" then
+    elseif sub == "get" or sub == "switch" then
       local target = parts[3] or ""
       return { cmd = "get_session", params = { id = target } }
     elseif sub == "rename" then
@@ -209,24 +157,20 @@ local function parse_slash_command(text)
 end
 
 --- Handle a "result" frame (from a JSON command).
---- v2: type="result", cmd="session_list", data={sessions:[...]}
 local function handle_result(frame)
   local cmd = frame.cmd
   local data = frame.data or {}
 
   if cmd == "session_create" or cmd == "start" then
-    if data.session then
-      session_id = data.session.id
-      session_name = data.session.name
-      ui.set_session_id(session_id)
-      ui.clear()
+    session.set_from_response(frame)
+    ui.set_session_id(session.current() and session.current().id)
+    if session.current() and session.current().model then
+      ui.set_model(session.current().model)
     end
+    ui.clear()
   elseif cmd == "get_session" then
-    if data.session then
-      session_id = data.session.id
-      session_name = data.session.name
-      ui.set_session_id(session_id)
-    end
+    session.set_from_response(frame)
+    ui.set_session_id(session.current() and session.current().id)
     if data.messages then
       if ui.is_open() then
         ui.clear()
@@ -237,8 +181,7 @@ local function handle_result(frame)
     end
   elseif cmd == "session_delete" then
     if data.active_cleared then
-      session_id = nil
-      session_name = nil
+      session.reset()
       ui.set_session_id(nil)
       ui.clear()
       ui.append_delta("Session " .. (data.deleted or "?") .. " deleted (active session cleared)")
@@ -264,14 +207,14 @@ local function handle_result(frame)
     end
   elseif cmd == "session_rename" then
     if data.session then
-      session_name = data.session.name
-      ui.set_session_id(data.session.id)
+      session.set_from_response({ type = "result", cmd = "session_rename", data = data })
+      ui.set_session_id(session.current() and session.current().id)
       ui.append_delta("Session renamed to: " .. (data.session.name or ""))
     end
   elseif cmd == "session_autorename" then
     if data.session and data.session.name then
-      session_name = data.session.name
-      ui.set_session_id(data.session.id)
+      session.set_from_response({ type = "result", cmd = "session_autorename", data = data })
+      ui.set_session_id(session.current() and session.current().id)
       ui.append_delta("Session renamed to: " .. data.session.name)
     end
   elseif cmd == "session_list" then
@@ -345,50 +288,43 @@ local function handle_result(frame)
 end
 
 --- Handle a "session" frame (session lifecycle events).
---- v2: type="session", event="created"|"renamed"|"deleted"|"get_session"
 local function handle_session_event(frame)
   local ev = frame.event
-  local data = frame.data or {}
+  local sid = frame.session and frame.session.id
 
   if ev == "session_create" or ev == "created" then
-    if data.session then
-      session_id = data.session.id
-      session_name = data.session.name
-      ui.set_session_id(session_id)
-      if data.session.model then
-        ui.set_model(data.session.model)
-      end
-      ui.clear()
+    session.set_from_response(frame)
+    ui.set_session_id(session.current() and session.current().id)
+    if frame.session and frame.session.model then
+      ui.set_model(frame.session.model)
     end
+    ui.clear()
   elseif ev == "get_session" then
-    if data.session then
-      session_id = data.session.id
-      session_name = data.session.name
-      ui.set_session_id(session_id)
-    end
-    if data.messages then
+    session.set_from_response(frame)
+    ui.set_session_id(session.current() and session.current().id)
+    if frame.messages then
       if ui.is_open() then
         ui.clear()
-        ui.load_history(data.messages)
+        ui.load_history(frame.messages)
       end
     else
       ui.clear()
     end
   elseif ev == "renamed" then
-    session_name = frame.name
-    session_id = frame.session_id or session_id
-    ui.set_session_id(session_id)
+    if sid then
+      ui.set_session_id(sid)
+    end
   elseif ev == "deleted" then
-    -- Session was deleted (not necessarily the active one)
-    -- Nothing to do unless it's the current session
-    if data and data.active_cleared then
-      session_id = nil
-      session_name = nil
+    if frame.session == nil then
+      session.reset()
       ui.set_session_id(nil)
     end
   end
 end
 
+--- Send a user message or slash command.
+--- This is passed as the on_send callback to ui.open().
+--- @param text string The user's input
 local function send(text)
   if pending then
     ui.append_error("previous request still in flight")
@@ -401,41 +337,38 @@ local function send(text)
     ui.append_user(text)
     ui.begin_assistant_stream()
 
-    local function on_command_response(err, resp)
-      pending = false
-      if err then
-        ui.append_error(err)
-        return
-      end
-      if not resp then
-        ui.end_assistant_stream()
-        return
-      end
-      if resp.error and resp.error ~= "" then
-        ui.append_error(resp.error)
-        return
-      end
-
-      -- v2: type="result" = command result
-      if resp.type == "result" then
-        handle_result(resp)
-        ui.end_assistant_stream()
-      -- v2: type="session" = session lifecycle event
-      elseif resp.type == "session" then
-        handle_session_event(resp)
-        ui.end_assistant_stream()
-      -- v2: type="done" = terminal frame (for ActionContinue or fallback)
-      elseif resp.type == "done" then
-        if resp.output then
-          ui.append_delta(resp.output)
+    connection.execute(session.current() and session.current().id,
+      json_cmd.cmd, json_cmd.params,
+      function(err, resp)
+        pending = false
+        if err then
+          ui.append_error(err)
+          return
         end
-        ui.end_assistant_stream()
-      else
-        ui.end_assistant_stream()
-      end
-    end
+        if not resp then
+          ui.end_assistant_stream()
+          return
+        end
+        if resp.error and resp.error ~= "" then
+          ui.append_error(resp.error)
+          return
+        end
 
-    client.execute(config.values.addr, session_id, json_cmd.cmd, json_cmd.params, on_command_response)
+        if resp.type == "result" then
+          handle_result(resp)
+          ui.end_assistant_stream()
+        elseif resp.type == "session" then
+          handle_session_event(resp)
+          ui.end_assistant_stream()
+        elseif resp.type == "done" then
+          if resp.text then
+            ui.append_delta(resp.text)
+          end
+          ui.end_assistant_stream()
+        else
+          ui.end_assistant_stream()
+        end
+      end)
     return
 
   -- Any text starting with / but not recognized — intercept locally
@@ -448,69 +381,50 @@ local function send(text)
     return
   end
 
-  -- Regular chat message — send as type:"chat"
+  -- Regular chat message — ensure we have a session, then send
   pending = true
-
   ui.append_user(text)
   ui.begin_assistant_stream()
-  local saw_error = false
-  local payload = {
-    type = "chat",
-    session_id = session_id,
-    input = text,
-  }
-  client.stream(config.values.addr, payload, function(frame)
-    -- v2: type="result" = command result (server may interleave commands)
-    if frame.type == "result" then
-      handle_result(frame)
+
+  session.ensure(function(err, session_id)
+    if err then
+      pending = false
+      ui.append_error("session: " .. err)
+      ui.end_assistant_stream()
       return
     end
 
-    -- v2: type="session" = session lifecycle event
-    if frame.type == "session" then
-      handle_session_event(frame)
-      return
+    if session.current() and session.current().model then
+      ui.set_model(session.current().model)
+    end
+    if session_id then
+      ui.set_session_id(session_id)
     end
 
-    -- v2: type="usage" = token usage after each LLM call
-    if frame.type == "usage" then
-      ui.append_usage_event(frame)
-      return
-    end
-
-    -- v2: type="tool" = tool lifecycle event
-    if frame.type == "tool" then
-      local snippet = frame.snippet or ""
-      if frame.status == "start" or frame.status == "ok" or frame.status == "err" then
-        ui.append_tool_event(frame.tool or "?", frame.status, snippet,
-          frame.status == "ok" and { result = frame.result } or nil)
-      end
-      return
-    end
-
-    -- v2: type="delta" = streaming text chunk (field "text")
-    if frame.type == "delta" and frame.text and frame.text ~= "" then
-      ui.append_delta(frame.text)
-      return
-    end
-
-    -- v2: type="error" = error before any turn (terminal)
-    if frame.type == "error" then
-      saw_error = true
-      ui.append_error(frame.error or "unknown error")
-      return
-    end
-  end, function(err)
-    pending = false
-    if _cancelling then
-      _cancelling = false
-      return
-    end
-    if err and not saw_error then
-      ui.append_error(err)
-      return
-    end
-    ui.end_assistant_stream()
+    local saw_error = false
+    connection.chat(session_id, text, {
+      on_delta = function(delta_text)
+        ui.append_delta(delta_text)
+      end,
+      on_tool = function(name, status, snippet, data)
+        ui.append_tool_event(name, status, snippet, data)
+      end,
+      on_usage = function(usage_frame)
+        ui.append_usage_event(usage_frame)
+      end,
+      on_done = function(err_text, stats)
+        pending = false
+        if _cancelling then
+          _cancelling = false
+          return
+        end
+        if err_text and not saw_error then
+          ui.append_error(err_text)
+          return
+        end
+        ui.end_assistant_stream()
+      end,
+    })
   end)
 end
 
@@ -519,7 +433,6 @@ function M.toggle()
     ui.close()
   else
     ui.open(send, M.cancel)
-    send_init()
   end
 end
 
@@ -527,7 +440,78 @@ function M.send_oneshot(text)
   -- Try JSON command first
   local json_cmd = parse_slash_command(text)
   if json_cmd then
-    client.execute(config.values.addr, session_id, json_cmd.cmd, json_cmd.params, function(err, resp)
+    connection.execute(session.current() and session.current().id,
+      json_cmd.cmd, json_cmd.params,
+      function(err, resp)
+        if err then
+          vim.notify("hakka: " .. err, vim.log.levels.ERROR)
+          return
+        end
+        if not resp then return end
+        if resp.error and resp.error ~= "" then
+          vim.notify("hakka: " .. resp.error, vim.log.levels.ERROR)
+          return
+        end
+
+        -- Format the response for one-shot display
+        if resp.type == "result" and resp.data then
+          local text_out = ""
+          if resp.data.sessions then
+            for _, s in ipairs(resp.data.sessions) do
+              local mark = s.current and "* " or "  "
+              text_out = text_out .. mark .. (s.name or s.short_id or s.id) .. "\n"
+            end
+          elseif resp.data.session then
+            text_out = resp.data.session.name or resp.data.session.id or ""
+          elseif resp.data.models then
+            for _, m in ipairs(resp.data.models) do
+              local mark = m.current and "* " or "  "
+              text_out = text_out .. mark .. m.name .. "\n"
+            end
+          elseif resp.data.tools then
+            for _, t in ipairs(resp.data.tools) do
+              local status = t.enabled and "[on]" or "[off]"
+              text_out = text_out .. t.name .. " " .. status .. "\n"
+            end
+          end
+          if text_out ~= "" then
+            vim.notify(text_out:gsub("%s+$", ""), vim.log.levels.INFO)
+          end
+        elseif resp.type == "session" and resp.session then
+          session.set_from_response(resp)
+          ui.set_session_id(session.current() and session.current().id)
+          vim.notify("session: " .. (resp.session.name or resp.session.id or ""), vim.log.levels.INFO)
+        elseif resp.type == "done" and resp.text and resp.text ~= "" then
+          vim.notify(resp.text, vim.log.levels.INFO)
+        end
+      end)
+    return
+
+  -- Any text starting with / but not recognized
+  elseif vim.trim(text):match("^/") then
+    vim.notify("hakka: unknown command: " .. vim.trim(text):match("^/(%S+)"), vim.log.levels.WARN)
+    return
+  end
+
+  -- Regular chat — ensure session, then send non-streaming
+  session.ensure(function(err, session_id)
+    if err then
+      vim.notify("hakka: " .. err, vim.log.levels.ERROR)
+      return
+    end
+    if session.current() and session.current().model then
+      ui.set_model(session.current().model)
+    end
+    if session_id then
+      ui.set_session_id(session_id)
+    end
+
+    local payload = {
+      type = "chat",
+      session_id = session_id,
+      input = text,
+    }
+    connection.execute(session_id, "chat_direct", { input = text }, function(err, resp)
       if err then
         vim.notify("hakka: " .. err, vim.log.levels.ERROR)
         return
@@ -537,79 +521,13 @@ function M.send_oneshot(text)
         vim.notify("hakka: " .. resp.error, vim.log.levels.ERROR)
         return
       end
-
-      -- v2: type="result" = command result
-      if resp.type == "result" and resp.data then
-        local text_out = ""
-        if resp.data.sessions then
-          for _, s in ipairs(resp.data.sessions) do
-            local mark = s.current and "* " or "  "
-            text_out = text_out .. mark .. (s.name or s.short_id or s.id) .. "\n"
-          end
-        elseif resp.data.session then
-          text_out = resp.data.session.name or resp.data.session.id or ""
-        elseif resp.data.models then
-          for _, m in ipairs(resp.data.models) do
-            local mark = m.current and "* " or "  "
-            text_out = text_out .. mark .. m.name .. "\n"
-          end
-        elseif resp.data.tools then
-          for _, t in ipairs(resp.data.tools) do
-            local status = t.enabled and "[on]" or "[off]"
-            text_out = text_out .. t.name .. " " .. status .. "\n"
-          end
-        end
-        if text_out ~= "" then
-          vim.notify(text_out:gsub("%s+$", ""), vim.log.levels.INFO)
-        end
-      -- v2: type="session" = session lifecycle
-      elseif resp.type == "session" and resp.data and resp.data.session then
-        vim.notify("session: " .. (resp.data.session.name or resp.data.session.id or ""), vim.log.levels.INFO)
-      -- v2: type="done" = terminal with output
-      elseif resp.type == "done" and resp.output and resp.output ~= "" then
-        vim.notify(resp.output, vim.log.levels.INFO)
-      end
-
-      if resp.session_id then
-        session_id = resp.session_id
-        ui.set_session_id(session_id)
-      end
+      vim.notify(resp.text or "", vim.log.levels.INFO)
     end)
-    return
-
-  -- Any text starting with / but not recognized
-  elseif vim.trim(text):match("^/") then
-    vim.notify("hakka: unknown command: " .. vim.trim(text):match("^/(%S+)"), vim.log.levels.WARN)
-    return
-  end
-
-  -- Regular chat — send as type:"chat"
-  local payload = {
-    type = "chat",
-    session_id = session_id,
-    input = text,
-  }
-  client.send(config.values.addr, payload, function(err, resp)
-    if err then
-      vim.notify("hakka: " .. err, vim.log.levels.ERROR)
-      return
-    end
-    if not resp then return end
-    if resp.error and resp.error ~= "" then
-      vim.notify("hakka: " .. resp.error, vim.log.levels.ERROR)
-      return
-    end
-    if resp.session_id then
-      session_id = resp.session_id
-      ui.set_session_id(session_id)
-    end
-    vim.notify(resp.output or "", vim.log.levels.INFO)
   end)
 end
 
 function M.reset()
-  session_id = nil
-  session_name = nil
+  session.reset()
   ui.set_session_id(nil)
   ui.set_model(nil)
   vim.notify("hakka: session reset", vim.log.levels.INFO)
@@ -625,21 +543,16 @@ function M.cancel()
   ui.end_assistant_stream()
   ui.append_assistant("_[cancelled]_")
 
-  if not session_id then
+  local sid = session.current() and session.current().id
+  if not sid then
     _cancelling = false
     return
   end
 
-  -- v2: type="cancel"
-  local payload = {
-    type = "cancel",
-    session_id = session_id,
-  }
-  client.send(config.values.addr, payload, function(err, resp)
+  connection.cancel(sid, function(err, resp)
     _cancelling = false
     if err then
       vim.notify("hakka: cancel error: " .. err, vim.log.levels.ERROR)
-      return
     end
   end)
 end

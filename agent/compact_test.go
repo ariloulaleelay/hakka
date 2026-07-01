@@ -13,7 +13,7 @@ import (
 
 func makeCompactifyCall(sess *Session, ranges []compactRange) {
 	for _, r := range ranges {
-		callID := fmt.Sprintf("compactify-%d", len(sess.AllMessages()))
+		callID := fmt.Sprintf("compactify-%d", len(sess.Messages()))
 		args, _ := json.Marshal(struct {
 			RangeStart int    `json:"range_start"`
 			RangeEnd   int    `json:"range_end"`
@@ -1415,7 +1415,7 @@ func TestBuildCompactContext_NoDuplicateWarnings(t *testing.T) {
 
 	// Warnings are ephemeral — they appear only in the LLM view, never
 	// persisted to the session. Verify no warning messages accumulated.
-	sessionMsgCount := len(s.AllMessages())
+	sessionMsgCount := len(s.Messages())
 	if sessionMsgCount != 2 {
 		t.Fatalf("expected 2 messages in session (warnings not persisted), got %d", sessionMsgCount)
 	}

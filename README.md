@@ -226,6 +226,42 @@ See AGENT.md for the full list of JSON commands and protocol details.
 - If a referenced environment variable is unset or empty, hakka exits with an error.
 - Keys under `models` are free-form; you can register the same provider multiple times with different model IDs (e.g. `"fast"` for Haiku, `"smart"` for Opus).
 
+### Pricing Configuration
+
+For providers that don't return cost in their API response (like DeepSeek), you can
+configure per-token pricing and Hakka will calculate the monetary cost automatically:
+
+```json
+{
+  "default": "deepseek",
+  "models": {
+    "deepseek": {
+      "dialect": "openai",
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-chat",
+      "headers": {
+        "Authorization": "Bearer ${env: DEEPSEEK_API_KEY}"
+      },
+      "pricing": {
+        "input": 0.00000027,
+        "output": 0.00000110,
+        "cache_hit_input": 0.00000007
+      }
+    }
+  }
+}
+```
+
+Pricing fields (per-token USD):
+- **`input`** — cost per prompt token
+- **`output`** — cost per completion token
+- **`cache_hit_input`** — (optional) reduced cost per cached prompt token, used when the
+  provider reports `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` separately
+  (e.g. DeepSeek)
+
+When a provider returns cost in its response (e.g. OpenRouter), the response cost takes
+precedence over the configured pricing.
+
 ### MCP Server Integration
 
 ```json

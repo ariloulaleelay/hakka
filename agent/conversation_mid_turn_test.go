@@ -116,7 +116,7 @@ func TestConversationMidTurnEnableTool_EndToEnd(t *testing.T) {
 
 	if !testToolExecuted {
 		savedSession, _ := sm.GetOrCreate(context.Background(), "testns", sessionID)
-		for _, m := range savedSession.AllMessages() {
+		for _, m := range savedSession.Messages() {
 			if m.Role == RoleTool && m.Name == "test_tool" {
 				if strings.Contains(m.Content, "disabled") {
 					t.Fatal("BUG: test_tool was rejected as disabled — context injection failed")

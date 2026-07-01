@@ -48,8 +48,8 @@ func TestSQLiteRoundTrip(t *testing.T) {
 	if got.Read().SystemPrompt != "you are tested" {
 		t.Fatalf("prompt: %q", got.Read().SystemPrompt)
 	}
-	if len(got.AllMessages()) != 2 || got.AllMessages()[1].Content != "hello" {
-		t.Fatalf("messages: %+v", got.AllMessages())
+	if len(got.Messages()) != 2 || got.Messages()[1].Content != "hello" {
+		t.Fatalf("messages: %+v", got.Messages())
 	}
 	if got.GetModel() != "gpt4" {
 		t.Fatalf("model: %q", got.GetModel())
@@ -70,7 +70,7 @@ func TestSQLiteUpsert(t *testing.T) {
 		t.Fatalf("put2: %v", err)
 	}
 	got, ok, _ := s.Get(ctx, ns, sess.SessionID())
-	if !ok || len(got.AllMessages()) != 1 {
+	if !ok || len(got.Messages()) != 1 {
 		t.Fatalf("expected single message after upsert, got %+v", got)
 	}
 }

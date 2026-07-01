@@ -8,13 +8,14 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/ariloulaleelay/hakka/agent"
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // ---------------------------------------------------------------------------
 // v2 protocol tests
 //
-// These tests define the expected behaviour of the new wire protocol.
+// These tests define the expected behaviour of the wire protocol.
 // ---------------------------------------------------------------------------
 
 // wsConnect is a helper that dials a WebSocket gateway and returns the
@@ -71,7 +72,7 @@ func writeWSFrame(t *testing.T, conn *websocket.Conn, v any) {
 
 // TestWelcomeOnConnect verifies that the server sends a "welcome" frame
 // immediately on WebSocket connect, listing all sessions with in_flight
-// status, without the client having to send list_sessions first.
+// status at the top level (not inside "data").
 func TestWelcomeOnConnect(t *testing.T) {
 	conv, streamer, cmd := newGatewayComponents("pong")
 	addr := freeAddr(t)
@@ -86,29 +87,20 @@ func TestWelcomeOnConnect(t *testing.T) {
 
 	// Read the first frame — it should be a welcome without sending anything.
 	var welcome struct {
-		Type            string `json:"type"`
-		ProtocolVersion string `json:"protocol_version"`
-		Data            map[string]any `json:"data,omitempty"`
+		Type     string           `json:"type"`
+		Sessions []map[string]any `json:"sessions"`
 	}
 	readWSFrame(t, conn, 3*time.Second, &welcome)
 
 	if welcome.Type != "welcome" {
 		t.Fatalf("expected type 'welcome', got %q", welcome.Type)
 	}
-	if welcome.ProtocolVersion != "2" {
-		t.Fatalf("expected protocol_version '2', got %q", welcome.ProtocolVersion)
-	}
 
-	// Verify sessions list with in_flight field
-	if welcome.Data != nil {
-		if sessions, ok := welcome.Data["sessions"].([]any); ok {
-			for _, s := range sessions {
-				if sess, ok := s.(map[string]any); ok {
-					// Should have in_flight field
-					if _, exists := sess["in_flight"]; !exists {
-						t.Error("expected in_flight field in session entry")
-					}
-				}
+	// Sessions should be at the top level (not inside "data").
+	if welcome.Sessions != nil {
+		for _, s := range welcome.Sessions {
+			if _, exists := s["in_flight"]; !exists {
+				t.Error("expected in_flight field in session entry")
 			}
 		}
 	}
@@ -210,7 +202,8 @@ func TestUsageIncludesEstimatedContext(t *testing.T) {
 }
 
 // TestDoneFrameHasStats verifies that the done frame carries end-of-turn
-// statistics embedded directly, not as a separate meta event.
+// statistics embedded directly, not as a separate meta event. The LLM
+// content field is called "text" (unified with delta).
 func TestDoneFrameHasStats(t *testing.T) {
 	w := &spyWriter{}
 	processEvent(w, event.TurnFinished{
@@ -230,8 +223,9 @@ func TestDoneFrameHasStats(t *testing.T) {
 	if fr.Type != "done" {
 		t.Fatalf("expected type 'done', got %q", fr.Type)
 	}
-	if fr.Output != "Hello!" {
-		t.Fatalf("expected output 'Hello!', got %q", fr.Output)
+	// Content field is "text" (unified with delta)
+	if fr.Text != "Hello!" {
+		t.Fatalf("expected text 'Hello!', got %q", fr.Text)
 	}
 	// Stats should be embedded directly in the done frame
 	if fr.Stats == nil {
@@ -297,8 +291,8 @@ func TestInboundFrameTypeParsing(t *testing.T) {
 	}
 }
 
-// TestWebSocketV2RoundTrip tests a full chat turn using the new v2 protocol.
-// Sends type:"chat", receives type:"done" with embedded stats.
+// TestWebSocketV2RoundTrip tests a full chat turn using the v2 protocol.
+// Sends type:"chat", receives type:"done" with embedded stats and "text" field.
 func TestWebSocketV2RoundTrip(t *testing.T) {
 	conv, streamer, cmd := newNamedGatewayComponents("hello from llm", "v2test")
 	addr := freeAddr(t)
@@ -328,7 +322,7 @@ func TestWebSocketV2RoundTrip(t *testing.T) {
 	})
 
 	// Read frames until done
-	var doneOutput string
+	var doneText string
 	var doneStats *struct {
 		TotalTokens int    `json:"total_tokens"`
 		Model       string `json:"model"`
@@ -342,16 +336,16 @@ func TestWebSocketV2RoundTrip(t *testing.T) {
 			t.Fatalf("read frame %d: %v", i, err)
 		}
 		var msg struct {
-			Type   string          `json:"type"`
-			Output string          `json:"output"`
-			Error  string          `json:"error"`
-			Stats  json.RawMessage `json:"stats"`
+			Type  string          `json:"type"`
+			Text  string          `json:"text"`
+			Error string          `json:"error"`
+			Stats json.RawMessage `json:"stats"`
 		}
 		if err := json.Unmarshal(data, &msg); err != nil {
 			t.Fatalf("unmarshal frame %d: %v", i, err)
 		}
 		if msg.Type == "done" {
-			doneOutput = msg.Output
+			doneText = msg.Text
 			if msg.Stats != nil {
 				json.Unmarshal(msg.Stats, &doneStats)
 			}
@@ -362,8 +356,8 @@ func TestWebSocketV2RoundTrip(t *testing.T) {
 	if !found {
 		t.Fatal("expected done frame with type 'done'")
 	}
-	if doneOutput != "hello from llm" {
-		t.Fatalf("expected output %q, got %q", "hello from llm", doneOutput)
+	if doneText != "hello from llm" {
+		t.Fatalf("expected text %q, got %q", "hello from llm", doneText)
 	}
 	if doneStats == nil {
 		t.Fatal("expected stats in done frame")
@@ -390,24 +384,17 @@ func TestAutoSubscribeOnConnect(t *testing.T) {
 	defer conn.CloseNow()
 
 	var welcome struct {
-		Type            string `json:"type"`
-		ProtocolVersion string `json:"protocol_version"`
-		Data            map[string]any `json:"data"`
+		Type     string           `json:"type"`
+		Sessions []map[string]any `json:"sessions"`
 	}
 	readWSFrame(t, conn, 3*time.Second, &welcome)
 	if welcome.Type != "welcome" {
 		t.Fatalf("expected welcome, got %q", welcome.Type)
 	}
-	if welcome.ProtocolVersion != "2" {
-		t.Fatalf("expected protocol_version '2', got %q", welcome.ProtocolVersion)
-	}
 
-	// The welcome should include sessions (even if empty)
-	if welcome.Data == nil {
-		t.Fatal("expected data in welcome frame")
-	}
-	if _, ok := welcome.Data["sessions"]; !ok {
-		t.Fatal("expected sessions in welcome data")
+	// The welcome should include sessions (even if empty) at the top level.
+	if welcome.Sessions == nil {
+		t.Fatal("expected sessions in welcome frame at top level")
 	}
 
 	// Send a chat and verify we get a done frame back (not an error)
@@ -439,5 +426,256 @@ func TestAutoSubscribeOnConnect(t *testing.T) {
 	}
 	if !foundDone {
 		t.Fatal("expected done frame")
+	}
+}
+
+// TestGetSessionEvents verifies that get_session returns an "events"
+// field alongside the existing "messages" field, with events that
+// mirror the live wire protocol (chat, delta, tool start/ok, usage,
+// done). Tool calls from history are replayed as typed events so the
+// UI can render them the same way as live streaming frames.
+func TestGetSessionEvents(t *testing.T) {
+	conv, streamer, cmd := newNamedGatewayComponents("unused", "default")
+	addr := freeAddr(t)
+	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	if err := gw.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer gw.Stop(context.Background())
+
+	// Create a session with realistic messages including tool calls.
+	sm := conv.Sessions()
+	session, err := sm.GetOrCreate(context.Background(), "default", "")
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+
+	usage := &agent.Usage{
+		PromptTokens:     10,
+		CompletionTokens: 20,
+		TotalTokens:      30,
+	}
+
+	// Build a conversation with: user msg → assistant (thinking + tool call) → tool result → assistant (final)
+	session.Append(agent.Message{Role: "user", Content: "Read README.md"})
+	session.Append(agent.Message{
+		Role:    "assistant",
+		Content: "Let me check that file...",
+		ToolCalls: []agent.ToolCall{
+			{ID: "call_1", Name: "read_file", Arguments: `{"path":"README.md"}`, ExecSnippet: "read_file 'README.md'"},
+			{ID: "call_2", Name: "search", Arguments: `{"pattern":"TODO"}`, ExecSnippet: `search 'TODO'`},
+		},
+		Usage: usage,
+	})
+	session.Append(agent.Message{
+		Role:       "tool",
+		Content:    "# Hakka\n\nA Go framework...",
+		ToolCallID: "call_1",
+		Name:       "read_file",
+	})
+	session.Append(agent.Message{
+		Role:       "tool",
+		Content:    "Error: pattern not found",
+		ToolCallID: "call_2",
+		Name:       "search",
+	})
+	session.Append(agent.Message{
+		Role:    "assistant",
+		Content: "Here's what I found in README.md...",
+		Usage:   usage,
+	})
+
+	if err := sm.Save(context.Background(), "default", session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Send get_session command via WebSocket.
+	conn := wsConnect(t, addr)
+	defer conn.CloseNow()
+
+	// Discard welcome and auto-subscribe session frames.
+	var base struct{ Type string }
+	readWSFrame(t, conn, 3*time.Second, &base) // welcome
+
+	// After welcome, the server auto-subscribes to the best session and
+	// sends a "session" frame (get_session) with messages. Read and discard it.
+	var sessionFrame struct{ Type string }
+	readWSFrame(t, conn, 3*time.Second, &sessionFrame) // auto-subscribe session
+
+	writeWSFrame(t, conn, map[string]any{
+		"type":    "cmd",
+		"command": map[string]any{"cmd": "get_session", "params": map[string]string{"id": session.SessionID()}},
+	})
+
+	// Read response.
+	var resp struct {
+		Type     string           `json:"type"`
+		Event    string           `json:"event"`
+		Session  map[string]any   `json:"session"`
+		Messages []map[string]any `json:"messages"`
+		Events   []map[string]any `json:"events"`
+		Error    string           `json:"error"`
+	}
+	readWSFrame(t, conn, 3*time.Second, &resp)
+
+	if resp.Error != "" {
+		t.Fatalf("unexpected error: %s", resp.Error)
+	}
+	if resp.Type != "session" {
+		t.Fatalf("expected type 'session', got %q", resp.Type)
+	}
+	if resp.Event != "get_session" {
+		t.Fatalf("expected event 'get_session', got %q", resp.Event)
+	}
+	if resp.Session == nil {
+		t.Fatal("expected session field")
+	}
+
+	// --- Assert events field is present ---
+	if resp.Events == nil {
+		t.Fatal("expected events field in get_session response")
+	}
+
+	// --- Assert events have the expected shape ---
+	// Events should be: chat, delta, tool(start)×2, usage, tool(ok), tool(err), delta, usage, done
+	if len(resp.Events) != 10 {
+		t.Fatalf("expected 10 events, got %d: %+v", len(resp.Events), resp.Events)
+	}
+
+	// 1. User message → chat event
+	evt0 := resp.Events[0]
+	if evt0["type"] != "chat" {
+		t.Fatalf("event[0] type: expected 'chat', got %q", evt0["type"])
+	}
+	if evt0["text"] != "Read README.md" {
+		t.Fatalf("event[0] text: expected 'Read README.md', got %q", evt0["text"])
+	}
+
+	// 2. Assistant thinking → delta event
+	evt1 := resp.Events[1]
+	if evt1["type"] != "delta" {
+		t.Fatalf("event[1] type: expected 'delta', got %q", evt1["type"])
+	}
+	if evt1["text"] != "Let me check that file..." {
+		t.Fatalf("event[1] text: expected 'Let me check that file...', got %q", evt1["text"])
+	}
+
+	// 3. First tool call start
+	evt2 := resp.Events[2]
+	if evt2["type"] != "tool" {
+		t.Fatalf("event[2] type: expected 'tool', got %q", evt2["type"])
+	}
+	if evt2["id"] != "call_1" {
+		t.Fatalf("event[2] id: expected 'call_1', got %q", evt2["id"])
+	}
+	if evt2["tool"] != "read_file" {
+		t.Fatalf("event[2] tool: expected 'read_file', got %q", evt2["tool"])
+	}
+	if evt2["status"] != "start" {
+		t.Fatalf("event[2] status: expected 'start', got %q", evt2["status"])
+	}
+	if evt2["args"] == nil {
+		t.Fatal("event[2] args should be present")
+	}
+	if evt2["snippet"] != "read_file 'README.md'" {
+		t.Fatalf("event[2] snippet: expected 'read_file README.md', got %q", evt2["snippet"])
+	}
+
+	// 4. Second tool call start
+	evt3 := resp.Events[3]
+	if evt3["type"] != "tool" {
+		t.Fatalf("event[3] type: expected 'tool', got %q", evt3["type"])
+	}
+	if evt3["id"] != "call_2" {
+		t.Fatalf("event[3] id: expected 'call_2', got %q", evt3["id"])
+	}
+	if evt3["tool"] != "search" {
+		t.Fatalf("event[3] tool: expected 'search', got %q", evt3["tool"])
+	}
+	if evt3["status"] != "start" {
+		t.Fatalf("event[3] status: expected 'start', got %q", evt3["status"])
+	}
+
+	// 5. First usage event (from the first LLM call with tool calls)
+	evt4 := resp.Events[4]
+	if evt4["type"] != "usage" {
+		t.Fatalf("event[4] type: expected 'usage', got %q", evt4["type"])
+	}
+	if evt4["total_tokens"] != float64(30) {
+		t.Fatalf("event[4] total_tokens: expected 30, got %v", evt4["total_tokens"])
+	}
+
+	// 6. First tool result (ok)
+	evt5 := resp.Events[5]
+	if evt5["type"] != "tool" {
+		t.Fatalf("event[5] type: expected 'tool', got %q", evt5["type"])
+	}
+	if evt5["id"] != "call_1" {
+		t.Fatalf("event[5] id: expected 'call_1', got %q", evt5["id"])
+	}
+	if evt5["tool"] != "read_file" {
+		t.Fatalf("event[5] tool: expected 'read_file', got %q", evt5["tool"])
+	}
+	if evt5["status"] != "ok" {
+		t.Fatalf("event[5] status: expected 'ok', got %q", evt5["status"])
+	}
+	if evt5["result"] == nil {
+		t.Fatal("event[5] result should be present for ok status")
+	}
+
+	// 7. Second tool result (error)
+	evt6 := resp.Events[6]
+	if evt6["type"] != "tool" {
+		t.Fatalf("event[6] type: expected 'tool', got %q", evt6["type"])
+	}
+	if evt6["id"] != "call_2" {
+		t.Fatalf("event[6] id: expected 'call_2', got %q", evt6["id"])
+	}
+	if evt6["tool"] != "search" {
+		t.Fatalf("event[6] tool: expected 'search', got %q", evt6["tool"])
+	}
+	if evt6["status"] != "err" {
+		t.Fatalf("event[6] status: expected 'err', got %q", evt6["status"])
+	}
+	if evt6["error"] == nil {
+		t.Fatal("event[6] error should be present for err status")
+	}
+
+	// 8. Final assistant delta
+	evt7 := resp.Events[7]
+	if evt7["type"] != "delta" {
+		t.Fatalf("event[7] type: expected 'delta', got %q", evt7["type"])
+	}
+	if evt7["text"] != "Here's what I found in README.md..." {
+		t.Fatalf("event[7] text: expected 'Here's what I found in README.md...', got %q", evt7["text"])
+	}
+
+	// 9. Second usage event
+	evt8 := resp.Events[8]
+	if evt8["type"] != "usage" {
+		t.Fatalf("event[8] type: expected 'usage', got %q", evt8["type"])
+	}
+	if evt8["total_tokens"] != float64(30) {
+		t.Fatalf("event[8] total_tokens: expected 30, got %v", evt8["total_tokens"])
+	}
+
+	// 10. Done marker (no text, no stats — just a terminal)
+	evt9 := resp.Events[9]
+	if evt9["type"] != "done" {
+		t.Fatalf("event[9] type: expected 'done', got %q", evt9["type"])
+	}
+	if _, hasText := evt9["text"]; hasText {
+		t.Fatal("event[9] done should not have text field in history replay")
+	}
+	if _, hasStats := evt9["stats"]; hasStats {
+		t.Fatal("event[9] done should not have stats field in history replay")
+	}
+
+	// --- Verify messages field still present (backward compat) ---
+	if resp.Messages == nil {
+		t.Fatal("expected messages field to still be present (backward compat)")
+	}
+	if len(resp.Messages) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(resp.Messages))
 	}
 }

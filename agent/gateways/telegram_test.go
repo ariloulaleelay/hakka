@@ -673,7 +673,7 @@ func TestTelegramGateway_GroupChatIgnoresWhenNotMentioned(t *testing.T) {
 	if session == nil {
 		t.Fatal("expected session to exist for chat 1001")
 	}
-	history := session.History()
+	history := session.Messages()
 	found := false
 	for _, msg := range history {
 		if strings.Contains(msg.Content, "@johndoe (John Doe):") &&
@@ -999,7 +999,7 @@ func TestTelegramGateway_SessionSurvivesRestart(t *testing.T) {
 	if len(sessions) != 1 {
 		t.Fatalf("expected exactly 1 session for chat 4242, got %d", len(sessions))
 	}
-	history := sessions[0].History()
+	history := sessions[0].Messages()
 	userMsgCount := 0
 	for _, m := range history {
 		if m.Role == agent.RoleUser {

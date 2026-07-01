@@ -7,6 +7,11 @@
       "model": "deepseek-chat",
       "headers": {
         "Authorization": "Bearer ${env: DEEPSEEK_API_KEY}"
+      },
+      "pricing": {
+        "input": 0.00000027,
+        "output": 0.00000110,
+        "cache_hit_input": 0.00000007
       }
     },
     "claude": {
@@ -19,6 +24,10 @@
       },
       "extra": {
         "max_tokens": 2048
+      },
+      "pricing": {
+        "input": 0.000003,
+        "output": 0.000015
       }
     },
     "gemini": {
@@ -27,6 +36,10 @@
       "model": "gemini-2.5-flash",
       "headers": {
         "x-goog-api-key": "${env: GEMINI_API_KEY}"
+      },
+      "pricing": {
+        "input": 0.00000010,
+        "output": 0.00000040
       }
     }
   }

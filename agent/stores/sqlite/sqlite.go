@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -152,7 +151,6 @@ func (st *Store) Get(ctx context.Context, namespace, id string) (*agent.Session,
 
 func (st *Store) Put(ctx context.Context, namespace string, session *agent.Session) error {
 	data := session.Read()
-	data.UpdatedAt = time.Now()
 
 	messagesJSON, err := json.Marshal(data.Messages)
 	if err != nil {
@@ -215,7 +213,6 @@ func (st *Store) Put(ctx context.Context, namespace string, session *agent.Sessi
 
 	session.Update(func(d *agent.SessionData) {
 		d.Namespace = namespace
-		d.UpdatedAt = updatedAt
 	})
 
 	return err

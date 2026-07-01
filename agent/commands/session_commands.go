@@ -99,7 +99,7 @@ func (sc *SessionCommands) jsonSessionList(ctx context.Context, sessionID string
 	// Visible sessions (skip empty, except current)
 	var visible []*agent.Session
 	for _, s := range sessions {
-		if len(s.AllMessages()) == 0 && s.SessionID() != sessionID {
+		if len(s.Messages()) == 0 && s.SessionID() != sessionID {
 			continue
 		}
 		visible = append(visible, s)
@@ -119,7 +119,7 @@ func (sc *SessionCommands) jsonSessionList(ctx context.Context, sessionID string
 			"in_flight":     inFlight,
 			"created":       s.Read().CreatedAt.Format("2006-01-02T15:04:05Z"),
 			"updated_at":    s.Read().UpdatedAt.Format("2006-01-02T15:04:05Z"),
-			"message_count": len(s.AllMessages()),
+			"message_count": len(s.Messages()),
 			"current":       s.SessionID() == sessionID,
 			"client_cwd":    s.Read().ClientCWD,
 		}
@@ -141,13 +141,15 @@ func (sc *SessionCommands) jsonSessionCreate(ctx context.Context, prevSessionID 
 	}
 	inheritCWD(ctx, sc.Sessions, ns, prevSessionID, session)
 
+	// Persist the inherited CWD — GetOrCreate saves the session
+	// with os.Getwd() before inheritCWD runs, and without an explicit
+	// save the store retains the wrong CWD.
+	if err := sc.Sessions.Save(ctx, ns, session); err != nil {
+		return CommandResult{Handled: true, Cmd: "session_create", Error: err}
+	}
+
 	data, _ := json.Marshal(map[string]any{
-		"session": map[string]any{
-			"id":         session.SessionID(),
-			"short_id":   shortID(session.SessionID()),
-			"name":       session.SessionName(),
-			"client_cwd": session.Read().ClientCWD,
-		},
+		"session": session.Metadata(),
 	})
 	return CommandResult{
 		Handled: true,
@@ -196,8 +198,8 @@ func (sc *SessionCommands) jsonGetSession(ctx context.Context, sessionID string,
 	}
 
 	data, _ := json.Marshal(map[string]any{
-		"session":  sessionToMap(session),
-		"messages": session.AllMessages(),
+		"session":  session.Metadata(),
+		"messages": session.Messages(),
 	})
 	return CommandResult{
 		Handled: true,
@@ -262,18 +264,12 @@ func (sc *SessionCommands) jsonSessionInfo(ctx context.Context, sessionID string
 		sc.Sessions.Save(ctx, ns, session)
 	}
 
+	meta := session.Metadata()
+	// include system prompt in estimated context
+	sysTokens := len(session.SystemPrompt()) / 4
+	meta["estimated_context"] = estimateTokenCount(session.Messages()) + sysTokens
 	data, _ := json.Marshal(map[string]any{
-		"session": map[string]any{
-			"id":                session.SessionID(),
-			"name":              session.DisplayName(),
-			"model":             sc.modelName(session),
-			"message_count":     len(session.AllMessages()),
-			"total_tokens":              session.TotalTokenUsage(),
-			"total_cost":                session.TotalCost(),
-			"estimated_context_tokens": session.GetEstimatedContextTokens(),
-			"compact_soft_limit": session.GetCompactSoftLimit(),
-			"estimated_context": estimateTokenCount(session.History()),
-		},
+		"session": meta,
 	})
 	return CommandResult{Handled: true, Cmd: "session_info", Data: data, Session: session}
 }
@@ -317,17 +313,13 @@ func (sc *SessionCommands) jsonSessionAutoRename(ctx context.Context, sessionID 
 		return CommandResult{Handled: true, Cmd: "session_autorename", Error: err}
 	}
 
-	newName, renameErr := sc.Conv.AutoRename(ctx, session)
+	_, renameErr := sc.Conv.AutoRename(ctx, session)
 	if renameErr != nil {
 		return CommandResult{Handled: true, Cmd: "session_autorename", Reply: "session auto-rename failed: " + renameErr.Error(), Session: session}
 	}
 
 	data, _ := json.Marshal(map[string]any{
-		"session": map[string]any{
-			"id":       session.SessionID(),
-			"name":     newName,
-			"short_id": shortID(session.SessionID()),
-		},
+		"session": session.Metadata(),
 	})
 	return CommandResult{Handled: true, Cmd: "session_autorename", Data: data, Session: session}
 }

@@ -341,7 +341,7 @@ func passThroughMessage(m Message) Message {
 // Returns the context messages and a bool indicating whether
 // context_compactify should be added to tool schemas for this turn.
 func BuildCompactContext(session SessionHistory, softLimit int) ([]Message, bool, int) {
-	rawMsgs := session.AllMessages()
+	rawMsgs := session.Messages()
 	ranges := extractCompactifyRanges(rawMsgs)
 	inRange := computeEffectiveInRange(rawMsgs, ranges)
 	summaryAt := buildSummaryLookup(len(rawMsgs), ranges)
@@ -386,11 +386,10 @@ func buildCompactionWarning(estimatedTokens, softLimit int) Message {
 // system prompt (if present), optional compactify usage notice, and
 // the working-directory message (if set).
 func buildContextPrefix(session SessionHistory, needCompactify bool) []Message {
-	history := session.History()
 	result := make([]Message, 0, 4)
 
-	if len(history) > 0 && history[0].Role == RoleSystem {
-		result = append(result, history[0])
+	if sp := session.SystemPrompt(); sp != "" {
+		result = append(result, Message{Role: RoleSystem, Content: sp})
 	}
 	if needCompactify {
 		result = append(result, Message{

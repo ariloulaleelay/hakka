@@ -90,7 +90,7 @@ func StripToolCalls(messages []Message, replaceToolsWithPlaceholder bool) []Mess
 //
 // Depends only on SessionHistory — the narrowest interface needed.
 func buildNamingMessages(session SessionHistory) []Message {
-	msgs := StripToolCalls(session.AllMessages(), true)
+	msgs := StripToolCalls(session.Messages(), true)
 	// Drop genuine system messages but keep the [TRUNCATED TOOL CALLS] placeholders.
 	filtered := make([]Message, 0, len(msgs))
 	for _, m := range msgs {
@@ -156,6 +156,10 @@ func recordLLMResponse(session SessionView, resp *llmStepResult, hooks Hooks, ev
 	if resp.usage != nil {
 		session.AddTokenUsage(resp.usage.TotalTokens)
 		session.AddCost(resp.usage.Cost)
+		slog.Debug("record_llm_response: added cost",
+			"session", session.SessionID(),
+			"resp_cost", resp.usage.Cost,
+			"total_cost", session.TotalCost())
 		sendEngineEvent(events, event.UsageReported{
 			SessionID: session.SessionID(),
 			Usage: event.UsageInfo{

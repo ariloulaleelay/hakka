@@ -146,7 +146,7 @@ func SessionList(sm *agent.SessionManager) agent.Tool {
 			var b strings.Builder
 			b.WriteString(fmt.Sprintf("%d session(s):\n", len(sessions)))
 			for i, s := range sessions[:limit] {
-				msgCount := len(s.AllMessages())
+				msgCount := len(s.Messages())
 				created := s.Read().CreatedAt.Format("2006-01-02 15:04")
 				model := s.GetModel()
 				if model == "" {
@@ -160,7 +160,7 @@ func SessionList(sm *agent.SessionManager) agent.Tool {
 						i+1, s.SessionID()[:8], created, msgCount, model))
 				}
 				// Show first user message
-				for _, m := range s.AllMessages() {
+				for _, m := range s.Messages() {
 					if m.Role == agent.RoleUser {
 						summary := agent.Truncate(m.Content, 100)
 						b.WriteString(fmt.Sprintf("     → %s\n", summary))
@@ -246,18 +246,18 @@ func SessionInfo(sm *agent.SessionManager) agent.Tool {
 			b.WriteString(fmt.Sprintf("Namespace:    %s\n", s.Read().Namespace))
 			b.WriteString(fmt.Sprintf("Created:      %s\n", s.Read().CreatedAt.Format("2006-01-02 15:04:05")))
 			b.WriteString(fmt.Sprintf("Model:        %s\n", s.GetModel()))
-			b.WriteString(fmt.Sprintf("Messages:     %d\n", len(s.AllMessages())))
+			b.WriteString(fmt.Sprintf("Messages:     %d\n", len(s.Messages())))
 			b.WriteString(fmt.Sprintf("Total Tokens: %d\n", s.TotalTokenUsage()))
 			b.WriteString(fmt.Sprintf("Compact soft limit: %d tokens\n", s.GetCompactSoftLimit()))
 			b.WriteString(fmt.Sprintf("Client CWD:   %s\n", s.Read().ClientCWD))
 
-			if len(s.AllMessages()) > 0 {
+			if len(s.Messages()) > 0 {
 				b.WriteString("\nMessages (first 10):\n")
 				limit := 10
-				if len(s.AllMessages()) < limit {
-					limit = len(s.AllMessages())
+				if len(s.Messages()) < limit {
+					limit = len(s.Messages())
 				}
-				for i, m := range s.AllMessages()[:limit] {
+				for i, m := range s.Messages()[:limit] {
 					content := agent.Truncate(m.Content, 200)
 					b.WriteString(fmt.Sprintf("  [%d] %s: %s\n", i+1, m.Role, content))
 					if len(m.ToolCalls) > 0 {
@@ -266,8 +266,8 @@ func SessionInfo(sm *agent.SessionManager) agent.Tool {
 						}
 					}
 				}
-				if limit < len(s.AllMessages()) {
-					b.WriteString(fmt.Sprintf("  ... (%d more messages)\n", len(s.AllMessages())-limit))
+				if limit < len(s.Messages()) {
+					b.WriteString(fmt.Sprintf("  ... (%d more messages)\n", len(s.Messages())-limit))
 				}
 			}
 			return b.String(), nil
@@ -304,7 +304,7 @@ func SessionRead(sm *agent.SessionManager) agent.Tool {
 				return "", err
 			}
 
-			messages := s.AllMessages()
+			messages := s.Messages()
 
 			if args.Role != "" {
 				filtered := make([]agent.Message, 0, len(messages))
@@ -396,7 +396,7 @@ func SessionSearch(sm *agent.SessionManager) agent.Tool {
 			var matches []match
 
 			for _, s := range sessions {
-				for i, m := range s.AllMessages() {
+				for i, m := range s.Messages() {
 					if strings.Contains(strings.ToLower(m.Content), pattern) {
 						matches = append(matches, match{
 							sessionID:   s.SessionID(),
@@ -465,7 +465,7 @@ func SessionSummarize(sm *agent.SessionManager, conv *agent.Conversation) agent.
 				return "", err
 			}
 
-			if len(s.AllMessages()) == 0 {
+			if len(s.Messages()) == 0 {
 				return "Session has no messages.", nil
 			}
 
@@ -489,7 +489,7 @@ func SessionSummarize(sm *agent.SessionManager, conv *agent.Conversation) agent.
 // generateLLMSummary uses the LLM to generate a session summary.
 func generateLLMSummary(ctx context.Context, adapter agent.LLMAdapter, s *agent.Session, maxTokens int) (string, error) {
 	var b strings.Builder
-	for _, m := range s.AllMessages() {
+	for _, m := range s.Messages() {
 		switch m.Role {
 		case agent.RoleUser:
 			b.WriteString(fmt.Sprintf("User: %s\n", agent.Truncate(m.Content, 500)))
@@ -533,14 +533,14 @@ func buildHeuristicSummary(s *agent.Session) string {
 
 	b.WriteString(fmt.Sprintf("Session: %s\n", name))
 	b.WriteString(fmt.Sprintf("Created: %s\n", s.Read().CreatedAt.Format("2006-01-02 15:04")))
-	b.WriteString(fmt.Sprintf("Total messages: %d\n", len(s.AllMessages())))
+	b.WriteString(fmt.Sprintf("Total messages: %d\n", len(s.Messages())))
 	b.WriteString(fmt.Sprintf("Total tokens: %d\n", s.TotalTokenUsage()))
 
 	userCount := 0
 	assistantCount := 0
 	toolCount := 0
 	toolNames := make(map[string]int)
-	for _, m := range s.AllMessages() {
+	for _, m := range s.Messages() {
 		switch m.Role {
 		case agent.RoleUser:
 			userCount++
@@ -564,16 +564,16 @@ func buildHeuristicSummary(s *agent.Session) string {
 		}
 	}
 
-	for _, m := range s.AllMessages() {
+	for _, m := range s.Messages() {
 		if m.Role == agent.RoleUser {
 			b.WriteString(fmt.Sprintf("\nFirst message: %s\n", agent.Truncate(m.Content, 200)))
 			break
 		}
 	}
 
-	for i := len(s.AllMessages()) - 1; i >= 0; i-- {
-		if s.AllMessages()[i].Role == agent.RoleUser {
-			b.WriteString(fmt.Sprintf("Last message: %s\n", agent.Truncate(s.AllMessages()[i].Content, 200)))
+	for i := len(s.Messages()) - 1; i >= 0; i-- {
+		if s.Messages()[i].Role == agent.RoleUser {
+			b.WriteString(fmt.Sprintf("Last message: %s\n", agent.Truncate(s.Messages()[i].Content, 200)))
 			break
 		}
 	}
@@ -699,7 +699,11 @@ func SessionAskQuestion(sm *agent.SessionManager, conv *agent.Conversation) agen
 // buildAskQuestionMessages builds a message list from a session's history
 // with tool calls stripped, then appends the question as a user message.
 func buildAskQuestionMessages(session agent.SessionHistory, question string) []agent.Message {
-	msgs := agent.StripToolCalls(session.History(), false)
+	msgs := session.Messages()
+	if sp := session.SystemPrompt(); sp != "" {
+		msgs = append([]agent.Message{{Role: agent.RoleSystem, Content: sp}}, msgs...)
+	}
+	msgs = agent.StripToolCalls(msgs, false)
 
 	msgs = append(msgs, agent.Message{
 		Role:    agent.RoleUser,
