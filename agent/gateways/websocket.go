@@ -310,5 +310,11 @@ func (w *wsSyncWriter) ConnKey() string {
 	return fmt.Sprintf("ws:%p", w.conn)
 }
 
+// HandleWSConnection exposes the WebSocket handling logic for reuse by
+// other components (e.g. the embedded webfront server on a shared port).
+func (gw *WebSocketGateway) HandleWSConnection(w http.ResponseWriter, r *http.Request) {
+	gw.handle(w, r)
+}
+
 var _ Gateway = (*WebSocketGateway)(nil)
 

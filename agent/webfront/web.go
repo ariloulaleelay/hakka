@@ -1,0 +1,119 @@
+// Package webfront provides an embedded HTTP server that serves the
+// hakka-webfront SPA (built from ../hakka-webfront) alongside a WebSocket
+// endpoint (/ws) on the same port. This makes hakka a self-contained
+// server+client: a single binary, a single port, no external dependencies.
+//
+// The webfront-dist directory is copied from externa hakka-webfront
+//
+// This is done automatically by the Makefile before `go build`.
+package webfront
+
+import (
+	"context"
+	"embed"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"net"
+	"net/http"
+	"path"
+	"strings"
+	"time"
+
+	"github.com/ariloulaleelay/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent/commands"
+	"github.com/ariloulaleelay/hakka/agent/gateways"
+)
+
+//go:embed webfront-dist/*
+var embeddedFiles embed.FS
+
+// webfrontFileSystem adapts embed.FS to http.FileSystem, rewriting paths
+// to strip the "webfront-dist" prefix added by //go:embed.
+type webfrontFileSystem struct {
+	inner embed.FS
+}
+
+func (w webfrontFileSystem) Open(name string) (fs.File, error) {
+	name = strings.TrimPrefix(name, "/")
+	name = path.Join("webfront-dist", name)
+	return w.inner.Open(name)
+}
+
+// Gateway serves the hakka-webfront SPA and a WebSocket endpoint on a
+// single HTTP port. It implements gateways.Gateway.
+type Gateway struct {
+	addr    string
+	handler *gateways.TurnHandler
+	server  *http.Server
+}
+
+// New creates a Gateway. If addr is empty, Start is a no-op (disabled).
+// The turnHandler is shared with the standalone WebSocket gateway so
+// sessions and turn tracking are consistent across all transports.
+func New(addr string, conv *agent.Conversation, streamer *agent.StreamSession, cmd *commands.CommandProcessor) *Gateway {
+	ns := conv.Namespace()
+	if ns == "" {
+		ns = "default"
+	}
+	return &Gateway{
+		addr:    addr,
+		handler: gateways.NewTurnHandler(conv, streamer, cmd, ns),
+	}
+}
+
+func (gw *Gateway) Start(ctx context.Context) error {
+	if gw.addr == "" {
+		return nil
+	}
+
+	mux := http.NewServeMux()
+
+	// WebSocket endpoint — reuse the same handler logic as the
+	// standalone WebSocketGateway.
+	wsGw := &gateways.WebSocketGateway{
+		Handler: gw.handler,
+		Addr:    gw.addr,
+	}
+	mux.HandleFunc("/ws", wsGw.HandleWSConnection)
+
+	// Static SPA — serve embedded webfront files.
+	fsys := webfrontFileSystem{inner: embeddedFiles}
+	fileServer := http.FileServer(http.FS(fsys))
+	mux.Handle("/", fileServer)
+
+	gw.server = &http.Server{
+		Addr:              gw.addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	listener, err := net.Listen("tcp", gw.addr)
+	if err != nil {
+		return fmt.Errorf("webfront listen %s: %w", gw.addr, err)
+	}
+
+	go func() {
+		if err := gw.server.Serve(listener); err != nil {
+			slog.Error("webfront server error", "addr", gw.addr, "err", err)
+		}
+	}()
+
+	slog.Info("webfront serving SPA + WebSocket", "addr", gw.addr)
+	return nil
+}
+
+func (gw *Gateway) Stop(ctx context.Context) error {
+	if gw.server == nil {
+		return nil
+	}
+	return gw.server.Shutdown(ctx)
+}
+
+// Ensure Gateway implements gateways.Gateway.
+var _ gateways.Gateway = (*Gateway)(nil)
+
+func acceptsHTML(r *http.Request) bool {
+	accept := r.Header.Get("Accept")
+	return strings.Contains(accept, "text/html") || strings.Contains(accept, "*/*")
+}

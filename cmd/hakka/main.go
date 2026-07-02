@@ -18,6 +18,7 @@ import (
 	"github.com/ariloulaleelay/hakka/agent/event"
 	"github.com/ariloulaleelay/hakka/agent/gateways"
 	"github.com/ariloulaleelay/hakka/agent/mcp"
+	"github.com/ariloulaleelay/hakka/agent/webfront"
 	sqlitestore "github.com/ariloulaleelay/hakka/agent/stores/sqlite"
 	hakkatools "github.com/ariloulaleelay/hakka/agent/tools"
 	"github.com/ariloulaleelay/hakka/batch"
@@ -26,6 +27,7 @@ import (
 type appConfig struct {
 	configPath        string
 	wsAddr            string
+	webAddr           string
 	dbPath            string
 	logLevel          string
 	llmDebug          string // directory for LLM request/response debug logs; empty = disabled
@@ -42,6 +44,7 @@ func main() {
 	var cfg appConfig
 	flag.StringVar(&cfg.configPath, "config", "hakka.json", "Path to model config JSON")
 	flag.StringVar(&cfg.wsAddr, "ws-addr", ":8765", "WebSocket gateway bind address")
+	flag.StringVar(&cfg.webAddr, "web-addr", "", "Web frontend HTTP server address (e.g. :8080). Serves SPA + WebSocket on the same port. Empty = disabled")
 	flag.StringVar(&cfg.dbPath, "db", "", "Optional SQLite session DB path (default: in-memory)")
 	flag.StringVar(&cfg.logLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	flag.StringVar(&cfg.llmDebug, "llm-debug", "", "Directory for LLM request/response debug logs (empty = disabled)")
@@ -219,7 +222,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 		Tools:        tools,
 		SystemPrompt: systemPrompt,
 		EngineCfg:    engineCfg,
-	}, cfg.wsAddr, cfg.telegramToken, cfg.telegramWhitelist, cfg.telegramSOCKS5)
+	}, cfg.wsAddr, cfg.webAddr, cfg.telegramToken, cfg.telegramWhitelist, cfg.telegramSOCKS5)
 	if err != nil {
 		return fmt.Errorf("build gateways: %w", err)
 	}
@@ -227,7 +230,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	if err := startGateways(ctx, gws); err != nil {
 		return fmt.Errorf("gateway start failed: %w", err)
 	}
-	logger.Info("hakka up", "ws", cfg.wsAddr)
+	logger.Info("hakka up", "ws", cfg.wsAddr, "web", cfg.webAddr)
 
 	<-ctx.Done()
 	logger.Info("shutting down")
@@ -278,7 +281,7 @@ type gatewayParams struct {
 	EngineCfg    agent.EngineConfig
 }
 
-func buildGateways(p gatewayParams, wsAddr, telegramToken, telegramWhitelist, telegramSOCKS5 string) ([]gateways.Gateway, error) {
+func buildGateways(p gatewayParams, wsAddr, webAddr, telegramToken, telegramWhitelist, telegramSOCKS5 string) ([]gateways.Gateway, error) {
 	tools := p.Tools
 	if tools == nil {
 		tools = agent.NewToolRegistry()
@@ -307,6 +310,10 @@ func buildGateways(p gatewayParams, wsAddr, telegramToken, telegramWhitelist, te
 	if tgGw != nil {
 		gws = append(gws, tgGw)
 	}
+	if webAddr != "" {
+		wfGw := buildWebFrontGateway(p, webAddr)
+		gws = append(gws, wfGw)
+	}
 	return gws, nil
 }
 
@@ -319,6 +326,20 @@ func buildWebSocketGateway(p gatewayParams, tools *agent.ToolRegistry, clientDec
 	cmd := commands.New(p.Sessions, conv, p.SystemPrompt, "ws")
 	cmd.SetTools(tools)
 	return gateways.NewWebSocketGateway(conv, streamer, cmd, addr)
+}
+
+// buildWebFrontGateway creates a webfront Gateway that serves the embedded
+// SPA and a WebSocket endpoint on the same HTTP port. It shares the same
+// engine components (conversation, streamer, command processor) as the
+// standalone WebSocket gateway so sessions are consistent.
+func buildWebFrontGateway(p gatewayParams, addr string) *webfront.Gateway {
+	conv := agent.NewConversation(p.Sessions, p.Router, p.Tools, "ws", p.EngineCfg)
+	clientDecorator := agent.EngineChannelClientDecorator()
+	conv.SetToolContext(clientDecorator)
+	streamer := agent.NewStreamSession(conv, "ws")
+	cmd := commands.New(p.Sessions, conv, p.SystemPrompt, "ws")
+	cmd.SetTools(p.Tools)
+	return webfront.New(addr, conv, streamer, cmd)
 }
 
 // buildTelegramGateway wires the Telegram gateway with a restricted

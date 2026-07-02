@@ -20,6 +20,7 @@
 - **Rich Tool System** — Built-in file, shell, search, HTTP, session management, and MCP server tools. Enable/disable per-session.
 - **Runtime Model Switching** — Change the active model per-session with slash commands — no restart needed.
 - **Zero CGO** — Pure Go SQLite, easy cross-compilation.
+- **Self-Contained with Web UI** — Embedded SPA served alongside the WebSocket endpoint on a single port (`--web-addr`). One binary, one port, no external dependencies.
 - **Batch Mode** — Run autonomous tasks without starting servers, ideal for scripting and CI/CD integration.
 
 ---
@@ -74,6 +75,38 @@ export DEEPSEEK_API_KEY="sk-your-key-here"
 ./bin/hakka --config hakka.example.json --db ~/.hakka.db
 ```
 
+### Self-Contained Mode (with Web UI)
+
+The hakka binary can embed the hakka-webfront SPA and serve both the web
+interface and the WebSocket endpoint on a single port:
+
+```sh
+# Build with embedded web frontend
+make build
+
+# Start with web UI on port 8080
+./hakka --config hakka.json --web-addr :8080
+
+# Or standalone web-only mode (no separate WS port)
+./hakka --config hakka.json --web-addr :8080 --ws-addr ""
+```
+
+Then open http://localhost:8080 in your browser. The SPA connects to the
+WebSocket endpoint automatically — no port configuration needed.
+
+**One-time setup for the embedded web frontend:**
+
+The web frontend is built separately from [hakka-webfront](https://github.com/ariloulaleelay/hakka-webfront).
+Clone it alongside hakka-server and run:
+
+```sh
+cd hakka-webfront
+npm install && npm run build
+
+cd ../hakka-server
+make build   # automatically copies the built files
+```
+
 ### Chat via WebSocket
 
 ```sh
@@ -91,6 +124,7 @@ websocat ws://127.0.0.1:8765/ws
 |------|---------|-------------|
 | `--config` | `hakka.json` | Model registry configuration file |
 | `--ws-addr` | `:8765` | WebSocket gateway bind address |
+| `--web-addr` | *(disabled)* | Self-contained HTTP server address (e.g. `:8080`). Serves the hakka-webfront SPA and a WebSocket endpoint on the same port. Empty = disabled |
 | `--db` | *(in-memory)* | SQLite database file path |
 | `--log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `--run` | — | **Batch mode**: run a single autonomous task (no servers started) |
