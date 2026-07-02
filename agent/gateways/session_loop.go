@@ -134,12 +134,53 @@ func messagesToMap(msgs []agent.Message) []map[string]any {
 	if len(msgs) == 0 {
 		return nil
 	}
+	// Build an index of tool call ID → (arguments, snippet) from all
+	// assistant messages, so tool messages can include args/snippet
+	// even though the tool message itself doesn't store them.
+	type callInfo struct {
+		args    string
+		snippet string
+	}
+	toolCallInfo := make(map[string]callInfo, len(msgs))
+	for _, m := range msgs {
+		if m.Role == agent.RoleAssistant {
+			for _, tc := range m.ToolCalls {
+				toolCallInfo[tc.ID] = callInfo{args: tc.Arguments, snippet: tc.ExecSnippet}
+			}
+		}
+	}
+
 	result := make([]map[string]any, len(msgs))
 	for i, m := range msgs {
-		result[i] = map[string]any{
+		entry := map[string]any{
 			"role":    string(m.Role),
 			"content": m.Content,
 		}
+		if m.Role == agent.RoleTool {
+			if m.Name != "" {
+				entry["name"] = m.Name
+			}
+			status := "ok"
+			if strings.HasPrefix(m.Content, "Error: ") {
+				status = "err"
+				entry["error"] = strings.TrimPrefix(m.Content, "Error: ")
+			}
+			entry["status"] = status
+
+			// Include args and snippet from the matching assistant tool call.
+			if info, ok := toolCallInfo[m.ToolCallID]; ok {
+				if info.args != "" {
+					var parsed any
+					if err := json.Unmarshal([]byte(info.args), &parsed); err == nil {
+						entry["args"] = parsed
+					}
+				}
+				if info.snippet != "" {
+					entry["snippet"] = info.snippet
+				}
+			}
+		}
+		result[i] = entry
 	}
 	return result
 }

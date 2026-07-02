@@ -679,3 +679,81 @@ func TestGetSessionEvents(t *testing.T) {
 		t.Fatalf("expected 5 messages, got %d", len(resp.Messages))
 	}
 }
+
+// TestMessagesToMapToolArgsAndSnippet verifies that tool messages in the
+// get_session response include "args" and "snippet" fields derived from
+// the matching assistant tool call. This allows clients to render
+// compact human-readable tool summaries without raw JSON.
+func TestMessagesToMapToolArgsAndSnippet(t *testing.T) {
+	msgs := []agent.Message{
+		{Role: "user", Content: "hello"},
+		{
+			Role:    "assistant",
+			Content: "Let me check...",
+			ToolCalls: []agent.ToolCall{
+				{ID: "call_1", Name: "read_file", Arguments: `{"path":"foo.go","offset":10,"limit":40}`, ExecSnippet: "foo.go"},
+				{ID: "call_2", Name: "shell", Arguments: `{"cmd":"go build"}`, ExecSnippet: "go build"},
+				{ID: "call_3", Name: "search", Arguments: `{"pattern":"TODO","path":"./..."}`, ExecSnippet: `"TODO" in ./...`},
+				{ID: "call_4", Name: "edit_file", Arguments: `{"path":"bar.go","old":"x","new":"yy"}`, ExecSnippet: "bar.go -1+1"},
+			},
+		},
+		{Role: "tool", Content: "file contents...", ToolCallID: "call_1", Name: "read_file"},
+		{Role: "tool", Content: "ok", ToolCallID: "call_2", Name: "shell"},
+		{Role: "tool", Content: "3 matches", ToolCallID: "call_3", Name: "search"},
+		{Role: "tool", Content: "Error: pattern not found", ToolCallID: "call_4", Name: "edit_file"},
+	}
+
+	result := messagesToMap(msgs)
+	if len(result) != 6 {
+		t.Fatalf("expected 6 messages, got %d", len(result))
+	}
+
+	// Tool for call_1 (read_file)
+	tool1 := result[2]
+	if v, ok := tool1["snippet"]; !ok || v != "foo.go" {
+		t.Errorf("tool[read_file].snippet: want 'foo.go', got %v", tool1["snippet"])
+	}
+	if tool1["args"] == nil {
+		t.Error("tool[read_file].args should not be nil")
+	}
+	if args, ok := tool1["args"].(map[string]any); ok {
+		if v, _ := args["path"].(string); v != "foo.go" {
+			t.Errorf("tool[read_file].args.path: want 'foo.go', got %q", v)
+		}
+	}
+
+	// Tool for call_2 (shell)
+	tool2 := result[3]
+	if v, ok := tool2["snippet"]; !ok || v != "go build" {
+		t.Errorf("tool[shell].snippet: want 'go build', got %v", tool2["snippet"])
+	}
+	if tool2["status"] != "ok" {
+		t.Errorf("tool[shell].status: want 'ok', got %v", tool2["status"])
+	}
+
+	// Tool for call_3 (search)
+	tool3 := result[4]
+	if v, ok := tool3["snippet"]; !ok || v != `"TODO" in ./...` {
+		t.Errorf("tool[search].snippet: want '\"TODO\" in ./...', got %v", tool3["snippet"])
+	}
+
+	// Tool for call_4 (edit_file, error)
+	tool4 := result[5]
+	if v, ok := tool4["snippet"]; !ok || v != "bar.go -1+1" {
+		t.Errorf("tool[edit_file].snippet: want 'bar.go -1+1', got %v", tool4["snippet"])
+	}
+	if tool4["status"] != "err" {
+		t.Errorf("tool[edit_file].status: want 'err', got %v", tool4["status"])
+	}
+	if v, ok := tool4["error"]; !ok || v != "pattern not found" {
+		t.Errorf("tool[edit_file].error: want 'pattern not found', got %v", tool4["error"])
+	}
+
+	// User message should not have snippet/args.
+	if _, exists := result[0]["snippet"]; exists {
+		t.Error("user message should not have snippet field")
+	}
+	if _, exists := result[0]["args"]; exists {
+		t.Error("user message should not have args field")
+	}
+}
