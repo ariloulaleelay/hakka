@@ -5,7 +5,7 @@
 [![Build Status](https://img.shields.io/github/actions/workflow/status/ariloulaleelay/hakka/ci.yml?branch=main&logo=github)](https://github.com/ariloulaleelay/hakka/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Hakka** is a minimal, modular, extensible LLM agent core framework written in Go. It provides an orchestration engine that drives the LLM ↔ tool iteration loop, with pluggable model providers, persistent sessions, and transport-agnostic gateways (WebSocket, Telegram). It ships with a first-class [Neovim plugin](nvim/hakka.nvim) that turns Neovim into an interactive agent IDE.
+**Hakka** is a minimal, modular, extensible LLM agent core framework written in Go. It provides an orchestration engine that drives the LLM ↔ tool iteration loop, with pluggable model providers, persistent sessions, and transport-agnostic gateways (WebSocket, Telegram). It pairs with a dedicated [hakka.nvim](https://github.com/ariloulaleelay/hakka.nvim) plugin that turns Neovim into an interactive agent IDE.
 
 ---
 
@@ -14,7 +14,7 @@
 - **Pluggable Architecture** — Every component (LLM provider, persistence, tool, transport) is a Go interface. Swap or extend without touching core logic.
 - **Concurrent Tool Execution** — Tools run in parallel when independent, speeding up complex workflows.
 - **Transport Agnostic** — WebSocket, Telegram — the engine is fully isolated from how users connect.
-- **Neovim Integration** — First-class plugin turns Neovim into an interactive agent IDE with status bars, session fetching, and buffer inspection.
+- **Neovim Integration** — Dedicated [hakka.nvim](https://github.com/ariloulaleelay/hakka.nvim) plugin turns Neovim into an interactive agent IDE with status bars, session fetching, and buffer inspection.
 - **Persistent Sessions** — SQLite-backed (CGO-free via `modernc.org/sqlite`) or in-memory store with session history, token tracking, LLM latency measurement, and metadata.
 - **Cooperative Streaming** — Stream tokens by default; transparently falls back to tool loop when the model requests tools mid-stream.
 - **Rich Tool System** — Built-in file, shell, search, HTTP, session management, and MCP server tools. Enable/disable per-session.
@@ -74,7 +74,7 @@ export DEEPSEEK_API_KEY="sk-your-key-here"
 ./bin/hakka --config hakka.example.json --db ~/.hakka.db
 ```
 
-### Chat via WebSocket (used by Neovim plugin)
+### Chat via WebSocket
 
 ```sh
 websocat ws://127.0.0.1:8765/ws
@@ -356,24 +356,9 @@ See `protocol.md` or `AGENT.md` for the full protocol specification.
 
 ## Neovim Integration
 
-Hakka ships with a built-in Neovim plugin at [`nvim/hakka.nvim`](nvim/hakka.nvim).
+Hakka connects to Neovim through the dedicated [hakka.nvim](https://github.com/ariloulaleelay/hakka.nvim) plugin.
 It connects to the hakka WebSocket gateway using a pure-Lua WebSocket client
 built on libuv (`ws://127.0.0.1:8765/ws` by default).
-
-### Installation
-
-Using [lazy.nvim](https://github.com/folke/lazy.nvim):
-
-```lua
-{
-  dir = "/path/to/hakka/nvim",
-  config = function()
-    require("hakka").setup({
-      addr = "ws://127.0.0.1:8765/ws",
-    })
-  end,
-}
-```
 
 ### Features
 
@@ -405,9 +390,6 @@ make test
 
 # With coverage
 make cover
-
-# Run Neovim plugin tests
-cd nvim && nvim --headless -c "lua dofile('tests/run.lua')" 2>&1
 ```
 
 The project follows strong TDD conventions.

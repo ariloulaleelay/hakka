@@ -8,9 +8,6 @@ build:
 
 test:
 	go test ./...
-	@echo ""
-	@echo "--- nvim/lua tests ---"
-	@cd nvim && nvim --headless -c "lua dofile('tests/run.lua')" 2>&1
 
 cover:
 	go test -cover ./...

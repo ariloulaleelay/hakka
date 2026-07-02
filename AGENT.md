@@ -5,7 +5,7 @@
 
 ## Project Description
 
-Hakka is a **minimal, modular, extensible LLM agent core framework** written in Go. It provides an orchestration engine that drives the LLM ↔ tool iteration loop, with pluggable model providers, persistent sessions, and transport-agnostic gateways (WebSocket, Telegram). It ships with a first-class Neovim plugin (`nvim/hakka.nvim`) that turns Neovim into an interactive agent IDE.
+Hakka is a **minimal, modular, extensible LLM agent core framework** written in Go. It provides an orchestration engine that drives the LLM ↔ tool iteration loop, with pluggable model providers, persistent sessions, and transport-agnostic gateways (WebSocket, Telegram). It pairs with a dedicated [hakka.nvim](https://github.com/ariloulaleelay/hakka.nvim) plugin that turns Neovim into an interactive agent IDE.
 
 **Key design principles:**
 

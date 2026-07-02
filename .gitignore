@@ -1,6 +1,9 @@
-bin/
 logs/
 **/logs/
-./hakka
 hakka.db
+hakka.db-shm
+hakka.db-wal
 hakka.json
+
+/hakka
+/prompts.md
