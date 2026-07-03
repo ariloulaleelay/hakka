@@ -80,7 +80,7 @@ func parseScript(content string) (steps []ScriptStep, isArray bool, err error) {
 	// Try parsing as single object.
 	var step ScriptStep
 	if err := json.Unmarshal([]byte(content), &step); err != nil {
-		return nil, false, fmt.Errorf("mock: invalid script JSON: %v", err)
+		return nil, false, fmt.Errorf("mock: invalid script JSON: %w", err)
 	}
 
 	// Validate: at least one field must be set.

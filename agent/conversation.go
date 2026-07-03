@@ -361,6 +361,15 @@ type errMsg struct{ msg string }
 
 func (e *errMsg) Error() string { return e.msg }
 
+// Is enables errors.Is to match errMsg sentinels by message content.
+func (e *errMsg) Is(target error) bool {
+	t, ok := target.(*errMsg)
+	if !ok {
+		return false
+	}
+	return e.msg == t.msg
+}
+
 // finishTurn persists the session.
 func (conv *Conversation) finishTurn(ctx context.Context, session SessionView) error {
 	return conv.sessions.Save(ctx, conv.resolveNamespace(ctx), session)

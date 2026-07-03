@@ -77,7 +77,7 @@ func RegisterMockTools(reg *agent.ToolRegistry) {
 				Message string `json:"message"`
 			}
 			if err := json.Unmarshal(raw, &args); err != nil {
-				return "", fmt.Errorf("fail_tool: invalid args: %v", err)
+				return "", fmt.Errorf("fail_tool: invalid args: %w", err)
 			}
 			return "", fmt.Errorf("fail_tool: %s", args.Message)
 		},
