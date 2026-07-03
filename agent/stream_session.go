@@ -55,7 +55,8 @@ func (ss *StreamSession) Execute(ctx context.Context, sessionID, userInput strin
 		return nil, err
 	}
 	if userInput != "" {
-		session.Append(Message{Role: RoleUser, Content: userInput})
+		session.SetStreaming(true)
+		session.Append(Message{Role: RoleUser, Content: userInput, Timestamp: nowMillis()})
 		if err := ss.conv.sessions.Save(ctx, ss.Namespace, session); err != nil {
 			return nil, err
 		}
@@ -88,6 +89,7 @@ func (ss *StreamSession) streamStep(session SessionView) stepFunc {
 		var textBuf strings.Builder
 		var toolCalls []ToolCall
 		var usage *Usage
+		var finishReason string
 
 		for result := range resultCh {
 			switch {
@@ -105,9 +107,15 @@ func (ss *StreamSession) streamStep(session SessionView) stepFunc {
 			case len(result.ToolCalls) > 0:
 				toolCalls = append(toolCalls, result.ToolCalls...)
 				usage = result.Usage
+				if result.FinishReason != "" {
+					finishReason = result.FinishReason
+				}
 
 			case result.Done:
 				usage = result.Usage
+				if result.FinishReason != "" {
+					finishReason = result.FinishReason
+				}
 			}
 		}
 
@@ -116,9 +124,10 @@ func (ss *StreamSession) streamStep(session SessionView) stepFunc {
 		}
 
 		return &llmStepResult{
-			content:   textBuf.String(),
-			toolCalls: toolCalls,
-			usage:     usage,
+			content:      textBuf.String(),
+			toolCalls:    toolCalls,
+			usage:        usage,
+			finishReason: finishReason,
 		}, nil
 	}
 }

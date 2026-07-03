@@ -41,6 +41,7 @@ func Open(path string) (*Store, error) {
 	runMigration(db, `ALTER TABLE sessions ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`)
 	runMigration(db, `ALTER TABLE sessions ADD COLUMN estimated_context_tokens INTEGER NOT NULL DEFAULT 0`)
 	runMigration(db, `ALTER TABLE sessions ADD COLUMN total_cost REAL NOT NULL DEFAULT 0`)
+	runMigration(db, `ALTER TABLE sessions ADD COLUMN active_skills TEXT NOT NULL DEFAULT '[]'`)
 	return &Store{db: db}, nil
 }
 
@@ -76,6 +77,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	compact_soft_limit INTEGER NOT NULL DEFAULT 200000,
 	estimated_context_tokens INTEGER NOT NULL DEFAULT 0,
 	total_cost    REAL NOT NULL DEFAULT 0,
+	active_skills TEXT NOT NULL DEFAULT '[]',
 	PRIMARY KEY (namespace, id)
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);
@@ -95,13 +97,14 @@ func scanRow(scanner interface{ Scan(dest ...any) error }) (*agent.Session, erro
 		blockedStr            string
 		compactSoftLim        int
 		estimatedContextTokens int
+		activeSkillsStr       string
 	)
 	err := scanner.Scan(
 		&data.Namespace, &data.ID, &data.SystemPrompt,
 		&messagesJSON, &createdText, &updatedText,
 		&data.ClientCWD, &modelStr, &totalTokens,
 		&data.Name, &enabledStr, &blockedStr, &compactSoftLim,
-		&estimatedContextTokens, &totalCost,
+		&estimatedContextTokens, &totalCost, &activeSkillsStr,
 	)
 	if err != nil {
 		return nil, err
@@ -117,6 +120,11 @@ func scanRow(scanner interface{ Scan(dest ...any) error }) (*agent.Session, erro
 	if blockedStr != "" {
 		if err := json.Unmarshal([]byte(blockedStr), &data.BlockedTools); err != nil {
 			data.BlockedTools = nil
+		}
+	}
+	if activeSkillsStr != "" && activeSkillsStr != "[]" {
+		if err := json.Unmarshal([]byte(activeSkillsStr), &data.ActiveSkills); err != nil {
+			data.ActiveSkills = nil
 		}
 	}
 	data.Model = modelStr
@@ -137,7 +145,7 @@ func scanRow(scanner interface{ Scan(dest ...any) error }) (*agent.Session, erro
 
 func (st *Store) Get(ctx context.Context, namespace, id string) (*agent.Session, bool, error) {
 	row := st.db.QueryRowContext(ctx,
-		`SELECT namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost FROM sessions WHERE namespace = ? AND id = ?`, namespace, id)
+		`SELECT namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills FROM sessions WHERE namespace = ? AND id = ?`, namespace, id)
 
 	session, err := scanRow(row)
 	if err == sql.ErrNoRows {
@@ -191,9 +199,20 @@ func (st *Store) Put(ctx context.Context, namespace string, session *agent.Sessi
 		}
 	}
 
+	activeSkillsJSON := "[]"
+	if len(data.ActiveSkills) > 0 {
+		b, err := json.Marshal(data.ActiveSkills)
+		if err != nil {
+			slog.Error("sqlite: failed to marshal active_skills, saving with empty config",
+				"session", data.ID, "error", err)
+		} else {
+			activeSkillsJSON = string(b)
+		}
+	}
+
 	_, err = st.db.ExecContext(ctx, `
-		INSERT INTO sessions (namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(namespace, id) DO UPDATE SET
 			system_prompt = excluded.system_prompt,
 			messages      = excluded.messages,
@@ -206,10 +225,11 @@ func (st *Store) Put(ctx context.Context, namespace string, session *agent.Sessi
 			blocked_tools = excluded.blocked_tools,
 			compact_soft_limit = excluded.compact_soft_limit,
 			estimated_context_tokens = excluded.estimated_context_tokens,
-			total_cost    = excluded.total_cost
+			total_cost    = excluded.total_cost,
+			active_skills = excluded.active_skills
 	`, namespace, data.ID, data.SystemPrompt, string(messagesJSON), string(createdText), string(updatedText),
 		data.ClientCWD, data.Model, data.TotalTokens, data.Name, enabledJSON, blockedJSON, data.CompactSoftLimit,
-		data.EstimatedContextTokens, data.TotalCost)
+		data.EstimatedContextTokens, data.TotalCost, activeSkillsJSON)
 
 	session.Update(func(d *agent.SessionData) {
 		d.Namespace = namespace
@@ -224,7 +244,7 @@ func (st *Store) Delete(ctx context.Context, namespace, id string) error {
 }
 
 func (st *Store) List(ctx context.Context, namespace string) ([]*agent.Session, error) {
-	rows, err := st.db.QueryContext(ctx, `SELECT namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost FROM sessions WHERE namespace = ? ORDER BY updated_at DESC`, namespace)
+	rows, err := st.db.QueryContext(ctx, `SELECT namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills FROM sessions WHERE namespace = ? ORDER BY updated_at DESC`, namespace)
 	if err != nil {
 		return nil, err
 	}

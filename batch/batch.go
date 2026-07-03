@@ -34,6 +34,7 @@ type RunBatchParams struct {
 	CompactSoftLimit int                 // 0 = use engine config default
 	Logger           *slog.Logger        // optional; defaults to slog.Default()
 	Store            agent.SessionStore  // optional; defaults to in-memory store
+	Skills           *agent.SkillRegistry // optional; skill registry for skill tools and context injection
 }
 
 // ResolveToolsByTagOrName resolves a list of tool/tag references to a
@@ -126,10 +127,18 @@ func RunBatchWithOutput(ctx context.Context, p RunBatchParams, output io.Writer,
 		hakkatools.RegisterSessionTools(tools, sessions, nil)
 	}
 
+	// Set up skill registry
+	skills := p.Skills
+	if skills == nil {
+		skills = agent.NewSkillRegistry()
+	}
+	hakkatools.RegisterSkillTools(tools, skills)
+
 	cfg := agent.DefaultEngineConfig()
 	cfg.Logger = logger
 
 	conv := agent.NewConversation(sessions, router, tools, "batch", cfg)
+	conv.SetSkills(skills)
 
 	// Resolve tool names/tags and enable them on the session.
 	resolved := ResolveToolsByTagOrName(tools, p.EnableTools)

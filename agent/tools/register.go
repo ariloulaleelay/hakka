@@ -70,3 +70,15 @@ func RegisterSessionTools(r *agent.ToolRegistry, sm *agent.SessionManager, conv 
 func RegisterToolManagementTools(r *agent.ToolRegistry) {
 	r.Register(ShowTool(r))
 }
+
+// RegisterSkillTools registers skill-management tools on the given registry.
+// These tools let the LLM discover, inspect, load, unload, and import skills.
+//
+// The sr parameter is the SkillRegistry that holds the available skills.
+func RegisterSkillTools(r *agent.ToolRegistry, sr *agent.SkillRegistry) {
+	r.Register(SearchSkills(sr))
+	r.Register(InspectSkill(sr))
+	r.Register(LoadSkill(sr))
+	r.Register(UnloadSkill(sr))
+	r.Register(ImportSkill(sr))
+}

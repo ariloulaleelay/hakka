@@ -18,12 +18,14 @@ var envVarRe = regexp.MustCompile(`\$\{env:\s*(\w+)\s*\}`)
 
 // ModelConfig describes a single named LLM endpoint.
 type ModelConfig struct {
-	Dialect string            `json:"dialect"`           // openai | anthropic | gemini
-	BaseURL string            `json:"base_url"`          // provider base URL
-	Model   string            `json:"model"`             // provider model id
-	Headers map[string]string `json:"headers,omitempty"` // extra HTTP headers
-	Extra   map[string]any    `json:"extra,omitempty"`   // provider-specific knobs (anthropic_version, max_tokens, ...)
-	Pricing *agent.Pricing    `json:"pricing,omitempty"` // per-token pricing for cost calculation when provider doesn't return cost
+	Dialect          string            `json:"dialect"`                     // openai | anthropic | gemini
+	BaseURL          string            `json:"base_url"`                    // provider base URL
+	Model            string            `json:"model"`                       // provider model id
+	Headers          map[string]string `json:"headers,omitempty"`           // extra HTTP headers
+	Extra            map[string]any    `json:"extra,omitempty"`             // provider-specific knobs (anthropic_version, max_tokens, ...)
+	Pricing          *agent.Pricing    `json:"pricing,omitempty"`           // per-token pricing for cost calculation when provider doesn't return cost
+	CompactSoftLimit int               `json:"compact_soft_limit,omitempty"` // per-provider compact soft limit (0 = use engine default)
+	Hacks            agent.Hacks       `json:"hacks,omitempty"`             // per-provider workarounds
 }
 
 // File is the on-disk shape of the configuration.
@@ -226,6 +228,14 @@ func BuildRegistry(cfgFile *File, llmDebugDir string) (*agent.Registry, error) {
 			return nil, err
 		}
 		reg.Register(name, adapter)
+		// Propagate compact_soft_limit to the model profile
+		if modelCfg.CompactSoftLimit > 0 {
+			reg.SetProfileCompactSoftLimit(name, modelCfg.CompactSoftLimit)
+		}
+		// Propagate hacks to the model profile
+		if modelCfg.Hacks.IgnoreStopIfNoContent != nil {
+			reg.SetProfileHacks(name, modelCfg.Hacks)
+		}
 	}
 	if err := reg.SetDefault(cfgFile.Default); err != nil {
 		return nil, err
@@ -250,6 +260,7 @@ func buildAdapter(name string, modelCfg ModelConfig, client *http.Client, llmDeb
 		return adapter, nil
 	case "anthropic":
 		adapter := adapters.NewAnthropicAdapter(client, modelCfg.BaseURL, modelCfg.Model)
+		adapter.LLMDebugDir = llmDebugDir
 		if version, ok := modelCfg.Extra["anthropic_version"].(string); ok && version != "" {
 			adapter.Version = version
 		}
@@ -262,6 +273,7 @@ func buildAdapter(name string, modelCfg ModelConfig, client *http.Client, llmDeb
 		return adapter, nil
 	case "gemini", "google":
 		adapter := adapters.NewGeminiAdapter(client, modelCfg.BaseURL, modelCfg.Model)
+		adapter.LLMDebugDir = llmDebugDir
 		if modelCfg.Pricing != nil {
 			adapter.Pricing = *modelCfg.Pricing
 		}

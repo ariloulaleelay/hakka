@@ -38,12 +38,24 @@ type OpenAIAdapter struct {
 }
 
 // ---------------------------------------------------------------------------
-// Extra body injection via a custom RoundTripper
+// instrumentedTransport — HTTP middleware that observes and optionally
+// modifies outgoing LLM API requests.
 //
-// The extraRoundTripper wraps the HTTP transport used by the go-openai client.
-// It intercepts every outgoing request, reads the JSON body, merges extra
-// fields (static + per-request), resolves placeholders, and forwards.
-// It also intercepts the response to extract usage.cost when available.
+// It wraps the HTTP transport used by the go-openai client, providing:
+//   - Debug dump: when debugDir is set, the final wire request body is
+//     written to a JSON file for inspection.
+//   - Extra injection: when extra fields are configured (static + per-request),
+//     they are merged into the JSON request body before forwarding.
+//   - Placeholder resolution: "$session_id" in string extra values is
+//     replaced with the actual session ID at request time.
+//   - Response usage capture: cost, prompt_cache_hit_tokens, and
+//     prompt_cache_miss_tokens are extracted from streaming and non-streaming
+//     responses for cost calculation.
+//
+// Unlike the old extraRoundTripper, instrumentedTransport always dumps the
+// request body when debugDir is non-empty, regardless of whether extra fields
+// are configured. This ensures --llm-debug works for all models, not just
+// those with extra body fields.
 // ---------------------------------------------------------------------------
 
 type ctxKey string
@@ -61,10 +73,11 @@ func ContextWithCapturedUsage(ctx context.Context, ptr *RawUsage) context.Contex
 	return context.WithValue(ctx, ctxCapturedUsage, ptr)
 }
 
-// extraRoundTripper wraps an http.RoundTripper and injects extra fields
+// instrumentedTransport wraps an http.RoundTripper and injects extra fields
 // into the JSON request body before forwarding. It also captures cost
-// from response bodies.
-type extraRoundTripper struct {
+// from response bodies and dumps request/response payloads when debugDir
+// is configured.
+type instrumentedTransport struct {
 	base       http.RoundTripper
 	extra      map[string]any // static extras from config (may contain placeholders)
 	debugDir   string         // when non-empty, dump final wire body here
@@ -120,36 +133,44 @@ func (b *usageCaptureBody) Read(p []byte) (int, error) {
 // RoundTrip intercepts the request, merges extras into the body, and forwards.
 // For non-streaming responses, it reads the full body to extract cost.
 // For streaming responses, it wraps the body to capture cost from SSE events.
-func (t *extraRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t *instrumentedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	perReqExtra, _ := req.Context().Value(ctxExtraPerReq).(map[string]any)
 	sessionID, _ := req.Context().Value(ctxSessionID).(string)
 
 	merged := mergeExtra(t.extra, perReqExtra, sessionID)
-	if len(merged) == 0 {
-		resp, err := t.base.RoundTrip(req)
-		return t.handleResponse(req, resp, err)
-	}
 
-	// Read the existing JSON body
+	// Read the existing JSON body — we need it even without extras for debug dump
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		return nil, err
 	}
 	req.Body.Close()
 
-	var bodyMap map[string]any
-	if err := json.Unmarshal(body, &bodyMap); err != nil {
-		return nil, err
+	// If no extras and no debugDir, just forward the original request
+	if len(merged) == 0 && t.debugDir == "" {
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		resp, err := t.base.RoundTrip(req)
+		return t.handleResponse(req, resp, err)
 	}
 
-	// Merge extra fields
-	for k, v := range merged {
-		bodyMap[k] = v
-	}
+	var newBody []byte
 
-	newBody, err := json.Marshal(bodyMap)
-	if err != nil {
-		return nil, err
+	if len(merged) > 0 {
+		// Merge extra fields into the JSON body
+		var bodyMap map[string]any
+		if err := json.Unmarshal(body, &bodyMap); err != nil {
+			return nil, err
+		}
+		for k, v := range merged {
+			bodyMap[k] = v
+		}
+		newBody, err = json.Marshal(bodyMap)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// No extras, but debugDir is set — use original body
+		newBody = body
 	}
 
 	// Dump final wire body to debug directory if configured
@@ -170,7 +191,7 @@ func (t *extraRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 }
 
 // handleResponse processes the HTTP response to extract usage extras (cost, cache tokens).
-func (t *extraRoundTripper) handleResponse(req *http.Request, resp *http.Response, err error) (*http.Response, error) {
+func (t *instrumentedTransport) handleResponse(req *http.Request, resp *http.Response, err error) (*http.Response, error) {
 	if err != nil || resp == nil {
 		return resp, err
 	}
@@ -232,7 +253,7 @@ func resolvePlaceholder(v any, sessionID string) any {
 }
 
 // ContextWithExtras returns a context annotated with per-request extras
-// and session ID for the extraRoundTripper to pick up.
+// and session ID for the instrumentedTransport to pick up.
 func ContextWithExtras(ctx context.Context, sessionID string, perReqExtra map[string]any) context.Context {
 	if sessionID != "" {
 		ctx = context.WithValue(ctx, ctxSessionID, sessionID)
@@ -243,12 +264,19 @@ func ContextWithExtras(ctx context.Context, sessionID string, perReqExtra map[st
 	return ctx
 }
 
-// WrapTransport wraps an http.RoundTripper with extra-body injection and
-// response usage capture. When extras is non-empty, body fields are merged.
-// Always wraps when debugDir is non-empty or usage capture may be needed
-// (the transport checks context for captured usage pointers at runtime).
+// WrapTransport wraps an http.RoundTripper with body dump, extra-field
+// injection, and response usage capture.
+//
+// When debugDir is non-empty, the request body is dumped to a JSON file
+// in that directory — this works regardless of whether extras are configured.
+//
+// When extra is non-empty, body fields are merged with extra injection.
+//
+// Usage capture (cost, cache tokens from response) is always active via
+// context — the transport checks context for captured usage pointers at
+// runtime.
 func WrapTransport(base http.RoundTripper, extra map[string]any, debugDir string) http.RoundTripper {
-	return &extraRoundTripper{base: base, extra: extra, debugDir: debugDir}
+	return &instrumentedTransport{base: base, extra: extra, debugDir: debugDir}
 }
 
 func NewOpenAIAdapter(client *openai.Client, model string) *OpenAIAdapter {
@@ -488,6 +516,7 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 
 		accum := newIndexAccumulator()
 		var pendingUsage *agent.Usage
+		var finishReason string
 
 		for {
 			resp, err := stream.Recv()
@@ -514,7 +543,7 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 					pendingUsage.PromptCacheHitTokens = raw.promptCacheHit
 					pendingUsage.PromptCacheMissTokens = raw.promptCacheMiss
 				}
-				sendStreamFinal(resultCh, accum.flush(), pendingUsage)
+				sendStreamFinal(resultCh, accum.flush(), pendingUsage, finishReason)
 				return
 			}
 			if err != nil {
@@ -572,6 +601,13 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 						return
 					case resultCh <- agent.StreamResult{Delta: delta}:
 					}
+				}
+
+				// Capture finish_reason from the last delta chunk. The choice
+				// may carry a non-empty finish_reason in the final chunk before
+				// the usage-only SSE event.
+				if string(choice.FinishReason) != "" {
+					finishReason = string(choice.FinishReason)
 				}
 
 				// Do NOT return on finish_reason — the usage SSE event comes AFTER

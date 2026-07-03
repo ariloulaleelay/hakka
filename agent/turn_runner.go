@@ -20,9 +20,10 @@ type stepFunc func(ctx context.Context, msgs []Message, schemas []ToolSchema, ev
 
 // llmStepResult is the result of a single LLM call within the tool loop.
 type llmStepResult struct {
-	content   string
-	toolCalls []ToolCall
-	usage     *Usage
+	content      string
+	toolCalls    []ToolCall
+	usage        *Usage
+	finishReason string
 }
 
 // turnRunner drives the LLM ↔ tool iteration loop for a single turn.
@@ -49,12 +50,13 @@ type turnRunner struct {
 	config   EngineConfig
 	router   *Router
 	logger   *slog.Logger
+	skills   *SkillRegistry
 }
 
 // newTurnRunner builds a turnRunner from the shared engine dependencies.
 // It is called by NewConversation and also by SetToolContext (when the
 // tool executor needs to be rebuilt).
-func newTurnRunner(tools *ToolRegistry, toolExec *toolExecutor, config EngineConfig, router *Router, logger *slog.Logger) *turnRunner {
+func newTurnRunner(tools *ToolRegistry, toolExec *toolExecutor, config EngineConfig, router *Router, logger *slog.Logger, skills *SkillRegistry) *turnRunner {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -64,6 +66,7 @@ func newTurnRunner(tools *ToolRegistry, toolExec *toolExecutor, config EngineCon
 		config:   config,
 		router:   router,
 		logger:   logger,
+		skills:   skills,
 	}
 }
 
@@ -102,8 +105,12 @@ func (r *turnRunner) run(
 	step stepFunc,
 	saveFn func(context.Context, SessionView) error,
 ) (string, error) {
+	const maxAutoContinue = 3
+
 	var turnMu sync.Mutex
 	hooks := r.toolExec.SerialisedHooks(&turnMu)
+
+	autoContinueCount := 0
 
 	for i := 0; i < r.config.MaxToolIterations; i++ {
 		schemas := r.tools.SchemasForSession(session)
@@ -122,8 +129,47 @@ func (r *turnRunner) run(
 			continue // compactify-only round — loop again
 		}
 		if len(resp.toolCalls) == 0 {
+			// Autocontinue hack: some providers (e.g. DeepSeek) return
+			// finish_reason="stop" with empty content and no tool calls
+			// after processing tool results — they "reason" silently and
+			// stop. When ignore_stop_if_no_content is enabled for this
+			// model, re-prompt automatically.
+			if resp.content == "" && resp.finishReason == "stop" && autoContinueCount < maxAutoContinue {
+				if profile, ok := r.router.GetProfile(session); ok {
+					if profile.Hacks.IgnoreStopIfNoContent != nil && *profile.Hacks.IgnoreStopIfNoContent {
+						autoContinueCount++
+						r.logger.Warn("autocontinue: empty stop response, re-prompting",
+							"session", session.SessionID(),
+							"iteration", i,
+							"auto_continue_round", autoContinueCount,
+							"max_auto_continue", maxAutoContinue)
+						continue
+					}
+				}
+			}
+			if resp.content == "" && resp.finishReason == "stop" && autoContinueCount >= maxAutoContinue {
+				if profile, ok := r.router.GetProfile(session); ok {
+					if profile.Hacks.IgnoreStopIfNoContent != nil && *profile.Hacks.IgnoreStopIfNoContent {
+						r.logger.Warn("autocontinue: exhausted rounds, finishing",
+							"session", session.SessionID(),
+							"iteration", i,
+							"auto_continue_round", autoContinueCount)
+					}
+				}
+			}
+
+			r.logger.Debug("tool-iteration-loop: text-only response, finishing turn",
+				"session", session.SessionID(),
+				"iteration", i,
+				"finish_reason", resp.finishReason)
 			return resp.content, nil
 		}
+
+		r.logger.Debug("tool-iteration-loop: tool calls detected, continuing",
+			"session", session.SessionID(),
+			"iteration", i,
+			"finish_reason", resp.finishReason,
+			"tool_calls", len(resp.toolCalls))
 
 		logCompactifySkipped(r.logger, session.SessionID(), i, needCompactify, resp.toolCalls)
 
@@ -143,6 +189,9 @@ func (r *turnRunner) run(
 		}
 	}
 
+	r.logger.Warn("tool-iteration-loop: max iterations reached",
+		"session", session.SessionID(),
+		"max_iterations", r.config.MaxToolIterations)
 	return "", ErrMaxIterations
 }
 
@@ -191,9 +240,10 @@ func (r *turnRunner) defaultStep(session SessionView) stepFunc {
 			resp.Usage.Duration = time.Since(start)
 		}
 		return &llmStepResult{
-			content:   resp.Message.Content,
-			toolCalls: resp.Message.ToolCalls,
-			usage:     resp.Usage,
+			content:      resp.Message.Content,
+			toolCalls:    resp.Message.ToolCalls,
+			usage:        resp.Usage,
+			finishReason: resp.FinishReason,
 		}, nil
 	}
 }
@@ -218,7 +268,7 @@ func (r *turnRunner) runOneIteration(
 	iteration int,
 ) (*llmStepResult, bool, error) {
 	softLimit := r.resolveSoftLimit(session)
-	msgs, needCompactify, estimatedTokens := BuildCompactContext(session, softLimit)
+	msgs, needCompactify, estimatedTokens := BuildCompactContext(session, softLimit, r.skills)
 
 	// Store estimated context size before the LLM call so
 	// clients can display current context utilisation.
@@ -242,6 +292,13 @@ func (r *turnRunner) runOneIteration(
 		return nil, needCompactify, notifyError(session.SessionID(), err, hooks, r.logger)
 	}
 
+	r.logger.Debug("tool-iteration-result",
+		"iteration", iteration,
+		"session", session.SessionID(),
+		"finish_reason", resp.finishReason,
+		"tool_calls", len(resp.toolCalls),
+		"content_len", len(resp.content))
+
 	// Enrich tool calls with exec snippets before recording into session
 	// history, so that clients (web, nvim) can display human-readable
 	// summaries when loading previously executed turns.
@@ -262,14 +319,13 @@ func (r *turnRunner) runOneIteration(
 }
 
 // resolveSoftLimit returns the effective compaction soft limit for the
-// session. Falls back from session → engine config → global default.
+// session. The session's limit is set explicitly at session init time
+// (see Conversation.EnsureDefaultModel). We keep a safety net for
+// existing sessions that may have been created before this feature.
 func (r *turnRunner) resolveSoftLimit(session SessionView) int {
 	softLimit := session.GetCompactSoftLimit()
 	if softLimit <= 0 {
 		softLimit = r.config.CompactSoftLimit
-	}
-	if softLimit <= 0 {
-		softLimit = DefaultEngineConfig().CompactSoftLimit
 	}
 	return softLimit
 }

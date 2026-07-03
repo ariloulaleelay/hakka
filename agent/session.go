@@ -34,7 +34,9 @@ type Message struct {
 	ToolCallID       string         `json:"tool_call_id,omitempty"`
 	Name             string         `json:"name,omitempty"`
 	Usage            *Usage         `json:"usage,omitempty"`
+	FinishReason     string         `json:"finish_reason,omitempty"`
 	ProviderMetadata map[string]any `json:"provider_metadata,omitempty"`
+	Timestamp        int64          `json:"ts,omitempty"` // Unix timestamp in milliseconds
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +75,8 @@ type SessionData struct {
 	EnabledTools     map[string]bool
 	BlockedTools     map[string]bool
 	CompactSoftLimit int
+	Streaming        bool
+	ActiveSkills     []string // names of loaded skills
 }
 
 // NewSessionData creates a SessionData with sensible defaults.
@@ -112,6 +116,10 @@ func (sd *SessionData) DeepCopy() SessionData {
 		for k, v := range sd.BlockedTools {
 			cp.BlockedTools[k] = v
 		}
+	}
+	if sd.ActiveSkills != nil {
+		cp.ActiveSkills = make([]string, len(sd.ActiveSkills))
+		copy(cp.ActiveSkills, sd.ActiveSkills)
 	}
 	return cp
 }
@@ -430,6 +438,19 @@ func (sess *Session) SetCompactSoftLimit(n int) {
 	sess.data.CompactSoftLimit = n
 }
 
+func (sess *Session) GetStreaming() bool {
+	sess.mu.RLock()
+	defer sess.mu.RUnlock()
+	return sess.data.Streaming
+}
+
+func (sess *Session) SetStreaming(v bool) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.data.Streaming = v
+	sess.data.UpdatedAt = time.Now()
+}
+
 // Metadata returns a canonical map of session metadata fields.
 // This is the single point of truth for session metadata format.
 // All consumers (get_session, session_info, session_create, session_list,
@@ -450,9 +471,15 @@ func (sess *Session) Metadata() map[string]any {
 		"estimated_context_tokens": d.EstimatedContextTokens,
 		"client_cwd":              d.ClientCWD,
 		"compact_soft_limit":      d.CompactSoftLimit,
+		"streaming":               d.Streaming,
 		"created_at":              d.CreatedAt.Format(time.RFC3339),
 		"updated_at":              formatTime(d.UpdatedAt, d.CreatedAt),
 	}
+}
+
+// nowMillis returns the current Unix timestamp in milliseconds.
+func nowMillis() int64 {
+	return time.Now().UnixMilli()
 }
 
 func shortID(id string) string {
@@ -500,4 +527,43 @@ func (sess *Session) SetCreatedAt(t time.Time) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	sess.data.CreatedAt = t
+}
+
+// --- ActiveSkills management ---
+
+func (sess *Session) ActiveSkills() []string {
+	sess.mu.RLock()
+	defer sess.mu.RUnlock()
+	if len(sess.data.ActiveSkills) == 0 {
+		return nil
+	}
+	out := make([]string, len(sess.data.ActiveSkills))
+	copy(out, sess.data.ActiveSkills)
+	return out
+}
+
+func (sess *Session) AddActiveSkill(name string) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.data.ActiveSkills = append(sess.data.ActiveSkills, name)
+	sess.data.UpdatedAt = time.Now()
+}
+
+func (sess *Session) RemoveActiveSkill(name string) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	for i, s := range sess.data.ActiveSkills {
+		if s == name {
+			sess.data.ActiveSkills = append(sess.data.ActiveSkills[:i], sess.data.ActiveSkills[i+1:]...)
+			break
+		}
+	}
+	sess.data.UpdatedAt = time.Now()
+}
+
+func (sess *Session) ClearActiveSkills() {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.data.ActiveSkills = nil
+	sess.data.UpdatedAt = time.Now()
 }

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"sync"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -568,6 +569,50 @@ func TestBuildAskQuestionMessages_ExcludesCompactifyMessages(t *testing.T) {
 	last := msgs[len(msgs)-1]
 	if last.Role != agent.RoleUser || last.Content != "what was said?" {
 		t.Fatalf("expected last message to be user question, got: %+v", last)
+	}
+}
+
+// TestHTTPGetConcurrentSameHost verifies that multiple concurrent http_get
+// calls to the same host all succeed without timeouts or empty bodies.
+// A shared http.Transport with the default DialContext causes HTTP/2
+// multiplexing serialisation under concurrent requests.
+func TestHTTPGetConcurrentSameHost(t *testing.T) {
+	body := strings.Repeat("ABCDEFGHIJ", 10000) // 100KB body
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	// Run 10 concurrent truncated requests — should all succeed.
+	const concurrency = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res := runPlain(t, HTTPGet().Handler, map[string]any{"url": srv.URL, "max_bytes": 100})
+			if !strings.Contains(res, "Status: 200") {
+				errs <- fmt.Errorf("expected Status: 200, got: %q", res)
+				return
+			}
+			if !strings.Contains(res, "[TRUNCATED:") {
+				errs <- fmt.Errorf("expected truncated output, got: %q", res)
+				return
+			}
+			errs <- nil
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

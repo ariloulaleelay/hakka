@@ -100,11 +100,11 @@ func (a *appendAccumulator) flush() []agent.ToolCall {
 
 // sendStreamFinal emits the final streaming event on the channel. If any
 // tool calls were accumulated it emits a ToolCalls event; otherwise it
-// emits a Done event. Usage is attached to either.
-func sendStreamFinal(ch chan<- agent.StreamResult, toolCalls []agent.ToolCall, usage *agent.Usage) {
+// emits a Done event. Usage and finishReason are attached to either.
+func sendStreamFinal(ch chan<- agent.StreamResult, toolCalls []agent.ToolCall, usage *agent.Usage, finishReason string) {
 	if len(toolCalls) > 0 {
-		ch <- agent.StreamResult{ToolCalls: toolCalls, Usage: usage}
+		ch <- agent.StreamResult{ToolCalls: toolCalls, Usage: usage, FinishReason: finishReason}
 	} else {
-		ch <- agent.StreamResult{Done: true, Usage: usage}
+		ch <- agent.StreamResult{Done: true, Usage: usage, FinishReason: finishReason}
 	}
 }

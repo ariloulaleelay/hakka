@@ -149,7 +149,14 @@ func logCompactifySkipped(logger *slog.Logger, sessionID string, iteration int, 
 // fires the LLM response hook, emits a UsageReported event, and
 // updates token usage and cost.
 func recordLLMResponse(session SessionView, resp *llmStepResult, hooks Hooks, events eventSender) {
-	msg := Message{Role: RoleAssistant, Content: resp.content, ToolCalls: resp.toolCalls, Usage: resp.usage}
+	msg := Message{
+		Role:         RoleAssistant,
+		Content:      resp.content,
+		ToolCalls:    resp.toolCalls,
+		Usage:        resp.usage,
+		FinishReason: resp.finishReason,
+		Timestamp:    nowMillis(),
+	}
 	session.Append(msg)
 
 	hooks.FireLLMResponse(session.SessionID(), &LLMResponse{Message: msg, Usage: resp.usage})

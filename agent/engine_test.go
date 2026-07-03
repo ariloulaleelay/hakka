@@ -189,10 +189,10 @@ func (f *fakeAdapter) Stream(_ context.Context, msgs []Message, _ []ToolSchema, 
 		ch <- StreamResult{Delta: content[mid:]}
 	}
 	for _, tc := range r.Message.ToolCalls {
-		ch <- StreamResult{ToolCalls: []ToolCall{tc}, Usage: r.Usage}
+		ch <- StreamResult{ToolCalls: []ToolCall{tc}, Usage: r.Usage, FinishReason: r.FinishReason}
 	}
 	if len(r.Message.ToolCalls) == 0 {
-		ch <- StreamResult{Done: true, Usage: r.Usage}
+		ch <- StreamResult{Done: true, Usage: r.Usage, FinishReason: r.FinishReason}
 	}
 	close(ch)
 	return ch, nil

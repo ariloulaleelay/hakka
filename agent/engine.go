@@ -51,10 +51,21 @@ func (h Hooks) FireError(sid string, err error) {
 	}
 }
 
+// Hacks carries per-provider workarounds for provider-specific quirks.
+// Each field should be documented with what it does and why.
+type Hacks struct {
+	// IgnoreStopIfNoContent, when true, makes the engine automatically
+	// re-prompt the LLM when it returns finish_reason="stop" with empty
+	// content and no tool calls. Some providers (e.g. DeepSeek) do this
+	// after tool results — they "reason" silently and stop without
+	// producing visible text. The engine will continue up to 3 rounds.
+	IgnoreStopIfNoContent *bool `json:"ignore_stop_if_no_content,omitempty"`
+}
+
 // EngineConfig tunes the orchestration loop.
 type EngineConfig struct {
 	MaxToolIterations int
-	CompactSoftLimit  int // 0 = use DefaultEngineConfig().CompactSoftLimit; > 0 = override
+	CompactSoftLimit  int // default soft limit used when model profile has none; 0 = use DefaultEngineConfig().CompactSoftLimit
 	Options           CompleteOptions
 	Logger            *slog.Logger
 	Hooks             Hooks

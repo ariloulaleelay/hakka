@@ -261,7 +261,6 @@ func (gw *WebSocketGateway) sendWelcome(ctx context.Context, w frameWriter, resp
 				Session:   sessionMap,
 			}
 			if msgs := cmdRes.Session.Messages(); len(msgs) > 0 {
-				fr.Messages = messagesToMap(msgs)
 				fr.Events = messagesToEvents(msgs)
 				// Append "done" terminal event only if the session is
 				// NOT in-flight. If it IS in-flight, live events will

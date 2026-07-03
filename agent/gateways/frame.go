@@ -55,6 +55,7 @@ type FrameResponse struct {
 	// Common fields
 	Type      string `json:"type"`
 	SessionID string `json:"session_id,omitempty"`
+	Timestamp int64  `json:"ts,omitempty"` // Unix timestamp in milliseconds
 
 	// --- "delta" / "done" fields ---
 	// LLM content is always "text", regardless of streaming or final.
@@ -91,11 +92,9 @@ type FrameResponse struct {
 	Data map[string]any `json:"data,omitempty"`
 
 	// --- "session" / "welcome" fields ---
-	// Sessions list (welcome) / session object (session events) /
-	// messages list (get_session) are at top level, not nested in "data".
+	// Sessions list (welcome) / session object (session events) are at top level, not nested in "data".
 	Sessions []map[string]any `json:"sessions"`
 	Session  map[string]any   `json:"session,omitempty"`
-	Messages []map[string]any `json:"messages,omitempty"`
 	// Events is a replay-friendly sequence of typed events (chat, delta, tool,
 	// usage, done) that mirrors the live wire protocol. Returned alongside
 	// Messages for backward compatibility. Clients can use Events to render

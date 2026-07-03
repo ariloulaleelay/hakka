@@ -89,6 +89,10 @@ type Conversation struct {
 	// tool calls. It is populated by NewConversation and rebuilt by
 	// SetToolContext.
 	toolExec *toolExecutor
+
+	// skills is the global skill registry used to resolve loaded skill
+	// names to content for context injection.
+	skills *SkillRegistry
 }
 
 // Sessions returns the SessionManager used by this conversation.
@@ -127,26 +131,55 @@ func NewConversation(sm *SessionManager, router *Router, tools *ToolRegistry, na
 		config:    cfg,
 		namespace: namespace,
 		toolExec:  newToolExecutor(tools, nil, cfg.Hooks),
+		skills:    nil,
 	}
-	conv.turnRunner = newTurnRunner(tools, conv.toolExec, cfg, router, cfg.Logger)
+	conv.turnRunner = newTurnRunner(tools, conv.toolExec, cfg, router, cfg.Logger, nil)
 	return conv
 }
 
 // EnsureDefaultModel sets the registry default model on the session if
-// none is set yet. This ensures every session has a meaningful model
-// from creation, so GetModel() never returns "".
+// none is set yet, and ensures the compact soft limit is populated.
+//
+// For new sessions (no model), we set both model and limit.
+// For existing sessions (model already set, e.g. from DB), we ensure
+// the compact soft limit is populated for compatibility with sessions
+// created before this feature existed.
 func (conv *Conversation) EnsureDefaultModel(ctx context.Context, session SessionView) {
-	if session.GetModel() != "" {
-		return
+	if session.GetModel() == "" {
+		if conv.router == nil {
+			return
+		}
+		defaultModel := conv.router.Current(session)
+		if defaultModel == "" {
+			return
+		}
+		session.SetModel(defaultModel)
 	}
+
+	// Always ensure the compact soft limit is set, even for existing
+	// sessions that may have been created before this feature.
+	if conv.router != nil && session.GetCompactSoftLimit() <= 0 {
+		if profile, ok := conv.router.GetProfile(session); ok && profile.CompactSoftLimit > 0 {
+			session.SetCompactSoftLimit(profile.CompactSoftLimit)
+		} else {
+			session.SetCompactSoftLimit(conv.config.CompactSoftLimit)
+		}
+	}
+}
+
+// ensureCompactSoftLimit sets the compact soft limit from the session's
+// current model. Used when the model binding changes (e.g. BindSessionModel).
+// It always overrides the current value, unlike EnsureDefaultModel which
+// only sets it when <= 0.
+func (conv *Conversation) ensureCompactSoftLimit(session SessionView) {
 	if conv.router == nil {
 		return
 	}
-	defaultModel := conv.router.Current(session)
-	if defaultModel == "" {
-		return
+	if profile, ok := conv.router.GetProfile(session); ok && profile.CompactSoftLimit > 0 {
+		session.SetCompactSoftLimit(profile.CompactSoftLimit)
+	} else {
+		session.SetCompactSoftLimit(conv.config.CompactSoftLimit)
 	}
-	session.SetModel(defaultModel)
 }
 
 // SetToolContext installs a transport-aware decorator used to enrich the
@@ -167,7 +200,17 @@ func (conv *Conversation) SetToolContext(tc ToolContextDecorator) {
 	defer conv.mu.Unlock()
 	conv.toolContext = tc
 	conv.toolExec = newToolExecutor(conv.tools, tc, conv.config.Hooks)
-	conv.turnRunner = newTurnRunner(conv.tools, conv.toolExec, conv.config, conv.router, conv.config.Logger)
+	conv.turnRunner = newTurnRunner(conv.tools, conv.toolExec, conv.config, conv.router, conv.config.Logger, conv.skills)
+}
+
+// SetSkills installs a skill registry that the conversation uses to
+// resolve loaded skill names to content for context injection. Must be
+// called before Execute, not safe for concurrent use with running turns.
+func (conv *Conversation) SetSkills(skills *SkillRegistry) {
+	conv.mu.Lock()
+	defer conv.mu.Unlock()
+	conv.skills = skills
+	conv.turnRunner = newTurnRunner(conv.tools, conv.toolExec, conv.config, conv.router, conv.config.Logger, skills)
 }
 
 // resolveNamespace returns the namespace to use for store operations.
@@ -213,7 +256,8 @@ func (conv *Conversation) prepareWithInput(ctx context.Context, sessionID, userI
 	}
 	conv.EnsureDefaultModel(ctx, session)
 	if userInput != "" {
-		session.Append(Message{Role: RoleUser, Content: userInput})
+		session.SetStreaming(false)
+		session.Append(Message{Role: RoleUser, Content: userInput, Timestamp: nowMillis()})
 		if err := conv.sessions.Save(ctx, ns, session); err != nil {
 			return nil, err
 		}
@@ -286,7 +330,8 @@ func (conv *Conversation) SessionModel(s SessionView) string {
 }
 
 // BindSessionModel records the named model as the preferred one for the
-// given session and persists the session.
+// given session, updates the compact soft limit from the new model's
+// profile, and persists the session.
 func (conv *Conversation) BindSessionModel(ctx context.Context, sessionID, name string) (*Session, error) {
 	if conv.router == nil {
 		return nil, errNoRouter
@@ -302,6 +347,8 @@ func (conv *Conversation) BindSessionModel(ctx context.Context, sessionID, name 
 	if err := conv.router.Bind(sess, name); err != nil {
 		return sess, err
 	}
+	// Update compact soft limit from the new model's profile
+	conv.ensureCompactSoftLimit(sess)
 	if err := conv.sessions.Save(ctx, ns, sess); err != nil {
 		return sess, err
 	}

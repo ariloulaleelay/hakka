@@ -151,6 +151,9 @@ func runBatch(logger *slog.Logger, configPath, task string, enableTools []string
 	defer mcpMgr.CloseAll()
 
 	// Run the task.
+	skillRegistry := agent.NewSkillRegistry()
+	hakkatools.RegisterSkillTools(tools, skillRegistry)
+
 	_, err = batch.RunBatch(context.Background(), batch.RunBatchParams{
 		Registry:         registry,
 		Task:             task,
@@ -158,6 +161,7 @@ func runBatch(logger *slog.Logger, configPath, task string, enableTools []string
 		EnableTools:      enableTools,
 		CompactSoftLimit: compactSoftLimit,
 		Logger:           logger,
+		Skills:           skillRegistry,
 	})
 	return err
 }
@@ -184,7 +188,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	}
 	defer closeStore()
 
-	sessions, router, tools, _, systemPrompt, engineCfg := setupComponents(store, registry, logger)
+	sessions, router, tools, _, skillRegistry, systemPrompt, engineCfg := setupComponents(store, registry, logger)
 
 	// Override feedback URL if configured.
 	if url := modelCfg.FeedbackEndpoint(); url != "" {
@@ -222,6 +226,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 		Tools:        tools,
 		SystemPrompt: systemPrompt,
 		EngineCfg:    engineCfg,
+		Skills:       skillRegistry,
 	}, cfg.wsAddr, cfg.webAddr, cfg.telegramToken, cfg.telegramWhitelist, cfg.telegramSOCKS5)
 	if err != nil {
 		return fmt.Errorf("build gateways: %w", err)
@@ -240,7 +245,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	return shutdownGateways(gws)
 }
 
-func setupComponents(store agent.SessionStore, registry *agent.Registry, logger *slog.Logger) (*agent.SessionManager, *agent.Router, *agent.ToolRegistry, *hakkatools.ProcessManager, string, agent.EngineConfig) {
+func setupComponents(store agent.SessionStore, registry *agent.Registry, logger *slog.Logger) (*agent.SessionManager, *agent.Router, *agent.ToolRegistry, *hakkatools.ProcessManager, *agent.SkillRegistry, string, agent.EngineConfig) {
 	const systemPrompt = "You are Hakka, a helpful assistant."
 
 	sessions := agent.NewSessionManager(store, systemPrompt)
@@ -267,7 +272,11 @@ func setupComponents(store agent.SessionStore, registry *agent.Registry, logger 
 		},
 	}
 
-	return sessions, router, tools, pm, systemPrompt, cfg
+	// Create skill registry (empty for now, can be populated from config)
+	skillRegistry := agent.NewSkillRegistry()
+	hakkatools.RegisterSkillTools(tools, skillRegistry)
+
+	return sessions, router, tools, pm, skillRegistry, systemPrompt, cfg
 }
 
 // gatewayParams holds shared dependencies passed to individual gateway
@@ -279,6 +288,7 @@ type gatewayParams struct {
 	Tools        *agent.ToolRegistry
 	SystemPrompt string
 	EngineCfg    agent.EngineConfig
+	Skills       *agent.SkillRegistry
 }
 
 func buildGateways(p gatewayParams, wsAddr, webAddr, telegramToken, telegramWhitelist, telegramSOCKS5 string) ([]gateways.Gateway, error) {
@@ -322,6 +332,7 @@ func buildGateways(p gatewayParams, wsAddr, webAddr, telegramToken, telegramWhit
 func buildWebSocketGateway(p gatewayParams, tools *agent.ToolRegistry, clientDecorator agent.ToolContextDecorator, addr string) *gateways.WebSocketGateway {
 	conv := agent.NewConversation(p.Sessions, p.Router, tools, "ws", p.EngineCfg)
 	conv.SetToolContext(clientDecorator)
+	conv.SetSkills(p.Skills)
 	streamer := agent.NewStreamSession(conv, "ws")
 	cmd := commands.New(p.Sessions, conv, p.SystemPrompt, "ws")
 	cmd.SetTools(tools)
@@ -336,6 +347,7 @@ func buildWebFrontGateway(p gatewayParams, addr string) *webfront.Gateway {
 	conv := agent.NewConversation(p.Sessions, p.Router, p.Tools, "ws", p.EngineCfg)
 	clientDecorator := agent.EngineChannelClientDecorator()
 	conv.SetToolContext(clientDecorator)
+	conv.SetSkills(p.Skills)
 	streamer := agent.NewStreamSession(conv, "ws")
 	cmd := commands.New(p.Sessions, conv, p.SystemPrompt, "ws")
 	cmd.SetTools(p.Tools)
@@ -369,6 +381,7 @@ func buildTelegramGateway(p gatewayParams, telegramToken, telegramWhitelist, tel
 	hakkatools.RegisterSessionTools(tgTools, p.Sessions, nil)
 
 	conv := agent.NewConversation(p.Sessions, p.Router, tgTools, "tg", p.EngineCfg)
+	conv.SetSkills(p.Skills)
 	cmd := commands.New(p.Sessions, conv, p.SystemPrompt, "tg")
 	cmd.SetTools(tgTools)
 

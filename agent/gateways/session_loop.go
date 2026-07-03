@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/ariloulaleelay/hakka/agent"
 	"github.com/ariloulaleelay/hakka/agent/commands"
@@ -86,7 +87,6 @@ func writeCommandResult(w frameWriter, res commands.CommandResult) (handled, ok 
 			Session:   sessionMap,
 		}
 		if res.Action == commands.ActionGetSession && res.Session != nil {
-			fr.Messages = messagesToMap(res.Session.Messages())
 			// Build events replay from stored messages.
 			events := messagesToEvents(res.Session.Messages())
 			if !res.InFlight {
@@ -130,19 +130,7 @@ func sessionToMap(s *agent.Session) map[string]any {
 	return s.Metadata()
 }
 
-func messagesToMap(msgs []agent.Message) []map[string]any {
-	if len(msgs) == 0 {
-		return nil
-	}
-	result := make([]map[string]any, len(msgs))
-	for i, m := range msgs {
-		result[i] = map[string]any{
-			"role":    string(m.Role),
-			"content": m.Content,
-		}
-	}
-	return result
-}
+
 
 // messagesToEvents converts stored messages into a replay-friendly event
 // sequence that mirrors the live wire protocol. Each message type maps to
@@ -161,20 +149,30 @@ func messagesToEvents(msgs []agent.Message) []map[string]any {
 	events := make([]map[string]any, 0, len(msgs)*2)
 
 	for _, m := range msgs {
+		ts := m.Timestamp
+
 		switch m.Role {
 		case agent.RoleUser:
-			events = append(events, map[string]any{
+			evt := map[string]any{
 				"type": "chat",
 				"text": m.Content,
-			})
+			}
+			if ts != 0 {
+				evt["ts"] = ts
+			}
+			events = append(events, evt)
 
 		case agent.RoleAssistant:
 			// Assistant thinking / final text
 			if m.Content != "" {
-				events = append(events, map[string]any{
+				evt := map[string]any{
 					"type": "delta",
 					"text": m.Content,
-				})
+				}
+				if ts != 0 {
+					evt["ts"] = ts
+				}
+				events = append(events, evt)
 			}
 
 			// Tool calls from this assistant turn
@@ -186,14 +184,18 @@ func messagesToEvents(msgs []agent.Message) []map[string]any {
 						args = parsed
 					}
 				}
-				events = append(events, map[string]any{
+				toolEvt := map[string]any{
 					"type":    "tool",
 					"id":      tc.ID,
 					"tool":    tc.Name,
 					"status":  "start",
 					"args":    args,
 					"snippet": tc.ExecSnippet,
-				})
+				}
+				if ts != 0 {
+					toolEvt["ts"] = ts
+				}
+				events = append(events, toolEvt)
 			}
 
 			// Usage info for this LLM call
@@ -203,6 +205,9 @@ func messagesToEvents(msgs []agent.Message) []map[string]any {
 					"prompt_tokens":     m.Usage.PromptTokens,
 					"completion_tokens": m.Usage.CompletionTokens,
 					"total_tokens":      m.Usage.TotalTokens,
+				}
+				if ts != 0 {
+					usageEvt["ts"] = ts
 				}
 				if m.Usage.Duration > 0 {
 					usageEvt["duration_ns"] = m.Usage.Duration.Nanoseconds()
@@ -224,6 +229,9 @@ func messagesToEvents(msgs []agent.Message) []map[string]any {
 				"id":     m.ToolCallID,
 				"tool":   m.Name,
 				"status": status,
+			}
+			if ts != 0 {
+				evt["ts"] = ts
 			}
 			if status == "ok" {
 				evt["result"] = result
@@ -261,6 +269,8 @@ func sessionListToMap(sessions []*agent.Session, currentID string, allSessions [
 // ---------------------------------------------------------------------------
 
 func processEvent(w frameWriter, evt event.EngineEvent) bool {
+	ts := time.Now().UnixMilli()
+
 	switch e := evt.(type) {
 	case event.ToolCallStarted:
 		var args json.RawMessage
@@ -275,6 +285,7 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 			Status:    "start",
 			Args:      args,
 			Snippet:   e.ExecSnippet,
+			Timestamp: ts,
 		})
 
 	case event.ToolCallFinished:
@@ -299,6 +310,7 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 			Status:    status,
 			Args:      args,
 			Snippet:   e.ExecSnippet,
+			Timestamp: ts,
 		}
 		if status == "ok" {
 			fr.ToolResult = e.Result.ForLLM()
@@ -319,6 +331,7 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 			CompletionTokens: &ct,
 			TotalTokens:      &tt,
 			EstimatedTokens:  &et,
+			Timestamp:        ts,
 		}
 		if d := e.Usage.Duration; d > 0 {
 			ns := d.Nanoseconds()
@@ -336,6 +349,7 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 			Type:      "delta",
 			SessionID: e.SessionID,
 			Text:      e.Delta,
+			Timestamp: ts,
 		})
 
 	case event.ClientRequestSent:
@@ -344,6 +358,7 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 			SessionID: e.SessionID,
 			RequestID: e.RequestID,
 			Command:   e.Command,
+			Timestamp: ts,
 		})
 
 	case event.TurnFinished:
@@ -363,6 +378,7 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 					SessionID: sid,
 					Cancelled: true,
 					Stats:     stats,
+					Timestamp: ts,
 				})
 			}
 			return writeFrame(w, FrameResponse{
@@ -370,6 +386,7 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 				SessionID: sid,
 				Error:     e.Err.Error(),
 				Stats:     stats,
+				Timestamp: ts,
 			})
 		}
 		return writeFrame(w, FrameResponse{
@@ -377,6 +394,7 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 			SessionID: sid,
 			Text:      e.Reply,
 			Stats:     stats,
+			Timestamp: ts,
 		})
 
 	case event.SessionRenamed:
@@ -386,6 +404,7 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 			Event:     "renamed",
 			OldName:   e.OldName,
 			Name:      e.NewName,
+			Timestamp: ts,
 		})
 	}
 	return true

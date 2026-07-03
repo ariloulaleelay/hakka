@@ -86,6 +86,16 @@ func (router *Router) Registry() *Registry {
 	return router.models
 }
 
+// GetProfile returns the ModelProfile for the session's current model,
+// or false if the model is unknown.
+func (router *Router) GetProfile(session SessionModelBinding) (ModelProfile, bool) {
+	name := router.Current(session)
+	if name == "" {
+		return ModelProfile{}, false
+	}
+	return router.models.GetProfile(name)
+}
+
 // current reads the recorded model name without falling back.
 func (router *Router) current(session SessionModelBinding) string {
 	if session == nil {

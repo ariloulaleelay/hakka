@@ -331,3 +331,60 @@ func TestExpandEnvInMCPServerConfigFailsOnMissing(t *testing.T) {
 		t.Fatal("expected error when MCP env var is missing")
 	}
 }
+
+func TestBuildRegistry_ModelCompactSoftLimit(t *testing.T) {
+	os.Setenv("HAKKA_TOKEN", "test-token")
+	defer os.Unsetenv("HAKKA_TOKEN")
+
+	const cfgWithLimit = `{
+	  "default": "high-limit",
+	  "models": {
+		"high-limit": {
+		  "dialect": "openai",
+		  "base_url": "https://example.com/v1",
+		  "model": "test-model",
+		  "headers": {"Authorization": "Bearer ${env: HAKKA_TOKEN}"},
+		  "compact_soft_limit": 50000
+		},
+		"no-limit": {
+		  "dialect": "openai",
+		  "base_url": "https://example.com/v1",
+		  "model": "test-model-2",
+		  "headers": {"Authorization": "Bearer ${env: HAKKA_TOKEN}"}
+		}
+	  }
+	}`
+
+	p := filepath.Join(t.TempDir(), "config_limit.json")
+	if err := os.WriteFile(p, []byte(cfgWithLimit), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := Load(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	reg, err := BuildRegistry(f, "")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	// Model with compact_soft_limit should have it in the profile
+	profile, ok := reg.GetProfile("high-limit")
+	if !ok {
+		t.Fatal("expected profile for 'high-limit'")
+	}
+	if profile.CompactSoftLimit != 50000 {
+		t.Fatalf("expected CompactSoftLimit=50000, got %d", profile.CompactSoftLimit)
+	}
+
+	// Model without compact_soft_limit should have 0
+	profile2, ok := reg.GetProfile("no-limit")
+	if !ok {
+		t.Fatal("expected profile for 'no-limit'")
+	}
+	if profile2.CompactSoftLimit != 0 {
+		t.Fatalf("expected CompactSoftLimit=0 for model without limit, got %d", profile2.CompactSoftLimit)
+	}
+}

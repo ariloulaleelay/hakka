@@ -121,6 +121,14 @@ func (ex *toolExecutor) runSingleTool(ctx context.Context, session SessionView, 
 		return res.ForLLM()
 	}
 
+	// Auto-enable the tool so it appears in the API "tools" section for
+	// subsequent LLM iterations. This is the "mutual activation" counterpart:
+	// if the LLM manages to call a tool (even a disabled one), we honour it
+	// and make it available going forward.
+	if session != nil {
+		session.EnableTool(call.Name)
+	}
+
 	call.ExecSnippet = ex.tools.ExecSnippet(call.Name, call.Arguments)
 	fireToolCall(hooks, session.SessionID(), call)
 	sendEngineEvent(events, event.ToolCallStarted{
@@ -159,6 +167,7 @@ func (ex *toolExecutor) appendToolResults(session SessionView, calls []ToolCall,
 			Content:    results[i],
 			ToolCallID: call.ID,
 			Name:       call.Name,
+			Timestamp:  nowMillis(),
 		})
 	}
 }

@@ -113,7 +113,7 @@ func TestMidTurnToolEditor_ContextInjection(t *testing.T) {
 	rr := newTurnRunner(tools, newToolExecutor(tools, nil, Hooks{}), EngineConfig{
 		MaxToolIterations: 4,
 		Logger:            testLogger(t),
-	}, &Router{}, testLogger(t))
+	}, &Router{}, testLogger(t), nil)
 
 	callCount := 0
 	eventCh := make(chan event.EngineEvent, 256)
@@ -201,7 +201,7 @@ func TestContextEstimatedStoredOnSession(t *testing.T) {
 	rr := newTurnRunner(tools, newToolExecutor(tools, nil, Hooks{}), EngineConfig{
 		MaxToolIterations: 3,
 		Logger:            testLogger(t),
-	}, &Router{}, testLogger(t))
+	}, &Router{}, testLogger(t), nil)
 
 	eventCh := make(chan event.EngineEvent, 64)
 

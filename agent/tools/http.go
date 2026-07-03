@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -51,7 +52,6 @@ func isHTMLContent(contentType string, body []byte) bool {
 // summary: status line, selected headers, and the body. HTML responses are
 // automatically converted to Markdown for easier LLM consumption.
 func HTTPGet() agent.Tool {
-	httpClient := &http.Client{Timeout: 30 * time.Second}
 	return NewTool("http_get", "Perform an HTTP GET and return status, headers, and body. HTML content is automatically converted to Markdown for easier LLM reading.").
 		StringParam("url", "", true).
 		ObjectParam("headers", "Optional extra request headers.", false).
@@ -82,6 +82,21 @@ func HTTPGet() agent.Tool {
 			httpReq.Header.Set("User-Agent", defaultUserAgent)
 			for key, value := range args.Headers {
 				httpReq.Header.Set(key, value)
+			}
+
+			// Create a fresh client per request to avoid HTTP/2 connection
+			// multiplexing issues when the tool is called concurrently.
+			// A shared http.Transport serialises connections per host when
+			// the default DialContext is used, causing both timeouts and
+			// empty response bodies under concurrent requests to the same host.
+			// An explicit DialContext avoids this serialisation.
+			dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+			tr := &http.Transport{
+				DialContext: dialer.DialContext,
+			}
+			httpClient := &http.Client{
+				Timeout:   30 * time.Second,
+				Transport: tr,
 			}
 			resp, err := httpClient.Do(httpReq)
 			if err != nil {

@@ -340,7 +340,7 @@ func passThroughMessage(m Message) Message {
 //
 // Returns the context messages and a bool indicating whether
 // context_compactify should be added to tool schemas for this turn.
-func BuildCompactContext(session SessionHistory, softLimit int) ([]Message, bool, int) {
+func BuildCompactContext(session SessionHistory, softLimit int, skills *SkillRegistry) ([]Message, bool, int) {
 	rawMsgs := session.Messages()
 	ranges := extractCompactifyRanges(rawMsgs)
 	inRange := computeEffectiveInRange(rawMsgs, ranges)
@@ -355,9 +355,41 @@ func BuildCompactContext(session SessionHistory, softLimit int) ([]Message, bool
 		view = append(view, buildCompactionWarning(estimatedTokens, softLimit))
 	}
 
-	result := buildContextPrefix(session, needCompactify)
+	result := buildContextPrefix(session, needCompactify, skills)
 	result = append(result, view...)
 	return result, needCompactify, estimatedTokens
+}
+
+// buildSkillMessages assembles system messages for loaded skills.
+func buildSkillMessages(session SessionHistory, skills *SkillRegistry) []Message {
+	if skills == nil {
+		return nil
+	}
+	// Try to get active skills — SessionSkills interface
+	skillSession, ok := session.(SessionSkills)
+	if !ok {
+		return nil
+	}
+	names := skillSession.ActiveSkills()
+	if len(names) == 0 {
+		return nil
+	}
+	var msgs []Message
+	for _, name := range names {
+		skill := skills.Get(name)
+		if skill == nil {
+			continue
+		}
+		content, err := skills.ReadContent(name)
+		if err != nil {
+			continue
+		}
+		msgs = append(msgs, Message{
+			Role:    RoleSystem,
+			Content: "## Skill: " + name + "\n\n" + content,
+		})
+	}
+	return msgs
 }
 
 // annotateViewWithIndices prepends [N] ~T tokens: index prefixes to
@@ -378,15 +410,15 @@ func annotateViewWithIndices(view []Message, origIdx []int) {
 func buildCompactionWarning(estimatedTokens, softLimit int) Message {
 	return Message{
 		Role:    RoleUser,
-		Content: fmt.Sprintf("STOP! Context at ~%dK tokens (limit %dK). Archive finished tool rounds with `context_compactify`. Look for completed operations, old file reads, or resolved multi-step tasks that no longer inform the current goal. Each [N] is a message index — keep recent exchanges, compact the rest.", estimatedTokens/1000, softLimit/1000),
+		Content: fmt.Sprintf("STOP! Context at ~%dK tokens (limit %dK). Archive finished tool rounds with `context_compactify`. Look for completed operations, old file reads, or resolved multi-step tasks that no longer inform the current goal. Each [N] is a message index — keep recent exchanges, compact the rest. You can also free context by unloading unnecessary skills with `unload_skill`.", estimatedTokens/1000, softLimit/1000),
 	}
 }
 
 // buildContextPrefix assembles the opening messages for every turn:
 // system prompt (if present), optional compactify usage notice, and
 // the working-directory message (if set).
-func buildContextPrefix(session SessionHistory, needCompactify bool) []Message {
-	result := make([]Message, 0, 4)
+func buildContextPrefix(session SessionHistory, needCompactify bool, skills *SkillRegistry) []Message {
+	result := make([]Message, 0, 6)
 
 	if sp := session.SystemPrompt(); sp != "" {
 		result = append(result, Message{Role: RoleSystem, Content: sp})
@@ -394,8 +426,12 @@ func buildContextPrefix(session SessionHistory, needCompactify bool) []Message {
 	if needCompactify {
 		result = append(result, Message{
 			Role:    RoleSystem,
-			Content: "`context_compactify` frees context by replacing old [N..M] message ranges with a summary marker. Use when the warning appears.",
+			Content: "`context_compactify` frees context by replacing old [N..M] message ranges with a summary marker. Use when the warning appears. `unload_skill` removes loaded skills from your system prompt to free context.",
 		})
+	}
+	// Inject loaded skills as system messages
+	if skillMsgs := buildSkillMessages(session, skills); len(skillMsgs) > 0 {
+		result = append(result, skillMsgs...)
 	}
 	if cwdMsg := session.CWDMessage(); cwdMsg != nil {
 		result = append(result, *cwdMsg)

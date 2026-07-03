@@ -21,10 +21,11 @@ import (
 //
 //	gemini-3.1-pro-preview
 type GeminiAdapter struct {
-	HTTPClient *http.Client
-	BaseURL    string
-	Model      string
-	Pricing    agent.Pricing
+	HTTPClient  *http.Client
+	BaseURL     string
+	Model       string
+	Pricing     agent.Pricing
+	LLMDebugDir string // when non-empty, request/response payloads are logged here
 }
 
 func NewGeminiAdapter(client *http.Client, baseURL, model string) *GeminiAdapter {
@@ -247,7 +248,7 @@ func (ad *GeminiAdapter) streamEndpoint() string {
 func (ad *GeminiAdapter) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (*agent.LLMResponse, error) {
 	// First decode into raw JSON to extract cost
 	var rawBody json.RawMessage
-	if err := doJSONPost(ctx, ad.HTTPClient, ad.endpoint(), ad.buildRequest(msgs, tools, opts), &rawBody, "gemini", nil); err != nil {
+	if err := doJSONPost(ctx, ad.HTTPClient, ad.endpoint(), ad.buildRequest(msgs, tools, opts), &rawBody, "gemini", nil, ad.LLMDebugDir); err != nil {
 		return nil, err
 	}
 
@@ -308,7 +309,7 @@ func (ad *GeminiAdapter) Complete(ctx context.Context, msgs []agent.Message, too
 // --- Stream -----------------------------------------------------------------
 
 func (ad *GeminiAdapter) Stream(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	body, err := doStreamPost(ctx, ad.HTTPClient, ad.streamEndpoint(), ad.buildRequest(msgs, tools, opts), "gemini", nil)
+	body, err := doStreamPost(ctx, ad.HTTPClient, ad.streamEndpoint(), ad.buildRequest(msgs, tools, opts), "gemini", nil, ad.LLMDebugDir)
 	if err != nil {
 		return nil, err
 	}
@@ -379,7 +380,7 @@ func (ad *GeminiAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 							Cost:                  cost,
 						}
 					}
-					sendStreamFinal(resultCh, accum.flush(), pendingUsage)
+					sendStreamFinal(resultCh, accum.flush(), pendingUsage, "")
 					return
 				}
 			}
@@ -389,7 +390,7 @@ func (ad *GeminiAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 			return
 		}
 		// Stream ended without finish reason — normal completion
-		sendStreamFinal(resultCh, accum.flush(), pendingUsage)
+		sendStreamFinal(resultCh, accum.flush(), pendingUsage, "")
 	}()
 
 	return resultCh, nil

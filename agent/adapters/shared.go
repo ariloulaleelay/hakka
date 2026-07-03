@@ -118,11 +118,19 @@ func (e *errHTTPStatus) Error() string {
 // On HTTP-level errors returns *errHTTPStatus with the given prefix so
 // callers can identify the provider. On transport errors returns the
 // underlying Go error unwrapped.
-func doJSONPost(ctx context.Context, client *http.Client, url string, body any, result any, prefix string, extraHeaders map[string]string) error {
+//
+// When debugDir is non-empty, the request body and response body are
+// written as JSON files for debugging.
+func doJSONPost(ctx context.Context, client *http.Client, url string, body any, result any, prefix string, extraHeaders map[string]string, debugDir string) error {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
+
+	if debugDir != "" {
+		dumpDebugJSON(debugDir, prefix, "req", body)
+	}
+
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return err
@@ -144,8 +152,19 @@ func doJSONPost(ctx context.Context, client *http.Client, url string, body any, 
 			Body:   strings.TrimSpace(string(buf)),
 		}
 	}
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	if debugDir != "" {
+		dumpDebugJSON(debugDir, prefix, "resp", string(respBody))
+	}
+
 	if result != nil {
-		return json.NewDecoder(resp.Body).Decode(result)
+		if err := json.Unmarshal(respBody, result); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -157,11 +176,18 @@ func doJSONPost(ctx context.Context, client *http.Client, url string, body any, 
 // Used by Anthropic and Gemini adapters for their streaming endpoints where
 // the response body is read incrementally (SSE) rather than decoded in one
 // shot.
-func doStreamPost(ctx context.Context, client *http.Client, url string, body any, prefix string, extraHeaders map[string]string) (io.ReadCloser, error) {
+//
+// When debugDir is non-empty, the request body is written as a JSON file.
+func doStreamPost(ctx context.Context, client *http.Client, url string, body any, prefix string, extraHeaders map[string]string, debugDir string) (io.ReadCloser, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
+
+	if debugDir != "" {
+		dumpDebugJSON(debugDir, prefix, "stream_req", body)
+	}
+
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return nil, err

@@ -77,6 +77,11 @@ type StreamResult struct {
 	// Usage may be set on the Done event or earlier if the provider
 	// reports it mid-stream.
 	Usage *Usage
+
+	// FinishReason is the provider's stop reason (e.g. "stop",
+	// "tool_calls", "end_turn", "length"). Only meaningful on the
+	// final event of the stream (Done or ToolCalls).
+	FinishReason string
 }
 
 // LLMAdapter abstracts an LLM provider (OpenAI, Anthropic, Ollama, ...).

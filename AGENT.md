@@ -114,6 +114,20 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | `context_compactify` | Compact message ranges to free context space (meta-tool) |
 | `show_tool` | Show detailed info about a specific tool; also enables it |
 
+### Skill Tools
+
+| Tool | Description |
+|---|---|
+| `search_skills` | Search the skill registry by name, description, or tags to discover available skills |
+| `inspect_skill` | Show full content of a registered skill without loading it (read before loading) |
+| `load_skill` | Load a skill into the session — its content becomes part of the system prompt on every turn |
+| `unload_skill` | Remove a loaded skill from the session to free context |
+| `import_skill` | Load an ad-hoc skill from any file path, registering it on-the-fly |
+
+Skills are reusable instructions/knowledge (markdown files with optional YAML frontmatter) that teach the agent HOW to do something. They are stored in a `SkillRegistry` and loaded into sessions on demand. When loaded, skill content is injected as additional `RoleSystem` messages after the base system prompt.
+
+The `context_compactify` warning also suggests using `unload_skill` to free context when the soft limit is exceeded.
+
 `show_tool` is **pre-enabled** in every new session so the LLM can always discover and enable tools at runtime.
 
 ### Namespace (Realm) Model
@@ -143,7 +157,7 @@ Key points:
 - No `protocol_version` field — versioning is implicit
 - `type:"req"` frames have flat `request_id`/`command` fields (no nested `client_request`)
 - `type:"welcome"` has `sessions` at the top level (not inside `data`)
-- `type:"session"` has `session`/`messages` at the top level (not inside `data`)
+- `type:"session"` has `session`/`events` at the top level (not inside `data`), no `messages` field
 - The `ContextEstimated` event is not emitted on the wire (estimated context is in the `usage` frame)
 
 ### Connection & Session Lifecycle (for client authors)
@@ -191,6 +205,7 @@ See `protocol.md` for the complete frame reference.
 | New LLM provider | `agent.LLMAdapter` |
 | Persistent session store | `agent.SessionStore` |
 | New tool | `agent.Tool` + `ToolRegistry.Register` |
+| New skill | `agent.Skill` + `agent.SkillRegistry.Add` / `AddDir` |
 | New transport | Implement a Gateway |
 | Middleware/guardrails | Engine `Hooks` in `EngineConfig` |
 

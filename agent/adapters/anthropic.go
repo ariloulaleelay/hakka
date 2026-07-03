@@ -14,12 +14,13 @@ import (
 // AnthropicAdapter speaks the Anthropic Messages API but is exposed via
 // hakka's OpenAI-shaped internal protocol.
 type AnthropicAdapter struct {
-	HTTPClient *http.Client
-	BaseURL    string
-	Model      string
-	Version    string // anthropic-version header; default "2023-06-01"
-	MaxTokens  int    // required by Anthropic; default 1024
-	Pricing    agent.Pricing
+	HTTPClient  *http.Client
+	BaseURL     string
+	Model       string
+	Version     string // anthropic-version header; default "2023-06-01"
+	MaxTokens   int    // required by Anthropic; default 1024
+	Pricing     agent.Pricing
+	LLMDebugDir string // when non-empty, request/response payloads are logged here
 }
 
 func NewAnthropicAdapter(client *http.Client, baseURL, model string) *AnthropicAdapter {
@@ -229,7 +230,7 @@ func (ad *AnthropicAdapter) extraHeaders() map[string]string {
 func (ad *AnthropicAdapter) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (*agent.LLMResponse, error) {
 	// First decode into raw JSON to extract cost
 	var rawBody json.RawMessage
-	if err := doJSONPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildRequest(msgs, tools, opts), &rawBody, "anthropic", ad.extraHeaders()); err != nil {
+	if err := doJSONPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildRequest(msgs, tools, opts), &rawBody, "anthropic", ad.extraHeaders(), ad.LLMDebugDir); err != nil {
 		return nil, err
 	}
 
@@ -282,7 +283,7 @@ func (ad *AnthropicAdapter) Complete(ctx context.Context, msgs []agent.Message, 
 // --- Stream -----------------------------------------------------------------
 
 func (ad *AnthropicAdapter) Stream(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	body, err := doStreamPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildStreamRequest(msgs, tools, opts), "anthropic", ad.extraHeaders())
+	body, err := doStreamPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildStreamRequest(msgs, tools, opts), "anthropic", ad.extraHeaders(), ad.LLMDebugDir)
 	if err != nil {
 		return nil, err
 	}
@@ -322,7 +323,7 @@ func (ad *AnthropicAdapter) Stream(ctx context.Context, msgs []agent.Message, to
 			}
 
 			if result.Done {
-				sendStreamFinal(resultCh, accum.flush(), pendingUsage)
+				sendStreamFinal(resultCh, accum.flush(), pendingUsage, "")
 				return io.EOF
 			}
 

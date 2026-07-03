@@ -183,7 +183,13 @@ func (h *TurnHandler) handleJSONCommand(ctx context.Context, req FrameRequest, w
 	// The command processor returns ActionContinue but doesn't invoke
 	// the LLM — that's the handler's responsibility.
 	// Only start a turn if we have a session to continue.
+	//
+	// For /continue, use the session's streaming preference rather than
+	// the request's (command frames have no stream field, always false).
 	if cmdRes.Action == commands.ActionContinue && sessionID != "" {
+		if session, _, err := h.Conv.Sessions().Get(context.Background(), h.Namespace, sessionID); err == nil {
+			req.Stream = session.GetStreaming()
+		}
 		h.startNewTurn(ctx, w, responseReader, req, sessionID, "")
 	}
 }

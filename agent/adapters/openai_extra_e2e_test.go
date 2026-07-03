@@ -90,7 +90,7 @@ func TestOpenAIExtraWithoutSessionID(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	// Wrap transport with extraRoundTripper
+	// Wrap transport with instrumentedTransport
 	httpClient := &http.Client{Transport: WrapTransport(http.DefaultTransport, extra, "")}
 
 	cfg := openai.DefaultConfig("dummy-key")

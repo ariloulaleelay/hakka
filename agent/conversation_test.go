@@ -685,26 +685,113 @@ func TestDefaultCompactSoftLimitIsUsedFromConfig(t *testing.T) {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
-	// Session's CompactSoftLimit should still be 0 (default), but the
-	// engine should have used the resolved value (200000).
-	if got := session.GetCompactSoftLimit(); got != 0 {
-		t.Fatalf("expected session CompactSoftLimit=0 (default), got %d", got)
+	// Session's CompactSoftLimit should now be explicitly set from
+	// the engine config default (200000) via model profile resolution.
+	if got := session.GetCompactSoftLimit(); got != 200000 {
+		t.Fatalf("expected session CompactSoftLimit=200000 (from engine config), got %d", got)
+	}
+	t.Logf("OK: session CompactSoftLimit explicitly set to %d", session.GetCompactSoftLimit())
+}
+
+// TestModelCompactSoftLimit_FromProfileAppliedOnSession verifies that when a
+// model has a compact soft limit in its profile, a session using that model
+// gets that limit set explicitly upon EnsureDefaultModel.
+func TestModelCompactSoftLimit_FromProfileAppliedOnSession(t *testing.T) {
+	sm := NewSessionManager(NewMemoryStore(), "sys")
+	reg := NewRegistry()
+	reg.Register("high-limit", &simpleAdapter{
+		responses: []response{
+			{msg: Message{Role: RoleAssistant, Content: "done"}},
+		},
+	})
+	reg.SetProfileCompactSoftLimit("high-limit", 50000)
+	_ = reg.SetDefault("high-limit")
+	router := NewRouter(reg)
+	tools := NewToolRegistry()
+
+	conv := NewConversation(sm, router, tools, "testns", EngineConfig{
+		Logger: testLogger(t),
+	})
+
+	session, _, err := executeSync(conv, context.Background(), "test-session", "hello")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
 	}
 
-	// Now verify the engine resolved the default correctly by checking
-	// that BuildCompactContext would not trigger compaction for this
-	// tiny session when passed the resolved limit.
-	msgs, needCompactify, _ := BuildCompactContext(session, 200000)
-	if needCompactify {
-		t.Fatalf("BUG: BuildCompactContext triggered compaction with softLimit=200000 for a tiny session; resolved limit should be the default (200000), not 0")
+	if got := session.GetCompactSoftLimit(); got != 50000 {
+		t.Fatalf("expected session CompactSoftLimit=50000 from model profile, got %d", got)
+	}
+}
+
+// TestModelCompactSoftLimit_DefaultUsedWhenProfileNotSet verifies that when
+// the model has no compact soft limit in its profile, the engine config
+// default is used instead.
+func TestModelCompactSoftLimit_DefaultUsedWhenProfileNotSet(t *testing.T) {
+	sm := NewSessionManager(NewMemoryStore(), "sys")
+	reg := NewRegistry()
+	reg.Register("no-limit", &simpleAdapter{
+		responses: []response{
+			{msg: Message{Role: RoleAssistant, Content: "done"}},
+		},
+	})
+	_ = reg.SetDefault("no-limit")
+	router := NewRouter(reg)
+	tools := NewToolRegistry()
+
+	conv := NewConversation(sm, router, tools, "testns", EngineConfig{
+		Logger:           testLogger(t),
+		CompactSoftLimit: 100000,
+	})
+
+	session, _, err := executeSync(conv, context.Background(), "test-session", "hello")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
 	}
 
-	// Also verify that passing 0 (the bug) WOULD trigger compaction,
-	// confirming the bug scenario.
-	_, buggyCompactify, _ := BuildCompactContext(session, 0)
-	if !buggyCompactify {
-		t.Error("expected BuildCompactContext with softLimit=0 to trigger compaction (demonstrating the bug)")
+	if got := session.GetCompactSoftLimit(); got != 100000 {
+		t.Fatalf("expected session CompactSoftLimit=100000 from engine config default, got %d", got)
+	}
+}
+
+// TestModelCompactSoftLimit_UpdatesOnModelChange verifies that when the
+// session model binding changes, the compact soft limit is updated from
+// the new model's profile.
+func TestModelCompactSoftLimit_UpdatesOnModelChange(t *testing.T) {
+	sm := NewSessionManager(NewMemoryStore(), "sys")
+	reg := NewRegistry()
+	adapter := &simpleAdapter{
+		responses: []response{
+			{msg: Message{Role: RoleAssistant, Content: "done"}},
+		},
+	}
+	reg.Register("model-a", adapter)
+	reg.Register("model-b", adapter)
+	reg.SetProfileCompactSoftLimit("model-a", 50000)
+	reg.SetProfileCompactSoftLimit("model-b", 99999)
+	_ = reg.SetDefault("model-a")
+	router := NewRouter(reg)
+	tools := NewToolRegistry()
+
+	conv := NewConversation(sm, router, tools, "testns", EngineConfig{
+		Logger: testLogger(t),
+	})
+
+	// First execution uses default model (model-a with limit 50000)
+	session, _, err := executeSync(conv, context.Background(), "test-session", "hello")
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if got := session.GetCompactSoftLimit(); got != 50000 {
+		t.Fatalf("expected session CompactSoftLimit=50000 from model-a, got %d", got)
 	}
 
-	t.Logf("OK: resolved softLimit=200000, context has %d messages, no compaction triggered", len(msgs))
+	// Now bind to model-b
+	_, err = conv.BindSessionModel(context.Background(), session.SessionID(), "model-b")
+	if err != nil {
+		t.Fatalf("BindSessionModel failed: %v", err)
+	}
+
+	if got := session.GetCompactSoftLimit(); got != 99999 {
+		t.Fatalf("expected session CompactSoftLimit=99999 from model-b, got %d", got)
+	}
 }

@@ -457,7 +457,7 @@ func TestGetSessionEvents(t *testing.T) {
 	}
 
 	// Build a conversation with: user msg → assistant (thinking + tool call) → tool result → assistant (final)
-	session.Append(agent.Message{Role: "user", Content: "Read README.md"})
+	session.Append(agent.Message{Role: "user", Content: "Read README.md", Timestamp: 1700000000123})
 	session.Append(agent.Message{
 		Role:    "assistant",
 		Content: "Let me check that file...",
@@ -466,23 +466,27 @@ func TestGetSessionEvents(t *testing.T) {
 			{ID: "call_2", Name: "search", Arguments: `{"pattern":"TODO"}`, ExecSnippet: `search 'TODO'`},
 		},
 		Usage: usage,
+		Timestamp: 1700000000123,
 	})
 	session.Append(agent.Message{
 		Role:       "tool",
 		Content:    "# Hakka\n\nA Go framework...",
 		ToolCallID: "call_1",
 		Name:       "read_file",
+		Timestamp:  1700000000123,
 	})
 	session.Append(agent.Message{
 		Role:       "tool",
 		Content:    "Error: pattern not found",
 		ToolCallID: "call_2",
 		Name:       "search",
+		Timestamp:  1700000000123,
 	})
 	session.Append(agent.Message{
 		Role:    "assistant",
 		Content: "Here's what I found in README.md...",
 		Usage:   usage,
+		Timestamp: 1700000000123,
 	})
 
 	if err := sm.Save(context.Background(), "default", session); err != nil {
@@ -512,15 +516,19 @@ func TestGetSessionEvents(t *testing.T) {
 		Type     string           `json:"type"`
 		Event    string           `json:"event"`
 		Session  map[string]any   `json:"session"`
-		Messages []map[string]any `json:"messages"`
 		Events   []map[string]any `json:"events"`
 		Error    string           `json:"error"`
 	}
-	readWSFrame(t, conn, 3*time.Second, &resp)
+	rawData := readWSFrame(t, conn, 3*time.Second, &resp)
 
-	if resp.Error != "" {
-		t.Fatalf("unexpected error: %s", resp.Error)
+	// --- Messages field should NOT be present (only events are used) ---
+	var rawMap map[string]any
+	if err := json.Unmarshal(rawData, &rawMap); err == nil {
+		if _, exists := rawMap["messages"]; exists {
+			t.Fatal("expected messages field to be absent (use events instead)")
+		}
 	}
+
 	if resp.Type != "session" {
 		t.Fatalf("expected type 'session', got %q", resp.Type)
 	}
@@ -671,11 +679,18 @@ func TestGetSessionEvents(t *testing.T) {
 		t.Fatal("event[9] done should not have stats field in history replay")
 	}
 
-	// --- Verify messages field still present (backward compat) ---
-	if resp.Messages == nil {
-		t.Fatal("expected messages field to still be present (backward compat)")
+	// --- Verify events carry timestamp (ts) ---
+	for i, evt := range resp.Events {
+		if evt["type"] == "done" {
+			continue // done marker doesn't carry ts
+		}
+		if _, hasTS := evt["ts"]; !hasTS {
+			t.Fatalf("event[%d] (%s) should have ts field", i, evt["type"])
+		}
 	}
-	if len(resp.Messages) != 5 {
-		t.Fatalf("expected 5 messages, got %d", len(resp.Messages))
+
+	// --- Messages field should NOT be present (only events are used) ---
+	if _, exists := rawMap["messages"]; exists {
+		t.Fatal("expected messages field to be absent (use events instead)")
 	}
 }

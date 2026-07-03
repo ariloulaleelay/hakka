@@ -88,6 +88,14 @@ type SessionCompactLimits interface {
 	SetCompactSoftLimit(n int)
 }
 
+// SessionSkills provides access to loaded skills for a session.
+type SessionSkills interface {
+	ActiveSkills() []string
+	AddActiveSkill(name string)
+	RemoveActiveSkill(name string)
+	ClearActiveSkills()
+}
+
 // SessionView is the full composite interface that the orchestration
 // layer (Conversation, StreamSession, SessionManager) depends on.
 //
@@ -101,4 +109,5 @@ type SessionView interface {
 	SessionModelBinding
 	SessionTokenTracking
 	SessionCompactLimits
+	SessionSkills
 }

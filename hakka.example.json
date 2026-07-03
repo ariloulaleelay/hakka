@@ -12,6 +12,10 @@
         "input": 0.00000027,
         "output": 0.00000110,
         "cache_hit_input": 0.00000007
+      },
+      "compact_soft_limit": 200000,
+      "hacks": {
+        "ignore_stop_if_no_content": true
       }
     },
     "claude": {
