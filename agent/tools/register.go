@@ -71,6 +71,17 @@ func RegisterToolManagementTools(r *agent.ToolRegistry) {
 	r.Register(ShowTool(r))
 }
 
+// RegisterSubagentTools registers the subagent_run tool on the given registry.
+// The subagent tool lets the LLM fork its current session and run an autonomous
+// subtask in a child LLM session. It needs access to the router, tool registry,
+// engine config, and skill registry to set up the child conversation.
+//
+// The subagent_run tool is automatically blocked on child sessions to prevent
+// infinite recursion.
+func RegisterSubagentTools(r *agent.ToolRegistry, router *agent.Router, tools *agent.ToolRegistry, cfg agent.EngineConfig, skills *agent.SkillRegistry) {
+	r.Register(SubagentRun(router, tools, cfg, skills))
+}
+
 // RegisterSkillTools registers skill-management tools on the given registry.
 // These tools let the LLM discover, inspect, load, unload, and import skills.
 //

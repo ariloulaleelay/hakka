@@ -137,6 +137,8 @@ func RunBatchWithOutput(ctx context.Context, p RunBatchParams, output io.Writer,
 	cfg := agent.DefaultEngineConfig()
 	cfg.Logger = logger
 
+	hakkatools.RegisterSubagentTools(tools, router, tools, cfg, skills)
+
 	conv := agent.NewConversation(sessions, router, tools, "batch", cfg)
 	conv.SetSkills(skills)
 

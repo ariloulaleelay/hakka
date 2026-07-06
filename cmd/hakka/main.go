@@ -275,6 +275,7 @@ func setupComponents(store agent.SessionStore, registry *agent.Registry, logger 
 	// Create skill registry (empty for now, can be populated from config)
 	skillRegistry := agent.NewSkillRegistry()
 	hakkatools.RegisterSkillTools(tools, skillRegistry)
+	hakkatools.RegisterSubagentTools(tools, router, tools, cfg, skillRegistry)
 
 	return sessions, router, tools, pm, skillRegistry, systemPrompt, cfg
 }
@@ -379,6 +380,7 @@ func buildTelegramGateway(p gatewayParams, telegramToken, telegramWhitelist, tel
 	hakkatools.RegisterTelegramTools(tgTools)
 	hakkatools.RegisterToolManagementTools(tgTools)
 	hakkatools.RegisterSessionTools(tgTools, p.Sessions, nil)
+	hakkatools.RegisterSubagentTools(tgTools, p.Router, tgTools, p.EngineCfg, p.Skills)
 
 	conv := agent.NewConversation(p.Sessions, p.Router, tgTools, "tg", p.EngineCfg)
 	conv.SetSkills(p.Skills)
