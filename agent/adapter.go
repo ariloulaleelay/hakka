@@ -34,6 +34,39 @@ type Usage struct {
 	Cost                  float64       `json:"cost,omitempty"`
 }
 
+// RetryConfig configures the retry policy for LLM provider HTTP calls.
+// Zero values are replaced with sensible defaults at use-site.
+type RetryConfig struct {
+	// MaxAttempts is the total number of HTTP attempts (including the initial
+	// call). 0 means use the default (20).
+	MaxAttempts int `json:"max_attempts,omitempty"`
+	// BaseDelay is the initial delay before the first retry. 0 means use the
+	// default (250ms).
+	BaseDelay time.Duration `json:"base_delay,omitempty"`
+	// MaxDelay is the maximum delay cap. 0 means use the default (10s).
+	MaxDelay time.Duration `json:"max_delay,omitempty"`
+	// BackoffFactor is the multiplier applied to the delay after each retry
+	// attempt. 0 means use the default (1.5).
+	BackoffFactor float64 `json:"backoff_factor,omitempty"`
+}
+
+// DefaultRetryConfig returns a RetryConfig populated with the standard defaults.
+func DefaultRetryConfig() RetryConfig {
+	return RetryConfig{
+		MaxAttempts:   20,
+		BaseDelay:     250 * time.Millisecond,
+		MaxDelay:      10 * time.Second,
+		BackoffFactor: 1.5,
+	}
+}
+
+// IsZero returns true when all fields are at their zero value (no explicit
+// retry configuration). Adapters that historically had no retry should only
+// apply retry when IsZero is false, preserving backward compatibility.
+func (r RetryConfig) IsZero() bool {
+	return r.MaxAttempts == 0 && r.BaseDelay == 0 && r.MaxDelay == 0 && r.BackoffFactor == 0
+}
+
 // Pricing defines per-token costs for LLM providers that do not return
 // cost in their response. When set on a model config, the adapter
 // calculates the monetary cost from the actual token usage after each

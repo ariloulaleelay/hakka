@@ -21,6 +21,10 @@ type AnthropicAdapter struct {
 	MaxTokens   int    // required by Anthropic; default 1024
 	Pricing     agent.Pricing
 	LLMDebugDir string // when non-empty, request/response payloads are logged here
+
+	// RetryConfig controls the retry policy for HTTP 429 rate-limit errors.
+	// Zero values use sensible defaults.
+	RetryConfig agent.RetryConfig
 }
 
 func NewAnthropicAdapter(client *http.Client, baseURL, model string) *AnthropicAdapter {
@@ -230,8 +234,16 @@ func (ad *AnthropicAdapter) extraHeaders() map[string]string {
 func (ad *AnthropicAdapter) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (*agent.LLMResponse, error) {
 	// First decode into raw JSON to extract cost
 	var rawBody json.RawMessage
-	if err := doJSONPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildRequest(msgs, tools, opts), &rawBody, "anthropic", ad.extraHeaders(), ad.LLMDebugDir); err != nil {
-		return nil, err
+	if ad.RetryConfig.IsZero() {
+		if err := doJSONPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildRequest(msgs, tools, opts), &rawBody, "anthropic", ad.extraHeaders(), ad.LLMDebugDir); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := retryOnRateLimit(ctx, ad.RetryConfig, func() error {
+			return doJSONPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildRequest(msgs, tools, opts), &rawBody, "anthropic", ad.extraHeaders(), ad.LLMDebugDir)
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	raw := extractRawUsage(rawBody)
@@ -283,9 +295,21 @@ func (ad *AnthropicAdapter) Complete(ctx context.Context, msgs []agent.Message, 
 // --- Stream -----------------------------------------------------------------
 
 func (ad *AnthropicAdapter) Stream(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	body, err := doStreamPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildStreamRequest(msgs, tools, opts), "anthropic", ad.extraHeaders(), ad.LLMDebugDir)
-	if err != nil {
-		return nil, err
+	var body io.ReadCloser
+	if ad.RetryConfig.IsZero() {
+		var err error
+		body, err = doStreamPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildStreamRequest(msgs, tools, opts), "anthropic", ad.extraHeaders(), ad.LLMDebugDir)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if err := retryOnRateLimit(ctx, ad.RetryConfig, func() error {
+			var err error
+			body, err = doStreamPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildStreamRequest(msgs, tools, opts), "anthropic", ad.extraHeaders(), ad.LLMDebugDir)
+			return err
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	resultCh := make(chan agent.StreamResult, 16)
@@ -297,7 +321,7 @@ func (ad *AnthropicAdapter) Stream(ctx context.Context, msgs []agent.Message, to
 		accum := newIndexAccumulator()
 		var pendingUsage *agent.Usage
 
-		err = scanSSELines(ctx, body, func(payload string) error {
+		scanErr := scanSSELines(ctx, body, func(payload string) error {
 			result, parseErr := ad.parseSSEPayload(payload)
 			if parseErr != nil {
 				return parseErr
@@ -332,8 +356,8 @@ func (ad *AnthropicAdapter) Stream(ctx context.Context, msgs []agent.Message, to
 			}
 			return nil
 		})
-		if err != nil && err != io.EOF {
-			resultCh <- agent.StreamResult{Err: err}
+		if scanErr != nil && scanErr != io.EOF {
+			resultCh <- agent.StreamResult{Err: scanErr}
 			return
 		}
 	}()

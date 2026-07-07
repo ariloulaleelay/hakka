@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	openai "github.com/sashabaranov/go-openai"
 
@@ -188,6 +189,75 @@ func TestOpenAIStream(t *testing.T) {
 	}
 	if buf.String() != "hello" {
 		t.Fatalf("buf: %q", buf.String())
+	}
+}
+
+func TestOpenAICompleteRetriesCustomConfig(t *testing.T) {
+	var requests int32
+	adapter, _ := newOpenAITestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		attempt := atomic.AddInt32(&requests, 1)
+		if attempt < 3 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"role":"assistant","content":"recovered"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+		}`))
+	})
+
+	// Use a custom retry config with 3 max attempts, tiny delays
+	adapter.RetryConfig = agent.RetryConfig{
+		MaxAttempts:   3,
+		BaseDelay:     5 * time.Millisecond,
+		MaxDelay:      50 * time.Millisecond,
+		BackoffFactor: 1.0, // constant delay, no exponential growth
+	}
+
+	resp, err := adapter.Complete(context.Background(),
+		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}}, nil, agent.CompleteOptions{})
+	if err != nil {
+		t.Fatalf("complete after retry: %v", err)
+	}
+	if resp.Message.Content != "recovered" {
+		t.Fatalf("content: %q", resp.Message.Content)
+	}
+	if got := atomic.LoadInt32(&requests); got != 3 {
+		t.Fatalf("expected 3 requests (max_attempts=3), got %d", got)
+	}
+}
+
+func TestOpenAIStreamRetries429(t *testing.T) {
+	var requests int32
+	adapter, _ := newOpenAITestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		attempt := atomic.AddInt32(&requests, 1)
+		if attempt <= 2 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	})
+
+	adapter.RetryConfig = agent.RetryConfig{
+		MaxAttempts:   3,
+		BaseDelay:     5 * time.Millisecond,
+		MaxDelay:      50 * time.Millisecond,
+		BackoffFactor: 1.0,
+	}
+
+	_, err := adapter.Stream(context.Background(),
+		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}}, nil, agent.CompleteOptions{})
+	if err != nil {
+		t.Fatalf("stream init after retry: %v", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 3 {
+		t.Fatalf("expected 3 requests, got %d", got)
 	}
 }
 

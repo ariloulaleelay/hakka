@@ -7,6 +7,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	openai "github.com/sashabaranov/go-openai"
 
@@ -15,6 +16,15 @@ import (
 )
 
 var envVarRe = regexp.MustCompile(`\$\{env:\s*(\w+)\s*\}`)
+
+// RetryConfigRaw is the JSON-serializable form of agent.RetryConfig.
+// Duration fields are specified as Go duration strings (e.g. "10s", "250ms").
+type RetryConfigRaw struct {
+	MaxAttempts   int     `json:"max_attempts,omitempty"`
+	BaseDelay     string  `json:"base_delay,omitempty"`
+	MaxDelay      string  `json:"max_delay,omitempty"`
+	BackoffFactor float64 `json:"backoff_factor,omitempty"`
+}
 
 // ModelConfig describes a single named LLM endpoint.
 type ModelConfig struct {
@@ -26,6 +36,7 @@ type ModelConfig struct {
 	Pricing          *agent.Pricing    `json:"pricing,omitempty"`           // per-token pricing for cost calculation when provider doesn't return cost
 	CompactSoftLimit int               `json:"compact_soft_limit,omitempty"` // per-provider compact soft limit (0 = use engine default)
 	Hacks            agent.Hacks       `json:"hacks,omitempty"`             // per-provider workarounds
+	RetryConfig      *RetryConfigRaw   `json:"retry_config,omitempty"`      // per-provider retry policy
 }
 
 // File is the on-disk shape of the configuration.
@@ -205,6 +216,29 @@ func (t *headerTransport) RoundTrip(request *http.Request) (*http.Response, erro
 	return t.base.RoundTrip(request)
 }
 
+// toAgent converts the raw config to an agent.RetryConfig, parsing duration
+// strings into time.Duration values. Returns the zero value if raw is nil.
+func (r *RetryConfigRaw) toAgent() agent.RetryConfig {
+	if r == nil {
+		return agent.RetryConfig{}
+	}
+	rc := agent.RetryConfig{
+		MaxAttempts:   r.MaxAttempts,
+		BackoffFactor: r.BackoffFactor,
+	}
+	if r.BaseDelay != "" {
+		if d, err := time.ParseDuration(r.BaseDelay); err == nil {
+			rc.BaseDelay = d
+		}
+	}
+	if r.MaxDelay != "" {
+		if d, err := time.ParseDuration(r.MaxDelay); err == nil {
+			rc.MaxDelay = d
+		}
+	}
+	return rc
+}
+
 // FeedbackEndpoint returns the configured feedback URL, or empty string if not set.
 func (f *File) FeedbackEndpoint() string {
 	return f.FeedbackURL
@@ -257,6 +291,7 @@ func buildAdapter(name string, modelCfg ModelConfig, client *http.Client, llmDeb
 		if modelCfg.Pricing != nil {
 			adapter.Pricing = *modelCfg.Pricing
 		}
+		adapter.RetryConfig = modelCfg.RetryConfig.toAgent()
 		return adapter, nil
 	case "anthropic":
 		adapter := adapters.NewAnthropicAdapter(client, modelCfg.BaseURL, modelCfg.Model)
@@ -270,6 +305,7 @@ func buildAdapter(name string, modelCfg ModelConfig, client *http.Client, llmDeb
 		if modelCfg.Pricing != nil {
 			adapter.Pricing = *modelCfg.Pricing
 		}
+		adapter.RetryConfig = modelCfg.RetryConfig.toAgent()
 		return adapter, nil
 	case "gemini", "google":
 		adapter := adapters.NewGeminiAdapter(client, modelCfg.BaseURL, modelCfg.Model)
@@ -277,6 +313,7 @@ func buildAdapter(name string, modelCfg ModelConfig, client *http.Client, llmDeb
 		if modelCfg.Pricing != nil {
 			adapter.Pricing = *modelCfg.Pricing
 		}
+		adapter.RetryConfig = modelCfg.RetryConfig.toAgent()
 		return adapter, nil
 	default:
 		return nil, fmt.Errorf("config: model %q: unknown dialect %q", name, modelCfg.Dialect)

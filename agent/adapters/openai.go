@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -35,6 +36,10 @@ type OpenAIAdapter struct {
 	// at request time using values from CompleteOptions.
 	Extra   map[string]any
 	Pricing agent.Pricing // per-token pricing for cost calculation when provider doesn't return cost
+
+	// RetryConfig controls the retry policy for HTTP 429 rate-limit errors.
+	// Zero values use sensible defaults.
+	RetryConfig agent.RetryConfig
 }
 
 // ---------------------------------------------------------------------------
@@ -371,7 +376,7 @@ func (ad *OpenAIAdapter) Complete(ctx context.Context, msgs []agent.Message, too
 	ctx = ContextWithCapturedUsage(ctx, &raw)
 
 	req := ad.buildRequest(msgs, tools, opts)
-	resp, err := retryOpenAI(ctx, req, func() (openai.ChatCompletionResponse, error) {
+	resp, err := retryOpenAI(ctx, ad.RetryConfig, req, func() (openai.ChatCompletionResponse, error) {
 		return ad.Client.CreateChatCompletion(ctx, req)
 	})
 	if err != nil {
@@ -431,30 +436,44 @@ func (ad *OpenAIAdapter) Complete(ctx context.Context, msgs []agent.Message, too
 	return out, nil
 }
 
-// retryOpenAI is the single retry loop shared by both Complete and Stream
-// paths. It abstracts the common logic: dump the request for debugging,
-// call the provided function, detect rate-limit errors (HTTP 429),
-// apply exponential backoff, and respect context cancellation.
-//
-// The fn closure captures only the API call itself — ctx and req are
-// passed explicitly so all retry logic lives in one place.
+// retryOpenAI is the retry loop shared by both Complete and Stream paths.
+// It calls fn, detects rate-limit errors (HTTP 429), applies exponential backoff
+// using cfg, and respects context cancellation.
 func retryOpenAI[T any](
 	ctx context.Context,
+	cfg agent.RetryConfig,
 	req openai.ChatCompletionRequest,
 	fn func() (T, error),
 ) (T, error) {
+	maxAttempts := cfg.MaxAttempts
+	if maxAttempts == 0 {
+		maxAttempts = openAIRetryAttempts
+	}
+	baseDelay := cfg.BaseDelay
+	if baseDelay == 0 {
+		baseDelay = openAIRetryBaseDelay
+	}
+	maxDelay := cfg.MaxDelay
+	if maxDelay == 0 {
+		maxDelay = 10000 * time.Millisecond
+	}
+	backoffFactor := cfg.BackoffFactor
+	if backoffFactor == 0 {
+		backoffFactor = 1.5
+	}
+
 	var lastErr error
-	for attempt := 0; attempt < openAIRetryAttempts; attempt++ {
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		result, err := fn()
 		if err == nil {
 			return result, nil
 		}
 		lastErr = err
-		if !isOpenAIRateLimitError(err) || attempt == openAIRetryAttempts-1 {
+		if !isOpenAIRateLimitError(err) || attempt == maxAttempts-1 {
 			var zero T
 			return zero, err
 		}
-		if err := sleepOpenAIRetry(ctx, attempt); err != nil {
+		if err := sleepOpenAIRetry(ctx, attempt, baseDelay, maxDelay, backoffFactor); err != nil {
 			var zero T
 			return zero, err
 		}
@@ -475,8 +494,8 @@ func isOpenAIRateLimitError(err error) bool {
 	return false
 }
 
-func sleepOpenAIRetry(ctx context.Context, attempt int) error {
-	delay := min(openAIRetryBaseDelay<<attempt, 10000*time.Millisecond)
+func sleepOpenAIRetry(ctx context.Context, attempt int, baseDelay, maxDelay time.Duration, backoffFactor float64) error {
+	delay := min(time.Duration(float64(baseDelay)*math.Pow(backoffFactor, float64(attempt))), maxDelay)
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
@@ -501,7 +520,7 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 	req.Stream = true
 	req.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
 
-	stream, err := retryOpenAI(ctx, req, func() (*openai.ChatCompletionStream, error) {
+	stream, err := retryOpenAI(ctx, ad.RetryConfig, req, func() (*openai.ChatCompletionStream, error) {
 		return ad.Client.CreateChatCompletionStream(ctx, req)
 	})
 	if err != nil {

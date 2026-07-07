@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ariloulaleelay/hakka/agent"
 )
@@ -311,6 +313,74 @@ func TestAnthropicStreamToolCallMultipleInputJSONDeltas(t *testing.T) {
 	}
 	if tc1.Arguments != `{"tz": "UTC"}` {
 		t.Errorf("tool call 1 args: got %q", tc1.Arguments)
+	}
+}
+
+func TestAnthropicCompleteRetries429(t *testing.T) {
+	var requests int32
+	adapter := newAnthropicTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		attempt := atomic.AddInt32(&requests, 1)
+		if attempt <= 2 {
+			w.WriteHeader(429)
+			_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_1","role":"assistant",
+			"content":[{"type":"text","text":"recovered"}],
+			"stop_reason":"end_turn",
+			"usage":{"input_tokens":1,"output_tokens":1}
+		}`))
+	})
+
+	adapter.RetryConfig = agent.RetryConfig{
+		MaxAttempts:   3,
+		BaseDelay:     5 * time.Millisecond,
+		MaxDelay:      50 * time.Millisecond,
+		BackoffFactor: 1.0,
+	}
+
+	resp, err := adapter.Complete(context.Background(),
+		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}}, nil, agent.CompleteOptions{})
+	if err != nil {
+		t.Fatalf("complete after retry: %v", err)
+	}
+	if resp.Message.Content != "recovered" {
+		t.Fatalf("content: %q", resp.Message.Content)
+	}
+	if got := atomic.LoadInt32(&requests); got != 3 {
+		t.Fatalf("expected 3 requests, got %d", got)
+	}
+}
+
+func TestAnthropicStreamRetries429(t *testing.T) {
+	var requests int32
+	adapter := newAnthropicTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		attempt := atomic.AddInt32(&requests, 1)
+		if attempt <= 2 {
+			w.WriteHeader(429)
+			_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+	})
+
+	adapter.RetryConfig = agent.RetryConfig{
+		MaxAttempts:   3,
+		BaseDelay:     5 * time.Millisecond,
+		MaxDelay:      50 * time.Millisecond,
+		BackoffFactor: 1.0,
+	}
+
+	_, err := adapter.Stream(context.Background(),
+		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}}, nil, agent.CompleteOptions{})
+	if err != nil {
+		t.Fatalf("stream init after retry: %v", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 3 {
+		t.Fatalf("expected 3 requests, got %d", got)
 	}
 }
 

@@ -332,6 +332,85 @@ func TestExpandEnvInMCPServerConfigFailsOnMissing(t *testing.T) {
 	}
 }
 
+func TestBuildRegistry_RetryConfig(t *testing.T) {
+	os.Setenv("HAKKA_TOKEN", "test-token")
+	defer os.Unsetenv("HAKKA_TOKEN")
+
+	const cfgWithRetry = `{
+	  "default": "unstable",
+	  "models": {
+		"unstable": {
+		  "dialect": "openai",
+		  "base_url": "https://unstable.example.com/v1",
+		  "model": "unstable-model",
+		  "headers": {"Authorization": "Bearer ${env: HAKKA_TOKEN}"},
+		  "retry_config": {
+			"max_attempts": 60,
+			"base_delay": "10s",
+			"max_delay": "60s",
+			"backoff_factor": 1.5
+		  }
+		},
+		"default-retry": {
+		  "dialect": "anthropic",
+		  "base_url": "https://example.com/v1",
+		  "model": "default-model",
+		  "headers": {"Authorization": "Bearer ${env: HAKKA_TOKEN}"}
+		}
+	  }
+	}`
+
+	p := filepath.Join(t.TempDir(), "config_retry.json")
+	if err := os.WriteFile(p, []byte(cfgWithRetry), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := Load(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	reg, err := BuildRegistry(f, "")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	// Model with retry_config should have custom values on the adapter
+	ad, ok := reg.Get("unstable")
+	if !ok {
+		t.Fatal("adapter 'unstable' not found")
+	}
+	oa, ok := ad.(*adapters.OpenAIAdapter)
+	if !ok {
+		t.Fatalf("expected *adapters.OpenAIAdapter, got %T", ad)
+	}
+	if oa.RetryConfig.MaxAttempts != 60 {
+		t.Errorf("MaxAttempts: got %d, want 60", oa.RetryConfig.MaxAttempts)
+	}
+	if oa.RetryConfig.BaseDelay != 10_000_000_000 {
+		t.Errorf("BaseDelay: got %v, want 10s", oa.RetryConfig.BaseDelay)
+	}
+	if oa.RetryConfig.MaxDelay != 60_000_000_000 {
+		t.Errorf("MaxDelay: got %v, want 60s", oa.RetryConfig.MaxDelay)
+	}
+	if oa.RetryConfig.BackoffFactor != 1.5 {
+		t.Errorf("BackoffFactor: got %f, want 1.5", oa.RetryConfig.BackoffFactor)
+	}
+
+	// Model without retry_config should get defaults (zero values → defaults on use)
+	ad2, ok := reg.Get("default-retry")
+	if !ok {
+		t.Fatal("adapter 'default-retry' not found")
+	}
+	aa, ok := ad2.(*adapters.AnthropicAdapter)
+	if !ok {
+		t.Fatalf("expected *adapters.AnthropicAdapter, got %T", ad2)
+	}
+	if aa.RetryConfig.MaxAttempts != 0 || aa.RetryConfig.BaseDelay != 0 || aa.RetryConfig.BackoffFactor != 0 {
+		t.Errorf("expected zero-value RetryConfig for model without retry_config, got %+v", aa.RetryConfig)
+	}
+}
+
 func TestBuildRegistry_ModelCompactSoftLimit(t *testing.T) {
 	os.Setenv("HAKKA_TOKEN", "test-token")
 	defer os.Unsetenv("HAKKA_TOKEN")

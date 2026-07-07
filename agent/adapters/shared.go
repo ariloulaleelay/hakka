@@ -5,11 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ariloulaleelay/hakka/agent"
 )
@@ -236,4 +239,65 @@ func scanSSELines(ctx context.Context, body io.Reader, onPayload func(string) er
 		return err
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Shared retry helpers for HTTP 429 rate-limit handling.
+// ---------------------------------------------------------------------------
+
+// isRateLimitError returns true when err is an *errHTTPStatus with a 429
+// status code (Too Many Requests).
+func isRateLimitError(err error) bool {
+	var httpErr *errHTTPStatus
+	if errors.As(err, &httpErr) {
+		return strings.HasPrefix(httpErr.Status, "429")
+	}
+	return false
+}
+
+// retryOnRateLimit calls fn, retrying on HTTP 429 errors with exponential
+// backoff. cfg controls retry parameters; zero values use defaults from
+// agent.DefaultRetryConfig.
+func retryOnRateLimit(ctx context.Context, cfg agent.RetryConfig, fn func() error) error {
+	def := agent.DefaultRetryConfig()
+	maxAttempts := cfg.MaxAttempts
+	if maxAttempts == 0 {
+		maxAttempts = def.MaxAttempts
+	}
+	baseDelay := cfg.BaseDelay
+	if baseDelay == 0 {
+		baseDelay = def.BaseDelay
+	}
+	maxDelay := cfg.MaxDelay
+	if maxDelay == 0 {
+		maxDelay = def.MaxDelay
+	}
+	backoffFactor := cfg.BackoffFactor
+	if backoffFactor == 0 {
+		backoffFactor = def.BackoffFactor
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		err := fn()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isRateLimitError(err) || attempt == maxAttempts-1 {
+			return err
+		}
+		delay := time.Duration(float64(baseDelay) * math.Pow(backoffFactor, float64(attempt)))
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return lastErr
 }
