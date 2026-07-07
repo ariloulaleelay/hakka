@@ -91,6 +91,7 @@ func NewSessionData(namespace, systemPrompt string) SessionData {
 		UpdatedAt:        now,
 		ClientCWD:        cwd,
 		CompactSoftLimit: 0,
+		Streaming:        true,
 		// Only show_tool is pre-enabled by default so the LLM can
 		// discover and enable other tools at runtime.
 		// allow_tool and deny_tool are human-only slash commands.

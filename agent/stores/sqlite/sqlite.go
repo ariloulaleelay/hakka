@@ -42,6 +42,7 @@ func Open(path string) (*Store, error) {
 	runMigration(db, `ALTER TABLE sessions ADD COLUMN estimated_context_tokens INTEGER NOT NULL DEFAULT 0`)
 	runMigration(db, `ALTER TABLE sessions ADD COLUMN total_cost REAL NOT NULL DEFAULT 0`)
 	runMigration(db, `ALTER TABLE sessions ADD COLUMN active_skills TEXT NOT NULL DEFAULT '[]'`)
+	runMigration(db, `ALTER TABLE sessions ADD COLUMN streaming INTEGER NOT NULL DEFAULT 1`)
 	return &Store{db: db}, nil
 }
 
@@ -98,6 +99,7 @@ func scanRow(scanner interface{ Scan(dest ...any) error }) (*agent.Session, erro
 		compactSoftLim        int
 		estimatedContextTokens int
 		activeSkillsStr       string
+		streamingInt          int
 	)
 	err := scanner.Scan(
 		&data.Namespace, &data.ID, &data.SystemPrompt,
@@ -105,10 +107,12 @@ func scanRow(scanner interface{ Scan(dest ...any) error }) (*agent.Session, erro
 		&data.ClientCWD, &modelStr, &totalTokens,
 		&data.Name, &enabledStr, &blockedStr, &compactSoftLim,
 		&estimatedContextTokens, &totalCost, &activeSkillsStr,
+		&streamingInt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	data.Streaming = streamingInt != 0
 	if err := json.Unmarshal([]byte(messagesJSON), &data.Messages); err != nil {
 		return nil, fmt.Errorf("decode messages: %w", err)
 	}
@@ -145,7 +149,7 @@ func scanRow(scanner interface{ Scan(dest ...any) error }) (*agent.Session, erro
 
 func (st *Store) Get(ctx context.Context, namespace, id string) (*agent.Session, bool, error) {
 	row := st.db.QueryRowContext(ctx,
-		`SELECT namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills FROM sessions WHERE namespace = ? AND id = ?`, namespace, id)
+		`SELECT namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills, streaming FROM sessions WHERE namespace = ? AND id = ?`, namespace, id)
 
 	session, err := scanRow(row)
 	if err == sql.ErrNoRows {
@@ -210,9 +214,14 @@ func (st *Store) Put(ctx context.Context, namespace string, session *agent.Sessi
 		}
 	}
 
+	streamingInt := 0
+	if data.Streaming {
+		streamingInt = 1
+	}
+
 	_, err = st.db.ExecContext(ctx, `
-		INSERT INTO sessions (namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills, streaming)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(namespace, id) DO UPDATE SET
 			system_prompt = excluded.system_prompt,
 			messages      = excluded.messages,
@@ -226,10 +235,11 @@ func (st *Store) Put(ctx context.Context, namespace string, session *agent.Sessi
 			compact_soft_limit = excluded.compact_soft_limit,
 			estimated_context_tokens = excluded.estimated_context_tokens,
 			total_cost    = excluded.total_cost,
-			active_skills = excluded.active_skills
+			active_skills = excluded.active_skills,
+			streaming     = excluded.streaming
 	`, namespace, data.ID, data.SystemPrompt, string(messagesJSON), string(createdText), string(updatedText),
 		data.ClientCWD, data.Model, data.TotalTokens, data.Name, enabledJSON, blockedJSON, data.CompactSoftLimit,
-		data.EstimatedContextTokens, data.TotalCost, activeSkillsJSON)
+		data.EstimatedContextTokens, data.TotalCost, activeSkillsJSON, streamingInt)
 
 	session.Update(func(d *agent.SessionData) {
 		d.Namespace = namespace
@@ -244,7 +254,7 @@ func (st *Store) Delete(ctx context.Context, namespace, id string) error {
 }
 
 func (st *Store) List(ctx context.Context, namespace string) ([]*agent.Session, error) {
-	rows, err := st.db.QueryContext(ctx, `SELECT namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills FROM sessions WHERE namespace = ? ORDER BY updated_at DESC`, namespace)
+	rows, err := st.db.QueryContext(ctx, `SELECT namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills, streaming FROM sessions WHERE namespace = ? ORDER BY updated_at DESC`, namespace)
 	if err != nil {
 		return nil, err
 	}

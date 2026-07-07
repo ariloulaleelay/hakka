@@ -202,7 +202,6 @@ func (t *instrumentedTransport) handleResponse(req *http.Request, resp *http.Res
 	}
 	rawPtr, _ := req.Context().Value(ctxCapturedUsage).(*RawUsage)
 	if rawPtr == nil {
-		slog.Debug("openai_handle_response: no captured usage pointer in context")
 		return resp, nil
 	}
 
@@ -221,13 +220,20 @@ func (t *instrumentedTransport) handleResponse(req *http.Request, resp *http.Res
 	}
 
 	*rawPtr = extractRawUsage(body)
-	slog.Debug("openai_handle_response: non-streaming, extracted usage",
-		"prompt_tokens", rawPtr.promptTokens,
-		"completion_tokens", rawPtr.completionTokens,
-		"total_tokens", rawPtr.totalTokens,
-		"cost", rawPtr.cost,
-		"cache_hit", rawPtr.promptCacheHit,
-		"cache_miss", rawPtr.promptCacheMiss)
+	if resp.StatusCode >= 400 {
+		slog.Debug("openai_handle_response: error response",
+			"status", resp.Status,
+			"status_code", resp.StatusCode,
+			"body_snippet", truncateString(string(body), 200))
+	} else {
+		slog.Debug("openai_handle_response: non-streaming, extracted usage",
+			"prompt_tokens", rawPtr.promptTokens,
+			"completion_tokens", rawPtr.completionTokens,
+			"total_tokens", rawPtr.totalTokens,
+			"cost", rawPtr.cost,
+			"cache_hit", rawPtr.promptCacheHit,
+			"cache_miss", rawPtr.promptCacheMiss)
+	}
 
 	// Reconstruct response body
 	newResp := *resp
@@ -473,6 +479,12 @@ func retryOpenAI[T any](
 			var zero T
 			return zero, err
 		}
+		// Calculate the delay for logging before sleeping
+		delay := min(time.Duration(float64(baseDelay)*math.Pow(backoffFactor, float64(attempt))), maxDelay)
+		slog.Debug("openai_retry: rate limited, retrying",
+			"attempt", attempt+1,
+			"max_attempts", maxAttempts,
+			"delay", delay)
 		if err := sleepOpenAIRetry(ctx, attempt, baseDelay, maxDelay, backoffFactor); err != nil {
 			var zero T
 			return zero, err
@@ -641,3 +653,14 @@ func (ad *OpenAIAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 
 // compile-time check
 var _ agent.LLMAdapter = (*OpenAIAdapter)(nil)
+
+// truncateString returns the first n characters of s, appending "..." if truncated.
+func truncateString(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
