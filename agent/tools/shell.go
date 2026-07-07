@@ -17,7 +17,7 @@ import (
 // shellInlineLimit is the per-stream byte threshold below which captured
 // output is returned inline in the tool result. Beyond it, the stream is
 // only referenced by its tempfile path so the agent can read or grep it.
-const shellInlineLimit = 1000
+const shellInlineLimit = 5000
 
 // Shell runs a shell command via `sh -c`. Stdout and stderr are always
 // streamed into tempfiles under the OS temp directory ($TMPDIR / $TMP /

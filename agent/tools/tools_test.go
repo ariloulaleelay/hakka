@@ -194,9 +194,9 @@ func TestShellNonZero(t *testing.T) {
 }
 
 func TestShellLargeOutputGoesToFile(t *testing.T) {
-	// Produce ~3000 bytes of stdout — well above the inline threshold.
+	// Produce ~10000 bytes of stdout — well above the inline threshold.
 	out := run(t, Shell().Handler, map[string]any{
-		"cmd": "yes hakka | head -c 3000",
+		"cmd": "yes hakka | head -c 10000",
 	})
 	if int(out["exit_code"].(float64)) != 0 {
 		t.Fatalf("exit_code: %v", out["exit_code"])
@@ -217,7 +217,7 @@ func TestShellLargeOutputGoesToFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tempfile missing: %v", err)
 	}
-	if info.Size() < 3000 {
+	if info.Size() < 10000 {
 		t.Fatalf("tempfile too small: %d", info.Size())
 	}
 	_ = os.Remove(path)
