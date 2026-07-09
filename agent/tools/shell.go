@@ -76,6 +76,9 @@ func Shell() agent.Tool {
 			defer cancel()
 
 			cmd := exec.CommandContext(runCtx, "sh", "-c", args.Cmd)
+			// On Unix, set up process-group isolation so timeout kills
+			// all child processes, not just the immediate sh.
+			setProcessGroupKill(cmd)
 			workDir := args.Cwd
 			if workDir == "" {
 				workDir = event.CWDFromContext(ctx)
