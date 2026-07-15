@@ -45,20 +45,7 @@ func ShowTool(r *agent.ToolRegistry) agent.Tool {
 				session.EnableTool(args.Name)
 			}
 
-			var b strings.Builder
-			b.WriteString(fmt.Sprintf("Tool: %s\n", t.Schema.Name))
-			b.WriteString(fmt.Sprintf("Description: %s\n", t.Schema.Description))
-			b.WriteString(fmt.Sprintf("Status: enabled\n"))
-
-			if len(t.Tags) > 0 {
-				tagStrs := make([]string, len(t.Tags))
-				for i, tag := range t.Tags {
-					tagStrs[i] = "#" + tag
-				}
-				b.WriteString(fmt.Sprintf("Tags: %s\n", strings.Join(tagStrs, ", ")))
-			}
-
-			// Extract parameter info from the schema parameters
+			// Build usage info from the tool's schema
 			params, _ := t.Schema.Parameters["properties"].(map[string]any)
 			requiredList, _ := t.Schema.Parameters["required"].([]any)
 			requiredSet := make(map[string]bool, len(requiredList))
@@ -68,39 +55,36 @@ func ShowTool(r *agent.ToolRegistry) agent.Tool {
 				}
 			}
 
+			var pinfos []paramInfo
 			if len(params) > 0 {
-				b.WriteString("\nParameters:\n")
-				// Sort param names for stable output
 				names := make([]string, 0, len(params))
 				for name := range params {
 					names = append(names, name)
 				}
 				sort.Strings(names)
-
-				// Find longest name for alignment
-				maxNameLen := 0
-				for _, name := range names {
-					if len(name) > maxNameLen {
-						maxNameLen = len(name)
-					}
-				}
-
 				for _, name := range names {
 					prop, _ := params[name].(map[string]any)
 					typ, _ := prop["type"].(string)
 					desc, _ := prop["description"].(string)
-
-					optional := "optional"
-					if requiredSet[name] {
-						optional = "required"
-					}
-
-					line := fmt.Sprintf("  %-*s  (%s, %s)", maxNameLen, name, typ, optional)
-					if desc != "" {
-						line += " — " + desc
-					}
-					b.WriteString(line + "\n")
+					pinfos = append(pinfos, paramInfo{
+						Name:        name,
+						Type:        typ,
+						Description: desc,
+						Required:    requiredSet[name],
+					})
 				}
+			}
+
+			var b strings.Builder
+			b.WriteString(formatToolUsage(t.Schema.Name, t.Schema.Description, pinfos))
+			b.WriteString(fmt.Sprintf("Status: enabled\n"))
+
+			if len(t.Tags) > 0 {
+				tagStrs := make([]string, len(t.Tags))
+				for i, tag := range t.Tags {
+					tagStrs[i] = "#" + tag
+				}
+				b.WriteString(fmt.Sprintf("Tags: %s\n", strings.Join(tagStrs, ", ")))
 			}
 
 			return b.String(), nil

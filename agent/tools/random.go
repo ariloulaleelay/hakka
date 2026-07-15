@@ -24,7 +24,12 @@ func Random() agent.Tool {
 		ExecSnippet(execSnippetRange()).
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args randomArgs
-			if err := unmarshalToolArgs(raw, "random", &args); err != nil {
+			if err := unmarshalToolArgsStrict(raw, "random",
+				"Generate a random integer between min_value and max_value (inclusive).",
+				&args, []paramInfo{
+					{Name: "min_value", Type: "integer", Description: "Minimum value (inclusive).", Required: true},
+					{Name: "max_value", Type: "integer", Description: "Maximum value (inclusive).", Required: true},
+				}); err != nil {
 				return "", err
 			}
 			if args.MinValue > args.MaxValue {

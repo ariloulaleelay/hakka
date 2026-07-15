@@ -77,7 +77,13 @@ func FeedbackTool() agent.Tool {
 		ExecSnippetField("title").
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args feedbackArgs
-			if err := unmarshalToolArgs(raw, "feedback", &args); err != nil {
+			if err := unmarshalToolArgsStrict(raw, "feedback",
+				"Submit anonymous feedback — a feature request or a bug report.",
+				&args, []paramInfo{
+					{Name: "title", Type: "string", Description: "Short summary of the feedback (feature request or bug report)", Required: true},
+					{Name: "description", Type: "string", Description: "Full details — for bugs include steps to reproduce, expected vs actual behavior; for features describe the use case and why it's needed", Required: true},
+					{Name: "contact", Type: "string", Description: "Optional contact information (email, Telegram handle, etc.) so the team can follow up"},
+				}); err != nil {
 				return "", err
 			}
 			if strings.TrimSpace(args.Title) == "" {

@@ -84,8 +84,12 @@ func TestReadFileTruncated(t *testing.T) {
 		t.Fatalf("expected first 10 bytes in result, got: %q", res)
 	}
 	// Bug check: footer says [TRUNCATED: N bytes omitted] where N is omitted (90), not kept (10)
-	if !strings.Contains(res, "[TRUNCATED: 90 bytes omitted]") {
+	if !strings.Contains(res, "90 bytes omitted") {
 		t.Fatalf("expected footer to say '90 bytes omitted' (the omitted count), got: %q", res)
+	}
+	// New truncation message should mention offset/limit
+	if !strings.Contains(res, "offset") || !strings.Contains(res, "limit") {
+		t.Fatalf("truncation message should mention offset/limit, got: %q", res)
 	}
 }
 
@@ -613,6 +617,182 @@ func TestHTTPGetConcurrentSameHost(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// --- read_file: offset & limit support ---
+
+func TestReadFileWithOffset(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "data.txt")
+	_ = os.WriteFile(p, []byte("hello world"), 0o644)
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "offset": 6})
+	// Reading from byte 6: "world"
+	want := p + "\n---\nworld\n"
+	if res != want {
+		t.Fatalf("expected %q, got: %q", want, res)
+	}
+}
+
+func TestReadFileWithOffsetAndLimit(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "data.txt")
+	_ = os.WriteFile(p, []byte("hello world"), 0o644) // 11 bytes — exactly fills window
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "offset": 6, "limit": 5})
+	// Bytes 6..10 (5 bytes): "world", no truncation
+	want := p + "\n---\nworld\n"
+	if res != want {
+		t.Fatalf("expected %q, got: %q", want, res)
+	}
+}
+
+func TestReadFileWithLimit(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "data.txt")
+	_ = os.WriteFile(p, []byte("hello"), 0o644) // exactly 5 bytes — no truncation
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "limit": 5})
+	want := p + "\n---\nhello\n"
+	if res != want {
+		t.Fatalf("expected %q, got: %q", want, res)
+	}
+}
+
+func TestReadFileWithMaxBytesBackwardCompat(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "data.txt")
+	_ = os.WriteFile(p, []byte("hello"), 0o644) // exactly 5 bytes — no truncation
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "max_bytes": 5})
+	want := p + "\n---\nhello\n"
+	if res != want {
+		t.Fatalf("expected %q, got: %q", want, res)
+	}
+}
+
+func TestReadFileLimitTakesPrecedenceOverMaxBytes(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "data.txt")
+	_ = os.WriteFile(p, []byte("hello"), 0o644) // exactly 5 bytes — no truncation
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "limit": 5, "max_bytes": 100})
+	want := p + "\n---\nhello\n"
+	if res != want {
+		t.Fatalf("expected %q, got: %q", want, res)
+	}
+}
+
+func TestReadFileOffsetBeyondEnd(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "data.txt")
+	_ = os.WriteFile(p, []byte("hello world"), 0o644)
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "offset": 100})
+	// Offset beyond file size: empty content with trailing newline
+	want := p + "\n---\n\n"
+	if res != want {
+		t.Fatalf("expected %q, got: %q", want, res)
+	}
+}
+
+func TestReadFileTruncationMessageSuggestsOffset(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "big.txt")
+	_ = os.WriteFile(p, []byte(strings.Repeat("x", 100)), 0o644)
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "limit": 10})
+	if !strings.Contains(res, "[TRUNCATED: 90 bytes omitted") {
+		t.Fatalf("expected truncation marker, got: %q", res)
+	}
+	// The new truncation message should mention offset/limit
+	if !strings.Contains(res, "offset") || !strings.Contains(res, "limit") {
+		t.Fatalf("truncation message should mention offset and limit usage, got: %q", res)
+	}
+}
+
+func TestReadFileOffsetWithTruncation(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "big.txt")
+	_ = os.WriteFile(p, []byte("hello " + strings.Repeat("x", 100)), 0o644)
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "offset": 6, "limit": 10})
+	// Bytes 6..15 (10 bytes): "xxxxxxxxxx"
+	if !strings.Contains(res, strings.Repeat("x", 10)) {
+		t.Fatalf("expected 10 x's in result, got: %q", res)
+	}
+	// Should say omitted: file is 106 bytes, offset=6, limit=10 => read 10, omitted = 106-6-10 = 90
+	if !strings.Contains(res, "[TRUNCATED: 90 bytes omitted") {
+		t.Fatalf("expected truncation marker mentioning 90 omitted, got: %q", res)
+	}
+}
+
+// --- Strict parameter validation ---
+
+func TestReadFileStrictUnknownParam(t *testing.T) {
+	errMsg := runErr(t, ReadFile().Handler, map[string]any{"path": "/tmp/x.txt", "offset_begin": 0})
+	if !strings.Contains(errMsg, "unknown parameter") {
+		t.Fatalf("expected 'unknown parameter' error, got: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "offset_begin") {
+		t.Fatalf("error should mention the unknown param name, got: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "Tool: read_file") {
+		t.Fatalf("error should include the tool usage (like show_tool output), got: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "Parameters:") {
+		t.Fatalf("error should include parameter list (like show_tool output), got: %q", errMsg)
+	}
+}
+
+func TestReadFileStrictUnknownParamStartLine(t *testing.T) {
+	errMsg := runErr(t, ReadFile().Handler, map[string]any{"path": "/tmp/x.txt", "from_line": 10})
+	if !strings.Contains(errMsg, "unknown parameter") {
+		t.Fatalf("expected 'unknown parameter' error, got: %q", errMsg)
+	}
+}
+
+func TestReadFileValidParamsPass(t *testing.T) {
+	// offset + limit should work fine
+	p := filepath.Join(t.TempDir(), "ok.txt")
+	_ = os.WriteFile(p, []byte("hello"), 0o644)
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "offset": 0, "limit": 5})
+	want := p + "\n---\nhello\n"
+	if res != want {
+		t.Fatalf("expected %q, got: %q", want, res)
+	}
+}
+
+func TestReadFileValidMaxBytesStillWorks(t *testing.T) {
+	// max_bytes is allowed for transition
+	p := filepath.Join(t.TempDir(), "ok.txt")
+	_ = os.WriteFile(p, []byte("hello"), 0o644)
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "max_bytes": 5})
+	want := p + "\n---\nhello\n"
+	if res != want {
+		t.Fatalf("expected %q, got: %q", want, res)
+	}
+}
+
+func TestEditFileStrictUnknownParam(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "x.txt")
+	_ = os.WriteFile(p, []byte("foo"), 0o644)
+	errMsg := runErr(t, EditFile().Handler, map[string]any{"path": p, "old_string": "foo", "new_string": "bar"})
+	if !strings.Contains(errMsg, "unknown parameter") {
+		t.Fatalf("expected 'unknown parameter' error, got: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "old_string") {
+		t.Fatalf("error should mention old_string, got: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "edit_file") {
+		t.Fatalf("error should mention edit_file, got: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "Tool: edit_file") {
+		t.Fatalf("error should include tool usage (like show_tool), got: %q", errMsg)
+	}
+}
+
+func TestShellStrictUnknownParam(t *testing.T) {
+	errMsg := runErr(t, Shell().Handler, map[string]any{"cmd": "echo hi", "description": "say hi"})
+	if !strings.Contains(errMsg, "unknown parameter") {
+		t.Fatalf("expected 'unknown parameter' error, got: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "description") {
+		t.Fatalf("error should mention description param, got: %q", errMsg)
+	}
+}
+
+// --- Required param validation ---
+
+func TestReadFileMissingPath(t *testing.T) {
+	errMsg := runErr(t, ReadFile().Handler, map[string]any{})
+	if !strings.Contains(errMsg, "no such file") && !strings.Contains(errMsg, "path is required") {
+		t.Fatalf("expected error about missing path, got: %q", errMsg)
 	}
 }
 

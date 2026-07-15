@@ -16,7 +16,7 @@ import (
 //
 //	NewTool("read_file", "Read a UTF-8 text file...").
 //	    StringParam("path", "Absolute or relative path", true).
-//	    IntParam("max_bytes", "Optional max bytes to return", false).
+//	    IntParam("offset", "Byte offset to start reading from (default 0).", false).
 //	    Tags("filesystem", "read", "developer", "all").
 //	    ExecSnippetField("path").
 //	    Handler(func(ctx context.Context, raw json.RawMessage) (string, error) { ... }).

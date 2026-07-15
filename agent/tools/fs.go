@@ -19,6 +19,8 @@ type (
 	}
 	readFileArgs struct {
 		Path     string `json:"path"`
+		Offset   int    `json:"offset"`
+		Limit    int    `json:"limit"`
 		MaxBytes int    `json:"max_bytes"`
 	}
 	writeFileArgs struct {
@@ -42,37 +44,154 @@ func unmarshalToolArgs(raw json.RawMessage, toolName string, args any) error {
 	return nil
 }
 
+// paramInfo describes a tool parameter for error formatting.
+type paramInfo struct {
+	Name        string
+	Type        string
+	Description string
+	Required    bool
+}
+
+// formatToolUsage builds a show_tool-like formatted usage string for a tool.
+// This is reused by both unmarshalToolArgsStrict (error messages) and ShowTool.
+func formatToolUsage(name, description string, params []paramInfo) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Tool: %s\n", name))
+	b.WriteString(fmt.Sprintf("Description: %s\n", description))
+
+	if len(params) > 0 {
+		b.WriteString("\nParameters:\n")
+		// Find longest name for alignment
+		maxNameLen := 0
+		for _, p := range params {
+			if len(p.Name) > maxNameLen {
+				maxNameLen = len(p.Name)
+			}
+		}
+
+		for _, p := range params {
+			optional := "optional"
+			if p.Required {
+				optional = "required"
+			}
+			line := fmt.Sprintf("  %-*s  (%s, %s)", maxNameLen, p.Name, p.Type, optional)
+			if p.Description != "" {
+				line += " — " + p.Description
+			}
+			b.WriteString(line + "\n")
+		}
+	}
+	return b.String()
+}
+
+// unmarshalToolArgsStrict unmarshals raw JSON into args, but first validates
+// that every key in the JSON matches one of the tool's declared parameters.
+// If an unknown key is found, it returns a descriptive error that includes
+// the full tool usage info (like show_tool output).
+func unmarshalToolArgsStrict(raw json.RawMessage, toolName, description string, args any, params []paramInfo) error {
+	var rawMap map[string]any
+	if err := json.Unmarshal(raw, &rawMap); err != nil {
+		return fmt.Errorf("%s: %w", toolName, err)
+	}
+
+	allowed := make(map[string]bool, len(params))
+	for _, p := range params {
+		allowed[p.Name] = true
+	}
+
+	var unknown []string
+	for key := range rawMap {
+		if !allowed[key] {
+			unknown = append(unknown, key)
+		}
+	}
+
+	if len(unknown) > 0 {
+		plural := "parameter"
+		if len(unknown) > 1 {
+			plural = "parameters"
+		}
+		usage := formatToolUsage(toolName, description, params)
+		return fmt.Errorf("%s: unknown %s: %s\n\n%s",
+			toolName, plural, strings.Join(unknown, ", "), usage)
+	}
+
+	return unmarshalToolArgs(raw, toolName, args)
+}
+
 // ReadFile reads a UTF-8 file and returns its content (optionally truncated).
+// Supports offset+limit for windowed reading of large files.
 func ReadFile() agent.Tool {
-	return NewTool("read_file", "Read a UTF-8 text file from disk and return its contents.").
+	return NewTool("read_file", "Read a UTF-8 text file from disk and return its contents. "+
+		"For large files, use offset+limit to read specific byte ranges/windows. "+
+		"If truncated, use a larger limit or offset to continue reading.").
 		StringParam("path", "Absolute or relative path", true).
-		IntParam("max_bytes", "Optional max bytes to return (default 200_000)", false).
+		IntParam("offset", "Byte offset to start reading from (default 0). Use with limit to read a window.", false).
+		IntParam("limit", "Max bytes to read from offset (default 200_000). Use with offset to read a window.", false).
 		Tags("filesystem", "read", "developer", "all").
 		ExecSnippetField("path").
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args readFileArgs
-			if err := unmarshalToolArgs(raw, "read_file", &args); err != nil {
+			if err := unmarshalToolArgsStrict(raw, "read_file",
+				"Read a UTF-8 text file from disk and return its contents. "+
+					"For large files, use offset+limit to read specific byte ranges/windows. "+
+					"If truncated, use a larger limit or offset to continue reading.",
+				&args, []paramInfo{
+					{Name: "path", Type: "string", Description: "Absolute or relative path", Required: true},
+					{Name: "offset", Type: "integer", Description: "Byte offset to start reading from (default 0). Use with limit to read a window."},
+					{Name: "limit", Type: "integer", Description: "Max bytes to read from offset (default 200_000). Use with offset to read a window."},
+					{Name: "max_bytes", Type: "integer", Description: "(deprecated) Use limit instead."},
+				}); err != nil {
 				return "", err
 			}
-			if args.MaxBytes <= 0 {
-				args.MaxBytes = 200_000
+			// Resolve reading parameters: prefer 'limit', fall back to 'max_bytes' for transition.
+			limit := args.Limit
+			if limit <= 0 {
+				limit = args.MaxBytes
 			}
+			if limit <= 0 {
+				limit = 200_000
+			}
+			offset := args.Offset
+			if offset < 0 {
+				offset = 0
+			}
+
 			resolved := resolvePath(ctx, args.Path)
-			data, err := os.ReadFile(resolved)
+			fileInfo, err := os.Stat(resolved)
 			if err != nil {
 				return "", fmt.Errorf("read_file: %w", err)
 			}
-			truncated := len(data) > args.MaxBytes
-			if truncated {
-				data = data[:args.MaxBytes]
+			fileSize := int(fileInfo.Size())
+
+			// Read the requested window
+			readStart := offset
+			readEnd := offset + limit
+			if readStart > fileSize {
+				readStart = fileSize
 			}
-			var b strings.Builder
-			omitted := 0
-			if truncated {
-				fileInfo, _ := os.Stat(resolved)
-				if fileInfo != nil {
-					omitted = int(fileInfo.Size()) - args.MaxBytes
+			if readEnd > fileSize {
+				readEnd = fileSize
+			}
+			actualBytes := readEnd - readStart
+			truncated := readEnd < fileSize
+
+			data := make([]byte, actualBytes)
+			if actualBytes > 0 {
+				f, err := os.Open(resolved)
+				if err != nil {
+					return "", fmt.Errorf("read_file: %w", err)
 				}
+				defer f.Close()
+				_, err = f.ReadAt(data, int64(readStart))
+				if err != nil {
+					return "", fmt.Errorf("read_file: %w", err)
+				}
+			}
+
+			var b strings.Builder
+			omitted := fileSize - readEnd
+			if truncated {
 				b.WriteString(fmt.Sprintf("%s (omitted %d bytes)\n---\n", resolved, omitted))
 			} else {
 				b.WriteString(fmt.Sprintf("%s\n---\n", resolved))
@@ -80,7 +199,8 @@ func ReadFile() agent.Tool {
 			b.Write(data)
 			b.WriteByte('\n')
 			if truncated {
-				b.WriteString(fmt.Sprintf("[TRUNCATED: %d bytes omitted]", omitted))
+				b.WriteString(fmt.Sprintf("[TRUNCATED: %d bytes omitted — use read_file with offset=%d&limit=%d to continue, or shell with head/tail for specific lines]",
+					omitted, readEnd, limit))
 			}
 			return b.String(), nil
 		}).
@@ -95,7 +215,11 @@ func ListDir() agent.Tool {
 		ExecSnippetField("path").
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args pathArgs
-			if err := unmarshalToolArgs(raw, "list_dir", &args); err != nil {
+			if err := unmarshalToolArgsStrict(raw, "list_dir",
+				"List the immediate entries of a directory.",
+				&args, []paramInfo{
+					{Name: "path", Type: "string", Description: "", Required: true},
+				}); err != nil {
 				return "", err
 			}
 			resolved := resolvePath(ctx, args.Path)
@@ -135,7 +259,12 @@ func WriteFile() agent.Tool {
 		ExecSnippetField("path").
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args writeFileArgs
-			if err := unmarshalToolArgs(raw, "write_file", &args); err != nil {
+			if err := unmarshalToolArgsStrict(raw, "write_file",
+				"Create or overwrite a file with the given content. Creates parent dirs.",
+				&args, []paramInfo{
+					{Name: "path", Type: "string", Description: "", Required: true},
+					{Name: "content", Type: "string", Description: "", Required: true},
+				}); err != nil {
 				return "", err
 			}
 			resolved := resolvePath(ctx, args.Path)
@@ -171,7 +300,14 @@ func EditFile() agent.Tool {
 		}).
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args editFileArgs
-			if err := unmarshalToolArgs(raw, "edit_file", &args); err != nil {
+			if err := unmarshalToolArgsStrict(raw, "edit_file",
+				"Replace the first occurrence of `old` with `new` in the given file. Set replace_all=true to replace every occurrence.",
+				&args, []paramInfo{
+					{Name: "path", Type: "string", Description: "", Required: true},
+					{Name: "old", Type: "string", Description: "", Required: true},
+					{Name: "new", Type: "string", Description: "", Required: true},
+					{Name: "replace_all", Type: "boolean", Description: ""},
+				}); err != nil {
 				return "", err
 			}
 			resolved := resolvePath(ctx, args.Path)

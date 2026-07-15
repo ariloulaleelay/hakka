@@ -68,7 +68,13 @@ func HTTPGet() agent.Tool {
 		}).
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args httpGetArgs
-			if err := unmarshalToolArgs(raw, "http_get", &args); err != nil {
+			if err := unmarshalToolArgsStrict(raw, "http_get",
+				"Perform an HTTP GET and return status, headers, and body. HTML content is automatically converted to Markdown for easier LLM reading.",
+				&args, []paramInfo{
+					{Name: "url", Type: "string", Description: "", Required: true},
+					{Name: "headers", Type: "object", Description: "Optional extra request headers."},
+					{Name: "max_bytes", Type: "integer", Description: "Max body bytes to include (default 64KB)."},
+				}); err != nil {
 				return "", err
 			}
 			if args.MaxBytes <= 0 {

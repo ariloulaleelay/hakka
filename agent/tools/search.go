@@ -29,7 +29,15 @@ func Search() agent.Tool {
 		ExecSnippet(execSnippetPatternWithPath()).
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args searchArgs
-			if err := unmarshalToolArgs(raw, "search", &args); err != nil {
+			if err := unmarshalToolArgsStrict(raw, "search",
+				"Search files recursively for a regex using ripgrep. Returns matching lines with file:line:col prefixes.",
+				&args, []paramInfo{
+					{Name: "pattern", Type: "string", Description: "", Required: true},
+					{Name: "path", Type: "string", Description: "Directory or file to search; defaults to current dir."},
+					{Name: "max_lines", Type: "integer", Description: "Maximum matching lines to return (default 200)."},
+					{Name: "multiline", Type: "boolean", Description: ""},
+					{Name: "ignore_case", Type: "boolean", Description: ""},
+				}); err != nil {
 				return "", err
 			}
 			if args.MaxLines <= 0 {

@@ -51,8 +51,17 @@ func Shell() agent.Tool {
 				Cwd     string `json:"cwd"`
 				Timeout int    `json:"timeout_seconds"`
 			}
-			if err := json.Unmarshal(raw, &args); err != nil {
-				return "", fmt.Errorf("shell: %w", err)
+			if err := unmarshalToolArgsStrict(raw, "shell",
+				"Execute a shell command via `sh -c`.\n"+
+					"Stdout/stderr are written to tempfiles;\n"+
+					"short output is returned inline, otherwise the file path is reported so the agent can read or grep it.\n"+
+					"Project cwd applied by default",
+				&args, []paramInfo{
+					{Name: "cmd", Type: "string", Description: "", Required: true},
+					{Name: "cwd", Type: "string", Description: "Working directory (optional)."},
+					{Name: "timeout_seconds", Type: "integer", Description: "Default 30."},
+				}); err != nil {
+				return "", err
 			}
 			if strings.TrimSpace(args.Cmd) == "" {
 				return "", fmt.Errorf("shell: cmd is required")
