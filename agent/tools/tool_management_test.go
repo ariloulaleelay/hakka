@@ -22,7 +22,7 @@ func newTestRegistry() *agent.ToolRegistry {
 				"type": "object",
 				"properties": map[string]any{
 					"path":      map[string]any{"type": "string", "description": "Absolute or relative path"},
-					"max_bytes": map[string]any{"type": "integer", "description": "Optional max bytes"},
+					"limit": map[string]any{"type": "integer", "description": "Optional max lines (default 200)"},
 				},
 				"required": []any{"path"},
 			},
@@ -91,8 +91,8 @@ func TestShowTool(t *testing.T) {
 	if !strings.Contains(res, "path") {
 		t.Fatalf("expected parameter 'path' in output, got: %q", res)
 	}
-	if !strings.Contains(res, "max_bytes") {
-		t.Fatalf("expected parameter 'max_bytes' in output, got: %q", res)
+	if !strings.Contains(res, "limit") {
+		t.Fatalf("expected parameter 'limit' in output, got: %q", res)
 	}
 	// Should indicate required params
 	if !strings.Contains(res, "required") {

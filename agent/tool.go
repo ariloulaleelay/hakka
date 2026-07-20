@@ -327,7 +327,7 @@ func compactDescription(desc string) string {
 // Signature returns a Pythonic function signature for the tool schema.
 // Examples:
 //
-//	read_file(path, offset=0, limit=200000)
+//	read_file(path, offset=0, limit=200)
 //	random(min_value, max_value)
 //	session_create()
 //	edit_file(path, old, new, replace_all=False)

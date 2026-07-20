@@ -86,7 +86,7 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 
 | Tool | Description |
 |---|---|
-| `read_file` | Read UTF-8 text files; truncates at 200K bytes with `[TRUNCATED <n> bytes]` marker |
+| `read_file` | Read UTF-8 text files; supports offset+limit for windowed reading, truncates with `[TRUNCATED ...]` marker |
 | `write_file` | Create/overwrite files; creates parent directories automatically |
 | `edit_file` | Literal string search-and-replace (first or all occurrences) |
 | `list_dir` | List directory entries (dirs as `name/`, files as `name\t<size>`) |
