@@ -42,14 +42,14 @@ func TestToolSchema_Signature_RequiredAndOptional(t *testing.T) {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":      map[string]any{"type": "string", "description": "file path"},
-				"max_bytes": map[string]any{"type": "integer", "description": "Optional max bytes (default 200000)"},
+				"path":  map[string]any{"type": "string", "description": "file path"},
+				"limit": map[string]any{"type": "integer", "description": "Optional max lines (default 200)"},
 			},
 			"required": []string{"path"},
 		},
 	}
-	if got := s.Signature(); got != "read_file(path, max_bytes=200000)" {
-		t.Fatalf("expected 'read_file(path, max_bytes=200000)', got %q", got)
+	if got := s.Signature(); got != "read_file(path, limit=200)" {
+		t.Fatalf("expected 'read_file(path, limit=200)', got %q", got)
 	}
 }
 
@@ -144,8 +144,8 @@ func TestBuildToolListMessage_SignatureFormat(t *testing.T) {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"path":      map[string]any{"type": "string", "description": "file path"},
-					"max_bytes": map[string]any{"type": "integer", "description": "Optional max bytes (default 200000)"},
+					"path":  map[string]any{"type": "string", "description": "file path"},
+					"limit": map[string]any{"type": "integer", "description": "Optional max lines (default 200)"},
 				},
 				"required": []string{"path"},
 			},
@@ -157,7 +157,7 @@ func TestBuildToolListMessage_SignatureFormat(t *testing.T) {
 	s.EnableTool("read_file")
 
 	msg := BuildToolListMessage(r, s)
-	if !strings.Contains(msg, "read_file(path, max_bytes=200000)") {
+	if !strings.Contains(msg, "read_file(path, limit=200)") {
 		t.Fatalf("expected Pythonic signature in tool list, got: %q", msg)
 	}
 }

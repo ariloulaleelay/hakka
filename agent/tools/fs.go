@@ -120,86 +120,90 @@ func unmarshalToolArgsStrict(raw json.RawMessage, toolName, description string, 
 }
 
 // ReadFile reads a UTF-8 file and returns its content (optionally truncated).
-// Supports offset+limit for windowed reading of large files.
+// Supports offset+limit for windowed reading of large files using line numbers.
 func ReadFile() agent.Tool {
 	return NewTool("read_file", "Read a UTF-8 text file from disk and return its contents. "+
-		"For large files, use offset+limit to read specific byte ranges/windows. "+
+		"For large files, use offset+limit to read specific line ranges/windows. "+
 		"If truncated, use a larger limit or offset to continue reading.").
 		StringParam("path", "Absolute or relative path", true).
-		IntParam("offset", "Byte offset to start reading from (default 0). Use with limit to read a window.", false).
-		IntParam("limit", "Max bytes to read from offset (default 200_000). Use with offset to read a window.", false).
+		IntParam("offset", "Line number to start reading from (0-based, default 0). Use with limit to read a window.", false).
+		IntParam("limit", "Max lines to read (default 200). Use with offset to read a window.", false).
 		Tags("filesystem", "read", "developer", "all").
 		ExecSnippetField("path").
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args readFileArgs
 			if err := unmarshalToolArgsStrict(raw, "read_file",
 				"Read a UTF-8 text file from disk and return its contents. "+
-					"For large files, use offset+limit to read specific byte ranges/windows. "+
+					"For large files, use offset+limit to read specific line ranges/windows. "+
 					"If truncated, use a larger limit or offset to continue reading.",
 				&args, []paramInfo{
 					{Name: "path", Type: "string", Description: "Absolute or relative path", Required: true},
-					{Name: "offset", Type: "integer", Description: "Byte offset to start reading from (default 0). Use with limit to read a window."},
-					{Name: "limit", Type: "integer", Description: "Max bytes to read from offset (default 200_000). Use with offset to read a window."},
-					{Name: "max_bytes", Type: "integer", Description: "(deprecated) Use limit instead."},
+					{Name: "offset", Type: "integer", Description: "Line number to start reading from (0-based, default 0). Use with limit to read a window."},
+					{Name: "limit", Type: "integer", Description: "Max lines to read (default 200). Use with offset to read a window."},
+					{Name: "max_bytes", Type: "integer", Description: "(internal) Max output bytes before byte-level truncation (default 200000)."},
 				}); err != nil {
 				return "", err
 			}
-			// Resolve reading parameters: prefer 'limit', fall back to 'max_bytes' for transition.
 			limit := args.Limit
 			if limit <= 0 {
-				limit = args.MaxBytes
-			}
-			if limit <= 0 {
-				limit = 200_000
+				limit = 200
 			}
 			offset := args.Offset
 			if offset < 0 {
 				offset = 0
 			}
+			maxBytes := args.MaxBytes
+			if maxBytes <= 0 {
+				maxBytes = 200_000
+			}
 
 			resolved := resolvePath(ctx, args.Path)
-			fileInfo, err := os.Stat(resolved)
+			data, err := os.ReadFile(resolved)
 			if err != nil {
 				return "", fmt.Errorf("read_file: %w", err)
 			}
-			fileSize := int(fileInfo.Size())
 
-			// Read the requested window
-			readStart := offset
+			lines := strings.Split(string(data), "\n")
+			totalLines := len(lines)
+
+			// Clamp offset
+			if offset > totalLines {
+				offset = totalLines
+			}
 			readEnd := offset + limit
-			if readStart > fileSize {
-				readStart = fileSize
+			if readEnd > totalLines {
+				readEnd = totalLines
 			}
-			if readEnd > fileSize {
-				readEnd = fileSize
-			}
-			actualBytes := readEnd - readStart
-			truncated := readEnd < fileSize
+			lineTruncated := readEnd < totalLines
 
-			data := make([]byte, actualBytes)
-			if actualBytes > 0 {
-				f, err := os.Open(resolved)
-				if err != nil {
-					return "", fmt.Errorf("read_file: %w", err)
-				}
-				defer f.Close()
-				_, err = f.ReadAt(data, int64(readStart))
-				if err != nil {
-					return "", fmt.Errorf("read_file: %w", err)
-				}
+			// Edge case: offset beyond file — return error
+			if offset >= totalLines {
+				return "", fmt.Errorf("read_file: offset %d beyond end (file has %d lines)", args.Offset, totalLines)
+			}
+
+			selected := lines[offset:readEnd]
+			content := strings.Join(selected, "\n")
+
+			// Byte-level safety cap: if the selected content is huge
+			// (e.g. a single giant JSON line), truncate at byte level.
+			byteTruncated := false
+			if len(content) > maxBytes {
+				content = content[:maxBytes]
+				byteTruncated = true
 			}
 
 			var b strings.Builder
-			omitted := fileSize - readEnd
-			if truncated {
-				b.WriteString(fmt.Sprintf("%s (omitted %d bytes)\n---\n", resolved, omitted))
-			} else {
-				b.WriteString(fmt.Sprintf("%s\n---\n", resolved))
+			omitted := totalLines - readEnd
+			b.WriteString(fmt.Sprintf("%s\n---\n", resolved))
+			b.WriteString(content)
+			if len(content) > 0 && content[len(content)-1] != '\n' {
+				b.WriteByte('\n')
 			}
-			b.Write(data)
-			b.WriteByte('\n')
-			if truncated {
-				b.WriteString(fmt.Sprintf("[TRUNCATED: %d bytes omitted — use read_file with offset=%d&limit=%d to continue, or shell with head/tail for specific lines]",
+			if byteTruncated {
+				b.WriteString(fmt.Sprintf("[TRUNCATED: output exceeded %d bytes — use shell with head/tail/sed to extract specific portions]",
+					maxBytes))
+			} else if lineTruncated {
+				b.WriteString(fmt.Sprintf("[TRUNCATED: %d lines omitted — use read_file with offset=%d&limit=%d to continue]",
 					omitted, readEnd, limit))
 			}
 			return b.String(), nil
@@ -330,6 +334,7 @@ func EditFile() agent.Tool {
 			if err := os.WriteFile(resolved, []byte(out), 0o644); err != nil {
 				return "", fmt.Errorf("edit_file: %w", err)
 			}
+
 			if args.ReplaceAll {
 				return fmt.Sprintf("Replaced %d occurrence(s) in %s (replace_all)", replaceCount, resolved), nil
 			}
@@ -337,3 +342,6 @@ func EditFile() agent.Tool {
 		}).
 		Build()
 }
+
+
+

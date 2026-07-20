@@ -71,23 +71,25 @@ func TestReadFile(t *testing.T) {
 
 func TestReadFileTruncated(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "big.txt")
-	_ = os.WriteFile(p, []byte(strings.Repeat("x", 100)), 0o644)
-	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "max_bytes": 10})
-	// Should show truncated header with omitted bytes, then content, then TRUNCATED marker
-	if !strings.Contains(res, "omitted 90 bytes") {
-		t.Fatalf("expected 'omitted 90 bytes' in result, got: %q", res)
+	// 100 lines, each "x"
+	lines := make([]string, 100)
+	for i := range lines {
+		lines[i] = "x"
 	}
+	_ = os.WriteFile(p, []byte(strings.Join(lines, "\n")), 0o644)
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "limit": 10})
+	// Should show truncated footer with omitted lines, then content, then TRUNCATED marker
 	if !strings.Contains(res, "[TRUNCATED:") {
 		t.Fatalf("expected truncation marker in result, got: %q", res)
 	}
-	if !strings.Contains(res, strings.Repeat("x", 10)) {
-		t.Fatalf("expected first 10 bytes in result, got: %q", res)
+	if !strings.Contains(res, strings.Repeat("x\n", 9)+"x") {
+		t.Fatalf("expected first 10 lines in result, got: %q", res)
 	}
-	// Bug check: footer says [TRUNCATED: N bytes omitted] where N is omitted (90), not kept (10)
-	if !strings.Contains(res, "90 bytes omitted") {
-		t.Fatalf("expected footer to say '90 bytes omitted' (the omitted count), got: %q", res)
+	// Footer says [TRUNCATED: N lines omitted] where N is omitted (90)
+	if !strings.Contains(res, "90 lines omitted") {
+		t.Fatalf("expected footer to say '90 lines omitted' (the omitted count), got: %q", res)
 	}
-	// New truncation message should mention offset/limit
+	// Truncation message should mention offset/limit
 	if !strings.Contains(res, "offset") || !strings.Contains(res, "limit") {
 		t.Fatalf("truncation message should mention offset/limit, got: %q", res)
 	}
@@ -620,14 +622,15 @@ func TestHTTPGetConcurrentSameHost(t *testing.T) {
 	}
 }
 
-// --- read_file: offset & limit support ---
+// --- read_file: offset & limit support (line-based) ---
 
 func TestReadFileWithOffset(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "data.txt")
-	_ = os.WriteFile(p, []byte("hello world"), 0o644)
-	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "offset": 6})
-	// Reading from byte 6: "world"
-	want := p + "\n---\nworld\n"
+	// 3 lines: "line0", "line1", "line2"
+	_ = os.WriteFile(p, []byte("line0\nline1\nline2"), 0o644)
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "offset": 1})
+	// Reading from line 1: "line1\nline2"
+	want := p + "\n---\nline1\nline2\n"
 	if res != want {
 		t.Fatalf("expected %q, got: %q", want, res)
 	}
@@ -635,10 +638,11 @@ func TestReadFileWithOffset(t *testing.T) {
 
 func TestReadFileWithOffsetAndLimit(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "data.txt")
-	_ = os.WriteFile(p, []byte("hello world"), 0o644) // 11 bytes — exactly fills window
-	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "offset": 6, "limit": 5})
-	// Bytes 6..10 (5 bytes): "world", no truncation
-	want := p + "\n---\nworld\n"
+	// 3 lines: "line0", "line1", "line2"
+	_ = os.WriteFile(p, []byte("line0\nline1\nline2"), 0o644)
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "offset": 1, "limit": 1})
+	// Lines 1..1 (1 line): "line1", but 1 line omitted (line2)
+	want := p + "\n---\nline1\n[TRUNCATED: 1 lines omitted — use read_file with offset=2&limit=1 to continue]"
 	if res != want {
 		t.Fatalf("expected %q, got: %q", want, res)
 	}
@@ -646,29 +650,10 @@ func TestReadFileWithOffsetAndLimit(t *testing.T) {
 
 func TestReadFileWithLimit(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "data.txt")
-	_ = os.WriteFile(p, []byte("hello"), 0o644) // exactly 5 bytes — no truncation
-	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "limit": 5})
-	want := p + "\n---\nhello\n"
-	if res != want {
-		t.Fatalf("expected %q, got: %q", want, res)
-	}
-}
-
-func TestReadFileWithMaxBytesBackwardCompat(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "data.txt")
-	_ = os.WriteFile(p, []byte("hello"), 0o644) // exactly 5 bytes — no truncation
-	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "max_bytes": 5})
-	want := p + "\n---\nhello\n"
-	if res != want {
-		t.Fatalf("expected %q, got: %q", want, res)
-	}
-}
-
-func TestReadFileLimitTakesPrecedenceOverMaxBytes(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "data.txt")
-	_ = os.WriteFile(p, []byte("hello"), 0o644) // exactly 5 bytes — no truncation
-	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "limit": 5, "max_bytes": 100})
-	want := p + "\n---\nhello\n"
+	// 3 lines
+	_ = os.WriteFile(p, []byte("a\nb\nc"), 0o644)
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "limit": 2})
+	want := p + "\n---\na\nb\n[TRUNCATED: 1 lines omitted — use read_file with offset=2&limit=2 to continue]"
 	if res != want {
 		t.Fatalf("expected %q, got: %q", want, res)
 	}
@@ -677,22 +662,26 @@ func TestReadFileLimitTakesPrecedenceOverMaxBytes(t *testing.T) {
 func TestReadFileOffsetBeyondEnd(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "data.txt")
 	_ = os.WriteFile(p, []byte("hello world"), 0o644)
-	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "offset": 100})
-	// Offset beyond file size: empty content with trailing newline
-	want := p + "\n---\n\n"
-	if res != want {
-		t.Fatalf("expected %q, got: %q", want, res)
+	errMsg := runErr(t, ReadFile().Handler, map[string]any{"path": p, "offset": 100})
+	// Offset beyond total lines: should return error
+	if !strings.Contains(errMsg, "beyond end") {
+		t.Fatalf("expected 'beyond end' error, got: %q", errMsg)
 	}
 }
 
 func TestReadFileTruncationMessageSuggestsOffset(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "big.txt")
-	_ = os.WriteFile(p, []byte(strings.Repeat("x", 100)), 0o644)
+	// 100 lines
+	lines := make([]string, 100)
+	for i := range lines {
+		lines[i] = "x"
+	}
+	_ = os.WriteFile(p, []byte(strings.Join(lines, "\n")), 0o644)
 	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "limit": 10})
-	if !strings.Contains(res, "[TRUNCATED: 90 bytes omitted") {
+	if !strings.Contains(res, "[TRUNCATED: 90 lines omitted") {
 		t.Fatalf("expected truncation marker, got: %q", res)
 	}
-	// The new truncation message should mention offset/limit
+	// The truncation message should mention offset/limit
 	if !strings.Contains(res, "offset") || !strings.Contains(res, "limit") {
 		t.Fatalf("truncation message should mention offset and limit usage, got: %q", res)
 	}
@@ -700,15 +689,20 @@ func TestReadFileTruncationMessageSuggestsOffset(t *testing.T) {
 
 func TestReadFileOffsetWithTruncation(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "big.txt")
-	_ = os.WriteFile(p, []byte("hello " + strings.Repeat("x", 100)), 0o644)
-	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "offset": 6, "limit": 10})
-	// Bytes 6..15 (10 bytes): "xxxxxxxxxx"
-	if !strings.Contains(res, strings.Repeat("x", 10)) {
-		t.Fatalf("expected 10 x's in result, got: %q", res)
+	// 10 lines: "line0" through "line9"
+	lines := make([]string, 10)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line%d", i)
 	}
-	// Should say omitted: file is 106 bytes, offset=6, limit=10 => read 10, omitted = 106-6-10 = 90
-	if !strings.Contains(res, "[TRUNCATED: 90 bytes omitted") {
-		t.Fatalf("expected truncation marker mentioning 90 omitted, got: %q", res)
+	_ = os.WriteFile(p, []byte(strings.Join(lines, "\n")), 0o644)
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "offset": 5, "limit": 3})
+	// Lines 5..7 (3 lines): "line5", "line6", "line7"
+	if !strings.Contains(res, "line5") || !strings.Contains(res, "line7") {
+		t.Fatalf("expected lines 5-7 in result, got: %q", res)
+	}
+	// Should say omitted: 10 lines total, offset=5, limit=3 => read 3, omitted = 10-5-3 = 2
+	if !strings.Contains(res, "[TRUNCATED: 2 lines omitted") {
+		t.Fatalf("expected truncation marker mentioning 2 omitted, got: %q", res)
 	}
 }
 
@@ -748,14 +742,14 @@ func TestReadFileValidParamsPass(t *testing.T) {
 	}
 }
 
-func TestReadFileValidMaxBytesStillWorks(t *testing.T) {
-	// max_bytes is allowed for transition
-	p := filepath.Join(t.TempDir(), "ok.txt")
-	_ = os.WriteFile(p, []byte("hello"), 0o644)
-	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "max_bytes": 5})
-	want := p + "\n---\nhello\n"
-	if res != want {
-		t.Fatalf("expected %q, got: %q", want, res)
+func TestReadFileByteTruncation(t *testing.T) {
+	// max_bytes is an internal safety cap — test that it byte-truncates huge lines
+	p := filepath.Join(t.TempDir(), "huge.txt")
+	// Single huge line
+	_ = os.WriteFile(p, []byte(strings.Repeat("x", 500)), 0o644)
+	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "max_bytes": 10})
+	if !strings.Contains(res, "[TRUNCATED: output exceeded 10 bytes") {
+		t.Fatalf("expected byte truncation marker, got: %q", res)
 	}
 }
 
