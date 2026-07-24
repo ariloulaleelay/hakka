@@ -380,7 +380,8 @@ func buildTelegramGateway(p gatewayParams, telegramToken, telegramWhitelist, tel
 	hakkatools.RegisterTelegramTools(tgTools)
 	hakkatools.RegisterToolManagementTools(tgTools)
 	hakkatools.RegisterSessionTools(tgTools, p.Sessions, nil)
-	hakkatools.RegisterSubagentTools(tgTools, p.Router, tgTools, p.EngineCfg, p.Skills)
+	// NOTE: subagent_run is intentionally NOT registered for Telegram.
+	// External users should not be able to fork autonomous subagents.
 
 	conv := agent.NewConversation(p.Sessions, p.Router, tgTools, "tg", p.EngineCfg)
 	conv.SetSkills(p.Skills)

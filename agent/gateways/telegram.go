@@ -326,6 +326,13 @@ func parseSlashCommand(input string) *jsonCmd {
 				return &jsonCmd{Cmd: "get_session", Params: p}
 			}
 			return nil
+		case "switch":
+			// Alias for "get" — switches the active session in the chat.
+			if len(parts) >= 3 {
+				p, _ := json.Marshal(map[string]any{"id": parts[2]})
+				return &jsonCmd{Cmd: "get_session", Params: p}
+			}
+			return nil
 		case "info":
 			return &jsonCmd{Cmd: "session_info", Params: nil}
 		case "delete":
@@ -548,7 +555,13 @@ func (gw *TelegramGateway) formatCommandResult(res commands.CommandResult) strin
 			var lines []string
 			for _, c := range cmds {
 				if cmd, ok := c.(map[string]any); ok {
-					line := fmt.Sprintf("/%s — %s", cmd["cmd"], cmd["desc"])
+					// Use display name when available (space-separated for Telegram),
+					// fall back to the JSON command name (underscore-separated).
+					name, _ := cmd["display"].(string)
+					if name == "" {
+						name, _ = cmd["cmd"].(string)
+					}
+					line := fmt.Sprintf("/%s — %s", name, cmd["desc"])
 					lines = append(lines, line)
 				}
 			}
@@ -777,8 +790,40 @@ func (gw *TelegramGateway) getOrCreateSession(ctx context.Context, namespace str
 		gw.activeSessions[chatID] = sid
 		return sid
 	}
+
+	// Pre-enable Telegram-safe tools and deny dangerous ones for new sessions.
+	gw.initTelegramSession(ctx, namespace, session)
+
 	gw.activeSessions[chatID] = session.SessionID()
 	return session.SessionID()
+}
+
+// initTelegramSession pre-enables tools that are safe for Telegram users
+// (no filesystem, shell, or Neovim access) and denies tools that should
+// not be visible to external users (e.g. subagent_run).
+func (gw *TelegramGateway) initTelegramSession(ctx context.Context, namespace string, session *agent.Session) {
+	telegramTools := []string{
+		"http_get", "random", "feedback",
+		"session_list", "session_create", "get_session",
+		"session_info", "session_rename", "session_delete",
+		"session_autorename", "session_read", "session_search",
+		"session_summarize", "session_ask_question",
+	}
+	for _, name := range telegramTools {
+		session.AllowTool(name)
+		session.EnableTool(name)
+	}
+
+	// Deny subagent_run — it's not safe for external Telegram users.
+	session.DenyTool("subagent_run")
+
+	if err := gw.Conv.Sessions().Save(ctx, namespace, session); err != nil {
+		slog.Warn("telegram: failed to save initialized session",
+			"namespace", namespace,
+			"session_id", session.SessionID(),
+			"error", err,
+		)
+	}
 }
 
 // convExecute is a convenience wrapper that consumes the event channel

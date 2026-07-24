@@ -171,9 +171,10 @@ func (cp *CommandProcessor) ExecuteJSON(ctx context.Context, sessionID, cmd stri
 
 func (cp *CommandProcessor) execHelp(ctx context.Context, sessionID string) CommandResult {
 	type cmdEntry struct {
-		Cmd    string `json:"cmd"`
-		Desc   string `json:"desc"`
-		Params any    `json:"params,omitempty"`
+		Cmd     string `json:"cmd"`
+		Desc    string `json:"desc"`
+		Params  any    `json:"params,omitempty"`
+		Display string `json:"display,omitempty"`
 	}
 	helpJSON, _ := json.Marshal(map[string]any{
 		"commands": []cmdEntry{
@@ -182,18 +183,18 @@ func (cp *CommandProcessor) execHelp(ctx context.Context, sessionID string) Comm
 			{Cmd: "start", Desc: "Start a fresh session with all tools enabled"},
 			{Cmd: "cwd_set", Desc: "Set working directory for the session", Params: map[string]string{"cwd": "/path/to/dir"}},
 			{Cmd: "compact", Desc: "Set context soft limit in tokens", Params: map[string]string{"n": "int (0=off)"}},
-			{Cmd: "session_list", Desc: "List all sessions"},
-			{Cmd: "session_create", Desc: "Create a new session"},
-			{Cmd: "get_session", Desc: "Fetch session data by ID", Params: map[string]string{"id": "session ID or prefix"}},
-			{Cmd: "session_delete", Desc: "Delete a session", Params: map[string]string{"id": "session ID or 'this'"}},
-			{Cmd: "session_info", Desc: "Show current session details"},
-			{Cmd: "session_rename", Desc: "Rename current session", Params: map[string]string{"name": "new name"}},
-			{Cmd: "session_autorename", Desc: "Auto-generate name using LLM"},
-			{Cmd: "model_list", Desc: "List available models"},
-			{Cmd: "model_switch", Desc: "Switch to a different model", Params: map[string]string{"name": "model name"}},
-			{Cmd: "tool_list", Desc: "List available tools with status"},
-			{Cmd: "tool_allow", Desc: "Allow (and enable) a tool or tag", Params: map[string]string{"name": "tool name or #tag"}},
-			{Cmd: "tool_deny", Desc: "Deny (hide) a tool or tag", Params: map[string]string{"name": "tool name or #tag"}},
+			{Cmd: "session_list", Desc: "List all sessions", Display: "session list"},
+			{Cmd: "session_create", Desc: "Create a new session", Display: "session create"},
+			{Cmd: "get_session", Desc: "Fetch session data by ID", Display: "session get", Params: map[string]string{"id": "session ID or prefix"}},
+			{Cmd: "session_delete", Desc: "Delete a session", Display: "session delete", Params: map[string]string{"id": "session ID or 'this'"}},
+			{Cmd: "session_info", Desc: "Show current session details", Display: "session info"},
+			{Cmd: "session_rename", Desc: "Rename current session", Display: "session rename", Params: map[string]string{"name": "new name"}},
+			{Cmd: "session_autorename", Desc: "Auto-generate name using LLM", Display: "session autorename"},
+			{Cmd: "model_list", Desc: "List available models", Display: "model list"},
+			{Cmd: "model_switch", Desc: "Switch to a different model", Display: "model switch", Params: map[string]string{"name": "model name"}},
+			{Cmd: "tool_list", Desc: "List available tools with status", Display: "tool list"},
+			{Cmd: "tool_allow", Desc: "Allow (and enable) a tool or tag", Display: "tool allow", Params: map[string]string{"name": "tool name or #tag"}},
+			{Cmd: "tool_deny", Desc: "Deny (hide) a tool or tag", Display: "tool deny", Params: map[string]string{"name": "tool name or #tag"}},
 		},
 	})
 	return CommandResult{Handled: true, Cmd: "help", Data: helpJSON}
