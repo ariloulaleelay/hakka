@@ -40,7 +40,7 @@ func SubagentRun(router *agent.Router, tools *agent.ToolRegistry, cfg agent.Engi
 			"Use this for tasks that need their own LLM context, like refactoring a function "+
 			"or analyzing a file while the main agent continues.").
 		StringParam("task", "The task description for the subagent to execute. This is appended to the forked conversation as a user message.", true).
-		IntParam("timeout_seconds", "Maximum execution time in seconds (default 300, max 3600)", false).
+		IntParam("timeout_seconds", "Maximum execution time in seconds (default 900, max 3600)", false).
 		Tags("developer", "agent", "all").
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args struct {
@@ -54,7 +54,7 @@ func SubagentRun(router *agent.Router, tools *agent.ToolRegistry, cfg agent.Engi
 				return "", fmt.Errorf("subagent_run: task is required")
 			}
 			if args.TimeoutSeconds <= 0 {
-				args.TimeoutSeconds = 300
+				args.TimeoutSeconds = 900
 			}
 			if args.TimeoutSeconds > 3600 {
 				args.TimeoutSeconds = 3600

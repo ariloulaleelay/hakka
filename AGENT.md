@@ -41,8 +41,8 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
    │  OpenAI          │   │ STORE        │   │  read_file               │
    │  Anthropic       │   │  Memory      │   │  write_file              │
    │  Gemini          │   │  SQLite      │   │  edit_file               │
-   └──────────────────┘   └──────────────┘   │  list_dir                │
-                                             │  shell                   │
+   └──────────────────┘   │  PostgreSQL  │   │  list_dir                │
+                          └──────────────┘   │  shell                   │
                                              │  http_get                │
                                              │  search (ripgrep)        │
                                              │  vim_run_command         │
@@ -58,7 +58,7 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | Component | File(s) | Role |
 |---|---|---|
 | **Session** | `agent/session.go` | Append-only conversation history, system prompt, thread-safe state bag, model binding, token tracking, tool authorization |
-| **SessionStore** | `agent/store.go` | Pluggable persistence — `MemoryStore` (in-process) or `sqlite.Store` (disk-backed via `modernc.org/sqlite`, CGO-free) |
+| **SessionStore** | `agent/store.go` | Pluggable persistence — `MemoryStore` (in-process), SQLite (disk-backed via `modernc.org/sqlite`, CGO-free), or PostgreSQL (via `lib/pq`) |
 | **SessionManager** | `agent/manager.go` | Wraps a store with `GetOrCreate`/`Save`/`Drop` helpers |
 | **SessionView** | `agent/session_view.go` | Role-specific session interfaces (ISP) — `SessionHistory`, `SessionToolAuth`, `SessionModelBinding`, `SessionIdentity` |
 | **LLMAdapter** | `agent/adapter.go` | Interface: `Complete()` + `Stream()`. Implementations in `agent/adapters/` for OpenAI, Anthropic, Gemini |
@@ -81,6 +81,21 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | **EngineChannelWriter** | `agent/event/engine_writer.go` | Serialises tool-to-client requests through the engine event channel |
 | **Format** | `agent/format/md2tg.go` | Markdown-to-Telegram-HTML conversion for the Telegram gateway |
 | **Batch** | `batch/batch.go` | Reusable API for running Hakka in batch mode — autonomous tasks with no interactive transport |
+
+### Session Storage
+
+Sessions are persisted via the `SessionStore` interface (`agent/store.go`). Three backends are available:
+
+| Backend | Connection | Description |
+|---|---|---|
+| Memory | (default) | In-process map, goroutine-safe. Used when no `--db` flag is given. |
+| SQLite | `--db /path/to/hakka.db` or `--db sqlite:/path/to/hakka.db` | CGO-free via `modernc.org/sqlite`. Automatic migration from the old single-table schema. |
+| PostgreSQL | `--db postgres://user:pass@host/dbname?sslmode=disable` | Via `lib/pq`. Full `database/sql` driver. |
+
+Messages are stored in a dedicated `messages` table (split from the `sessions` metadata table)
+with a foreign key (`session_ns`, `session_id`) referencing `sessions(namespace, id)` with
+`ON DELETE CASCADE`. This replaces the previous single-JSON-blob approach, enabling future
+incremental message operations.
 
 ### Built-in Tools (`agent/tools/`)
 
@@ -231,10 +246,10 @@ See `protocol.md` for the complete frame reference.
 
 ## Coding Conventions
 
-- **Language**: Go (no CGO, pure Go SQLite via `modernc.org/sqlite`)
+- **Language**: Go
 - **Error signaling**: Tools return recoverable errors as `"Error: ..."` plain text (model can self-correct); unrecoverable errors return a Go `error` which gets serialised as `{"error": "..."}`
 - **Tool output convention (Plain Text = Default)**: All tools speak human-readable plain text, not JSON.
-  - **Success**: Return minimal, self-explanatory text: `"Written 42 bytes to /tmp/foo.txt"`, not `{"bytes":42,"path":"/tmp/foo.txt"}`.
+  - **Success**: Return minimal, self-explanatory text: `"Written 42 bytes"`, not `{"bytes":42,"path":"/tmp/foo.txt"}`.
   - **Errors**: Return `"Error: <description>"` (model can self-correct); unrecoverable Go errors use `{"error": "..."}` envelope.
   - **Large output must not bloat context**: If output exceeds a reasonable threshold (e.g. 1 KB for shell, 200 KB for file reads), write it to a tempfile and return a summary with the file path so the LLM can `read_file` or `search` it only if needed.
   - **Truncation with affordance**: When truncating, always include a visible marker (`[TRUNCATED: N bytes omitted]`) and a summary of what was omitted so the LLM can decide whether to fetch more.

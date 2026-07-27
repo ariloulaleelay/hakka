@@ -194,7 +194,6 @@ func ReadFile() agent.Tool {
 
 			var b strings.Builder
 			omitted := totalLines - readEnd
-			b.WriteString(fmt.Sprintf("%s\n---\n", resolved))
 			b.WriteString(content)
 			if len(content) > 0 && content[len(content)-1] != '\n' {
 				b.WriteByte('\n')
@@ -235,7 +234,6 @@ func ListDir() agent.Tool {
 				return dirEntries[i].Name() < dirEntries[j].Name()
 			})
 			var b strings.Builder
-			b.WriteString(fmt.Sprintf("Entries in %s:\n", resolved))
 			for _, dirEntry := range dirEntries {
 				name := dirEntry.Name()
 				if dirEntry.IsDir() {
@@ -280,9 +278,9 @@ func WriteFile() agent.Tool {
 			}
 			byteCount := len(args.Content)
 			if byteCount == 0 {
-				return fmt.Sprintf("Written 0 bytes to %s (empty file)", resolved), nil
+				return fmt.Sprintf("Written 0 bytes (empty file)"), nil
 			}
-			return fmt.Sprintf("Written %d bytes to %s", byteCount, resolved), nil
+			return fmt.Sprintf("Written %d bytes", byteCount), nil
 		}).
 		Build()
 }
@@ -336,9 +334,9 @@ func EditFile() agent.Tool {
 			}
 
 			if args.ReplaceAll {
-				return fmt.Sprintf("Replaced %d occurrence(s) in %s (replace_all)", replaceCount, resolved), nil
+				return fmt.Sprintf("Replaced %d occurrence(s) (replace_all)", replaceCount), nil
 			}
-			return fmt.Sprintf("Replaced %d occurrence(s) in %s", replaceCount, resolved), nil
+			return fmt.Sprintf("Replaced %d occurrence(s)", replaceCount), nil
 		}).
 		Build()
 }

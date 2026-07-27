@@ -63,7 +63,7 @@ func TestReadFile(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "hello.txt")
 	_ = os.WriteFile(p, []byte("hello world"), 0o644)
 	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p})
-	want := p + "\n---\nhello world\n"
+	want := "hello world\n"
 	if res != want {
 		t.Fatalf("expected %q, got: %q", want, res)
 	}
@@ -630,7 +630,7 @@ func TestReadFileWithOffset(t *testing.T) {
 	_ = os.WriteFile(p, []byte("line0\nline1\nline2"), 0o644)
 	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "offset": 1})
 	// Reading from line 1: "line1\nline2"
-	want := p + "\n---\nline1\nline2\n"
+	want := "line1\nline2\n"
 	if res != want {
 		t.Fatalf("expected %q, got: %q", want, res)
 	}
@@ -642,7 +642,7 @@ func TestReadFileWithOffsetAndLimit(t *testing.T) {
 	_ = os.WriteFile(p, []byte("line0\nline1\nline2"), 0o644)
 	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "offset": 1, "limit": 1})
 	// Lines 1..1 (1 line): "line1", but 1 line omitted (line2)
-	want := p + "\n---\nline1\n[TRUNCATED: 1 lines omitted — use read_file with offset=2&limit=1 to continue]"
+	want := "line1\n[TRUNCATED: 1 lines omitted — use read_file with offset=2&limit=1 to continue]"
 	if res != want {
 		t.Fatalf("expected %q, got: %q", want, res)
 	}
@@ -653,7 +653,7 @@ func TestReadFileWithLimit(t *testing.T) {
 	// 3 lines
 	_ = os.WriteFile(p, []byte("a\nb\nc"), 0o644)
 	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "limit": 2})
-	want := p + "\n---\na\nb\n[TRUNCATED: 1 lines omitted — use read_file with offset=2&limit=2 to continue]"
+	want := "a\nb\n[TRUNCATED: 1 lines omitted — use read_file with offset=2&limit=2 to continue]"
 	if res != want {
 		t.Fatalf("expected %q, got: %q", want, res)
 	}
@@ -736,7 +736,7 @@ func TestReadFileValidParamsPass(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "ok.txt")
 	_ = os.WriteFile(p, []byte("hello"), 0o644)
 	res := runPlain(t, ReadFile().Handler, map[string]any{"path": p, "offset": 0, "limit": 5})
-	want := p + "\n---\nhello\n"
+	want := "hello\n"
 	if res != want {
 		t.Fatalf("expected %q, got: %q", want, res)
 	}

@@ -1,25 +1,32 @@
+// Package sqlite provides a SQLite-backed agent.SessionStore using
+// the shared sqlstore engine. It also handles migration from the
+// pre-split schema (messages as JSON blob in sessions table).
 package sqlite
 
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	_ "modernc.org/sqlite"
 
-	"github.com/ariloulaleelay/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent/stores/sqlstore"
 )
 
+// Store is a SQLite-backed agent.SessionStore.
 type Store struct {
+	*sqlstore.Store
 	db *sql.DB
 }
 
+// Open opens (or creates) a SQLite database at the given path and
+// initialises the schema. If the database uses the old pre-split
+// schema (messages as JSON column in sessions), it is migrated
+// automatically.
 func Open(path string) (*Store, error) {
 	dsn := path
-	pragma := "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	pragma := "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
 	if strings.Contains(path, "?") {
 		dsn = path + "&" + pragma
 	} else {
@@ -30,248 +37,45 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sqlite open: %w", err)
 	}
-	if _, err := db.ExecContext(context.Background(), schema); err != nil {
+
+	store := &Store{
+		Store: sqlstore.New(db, sqlstore.SQLite),
+		db:    db,
+	}
+
+	ctx := context.Background()
+
+	// First, check if the sessions table already exists (old schema).
+	// We need to handle this before InitSchema because the old sessions
+	// table has a "messages" column that conflicts with our new schema
+	// expectations. InitSchema creates the new sessions table if it
+	// doesn't exist, but if the OLD table exists, CREATE IF NOT EXISTS
+	// does nothing and we still have the messages column.
+
+	needsMigration, err := store.NeedsMigration(ctx)
+	if err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("sqlite schema: %w", err)
-	}
-	runMigration(db, `ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT ''`)
-	runMigration(db, `ALTER TABLE sessions ADD COLUMN enabled_tools TEXT NOT NULL DEFAULT ''`)
-	runMigration(db, `ALTER TABLE sessions ADD COLUMN blocked_tools TEXT NOT NULL DEFAULT ''`)
-	runMigration(db, `ALTER TABLE sessions ADD COLUMN compact_soft_limit INTEGER NOT NULL DEFAULT 200000`)
-	runMigration(db, `ALTER TABLE sessions ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`)
-	runMigration(db, `ALTER TABLE sessions ADD COLUMN estimated_context_tokens INTEGER NOT NULL DEFAULT 0`)
-	runMigration(db, `ALTER TABLE sessions ADD COLUMN total_cost REAL NOT NULL DEFAULT 0`)
-	runMigration(db, `ALTER TABLE sessions ADD COLUMN active_skills TEXT NOT NULL DEFAULT '[]'`)
-	runMigration(db, `ALTER TABLE sessions ADD COLUMN streaming INTEGER NOT NULL DEFAULT 1`)
-	return &Store{db: db}, nil
-}
-
-func (st *Store) Close() error {
-	return st.db.Close()
-}
-
-func runMigration(db *sql.DB, stmt string) {
-	_, err := db.ExecContext(context.Background(), stmt)
-	if err == nil {
-		return
-	}
-	if strings.Contains(err.Error(), "duplicate column") {
-		return
-	}
-	slog.Error("sqlite migration failed", "stmt", stmt, "error", err)
-}
-
-const schema = `
-CREATE TABLE IF NOT EXISTS sessions (
-	namespace     TEXT NOT NULL,
-	id            TEXT NOT NULL,
-	system_prompt TEXT NOT NULL,
-	messages      TEXT NOT NULL,
-	created_at    TEXT NOT NULL,
-	updated_at    TEXT NOT NULL DEFAULT '',
-	client_cwd    TEXT NOT NULL DEFAULT '',
-	model         TEXT NOT NULL DEFAULT '',
-	total_tokens  INTEGER NOT NULL DEFAULT 0,
-	name          TEXT NOT NULL DEFAULT '',
-	enabled_tools TEXT NOT NULL DEFAULT '',
-	blocked_tools TEXT NOT NULL DEFAULT '',
-	compact_soft_limit INTEGER NOT NULL DEFAULT 200000,
-	estimated_context_tokens INTEGER NOT NULL DEFAULT 0,
-	total_cost    REAL NOT NULL DEFAULT 0,
-	active_skills TEXT NOT NULL DEFAULT '[]',
-	PRIMARY KEY (namespace, id)
-);
-CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);
-`
-
-// scanRow scans a SQL row into a *agent.Session via SessionData.
-func scanRow(scanner interface{ Scan(dest ...any) error }) (*agent.Session, error) {
-	var (
-		data                  agent.SessionData
-		messagesJSON          string
-		createdText           string
-		updatedText           string
-		modelStr              string
-		totalTokens           int
-		totalCost             float64
-		enabledStr            string
-		blockedStr            string
-		compactSoftLim        int
-		estimatedContextTokens int
-		activeSkillsStr       string
-		streamingInt          int
-	)
-	err := scanner.Scan(
-		&data.Namespace, &data.ID, &data.SystemPrompt,
-		&messagesJSON, &createdText, &updatedText,
-		&data.ClientCWD, &modelStr, &totalTokens,
-		&data.Name, &enabledStr, &blockedStr, &compactSoftLim,
-		&estimatedContextTokens, &totalCost, &activeSkillsStr,
-		&streamingInt,
-	)
-	if err != nil {
-		return nil, err
-	}
-	data.Streaming = streamingInt != 0
-	if err := json.Unmarshal([]byte(messagesJSON), &data.Messages); err != nil {
-		return nil, fmt.Errorf("decode messages: %w", err)
-	}
-	if enabledStr != "" {
-		if err := json.Unmarshal([]byte(enabledStr), &data.EnabledTools); err != nil {
-			data.EnabledTools = nil
-		}
-	}
-	if blockedStr != "" {
-		if err := json.Unmarshal([]byte(blockedStr), &data.BlockedTools); err != nil {
-			data.BlockedTools = nil
-		}
-	}
-	if activeSkillsStr != "" && activeSkillsStr != "[]" {
-		if err := json.Unmarshal([]byte(activeSkillsStr), &data.ActiveSkills); err != nil {
-			data.ActiveSkills = nil
-		}
-	}
-	data.Model = modelStr
-	data.TotalTokens = totalTokens
-	data.TotalCost = totalCost
-	data.CompactSoftLimit = compactSoftLim
-	data.EstimatedContextTokens = estimatedContextTokens
-	if err := data.CreatedAt.UnmarshalText([]byte(createdText)); err != nil {
-		return nil, fmt.Errorf("decode created_at: %w", err)
-	}
-	if updatedText != "" {
-		if err := data.UpdatedAt.UnmarshalText([]byte(updatedText)); err != nil {
-			return nil, fmt.Errorf("decode updated_at: %w", err)
-		}
-	}
-	return agent.NewSessionFromData(&data), nil
-}
-
-func (st *Store) Get(ctx context.Context, namespace, id string) (*agent.Session, bool, error) {
-	row := st.db.QueryRowContext(ctx,
-		`SELECT namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills, streaming FROM sessions WHERE namespace = ? AND id = ?`, namespace, id)
-
-	session, err := scanRow(row)
-	if err == sql.ErrNoRows {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	return session, true, nil
-}
-
-func (st *Store) Put(ctx context.Context, namespace string, session *agent.Session) error {
-	data := session.Read()
-
-	messagesJSON, err := json.Marshal(data.Messages)
-	if err != nil {
-		return err
-	}
-	createdText, err := data.CreatedAt.MarshalText()
-	if err != nil {
-		return err
-	}
-	updatedAt := data.UpdatedAt
-	if updatedAt.IsZero() {
-		updatedAt = data.CreatedAt
-	}
-	updatedText, err := updatedAt.MarshalText()
-	if err != nil {
-		return err
+		return nil, fmt.Errorf("check migration: %w", err)
 	}
 
-	enabledJSON := "{}"
-	if len(data.EnabledTools) > 0 {
-		b, err := json.Marshal(data.EnabledTools)
-		if err != nil {
-			slog.Error("sqlite: failed to marshal enabled_tools, saving with empty config",
-				"session", data.ID, "error", err)
-		} else {
-			enabledJSON = string(b)
+	// Create tables (messages table is new; sessions IF NOT EXISTS won't
+	// touch an existing old-schema table).
+	if err := store.InitSchema(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("init schema: %w", err)
+	}
+
+	if needsMigration {
+		if err := store.MigrateFromOldSchema(ctx); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("migrate old schema: %w", err)
 		}
 	}
 
-	blockedJSON := "{}"
-	if len(data.BlockedTools) > 0 {
-		b, err := json.Marshal(data.BlockedTools)
-		if err != nil {
-			slog.Error("sqlite: failed to marshal blocked_tools, saving with empty config",
-				"session", data.ID, "error", err)
-		} else {
-			blockedJSON = string(b)
-		}
-	}
-
-	activeSkillsJSON := "[]"
-	if len(data.ActiveSkills) > 0 {
-		b, err := json.Marshal(data.ActiveSkills)
-		if err != nil {
-			slog.Error("sqlite: failed to marshal active_skills, saving with empty config",
-				"session", data.ID, "error", err)
-		} else {
-			activeSkillsJSON = string(b)
-		}
-	}
-
-	streamingInt := 0
-	if data.Streaming {
-		streamingInt = 1
-	}
-
-	_, err = st.db.ExecContext(ctx, `
-		INSERT INTO sessions (namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills, streaming)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(namespace, id) DO UPDATE SET
-			system_prompt = excluded.system_prompt,
-			messages      = excluded.messages,
-			updated_at    = excluded.updated_at,
-			client_cwd    = excluded.client_cwd,
-			model         = excluded.model,
-			total_tokens  = excluded.total_tokens,
-			name          = excluded.name,
-			enabled_tools = excluded.enabled_tools,
-			blocked_tools = excluded.blocked_tools,
-			compact_soft_limit = excluded.compact_soft_limit,
-			estimated_context_tokens = excluded.estimated_context_tokens,
-			total_cost    = excluded.total_cost,
-			active_skills = excluded.active_skills,
-			streaming     = excluded.streaming
-	`, namespace, data.ID, data.SystemPrompt, string(messagesJSON), string(createdText), string(updatedText),
-		data.ClientCWD, data.Model, data.TotalTokens, data.Name, enabledJSON, blockedJSON, data.CompactSoftLimit,
-		data.EstimatedContextTokens, data.TotalCost, activeSkillsJSON, streamingInt)
-
-	session.Update(func(d *agent.SessionData) {
-		d.Namespace = namespace
-	})
-
-	return err
+	return store, nil
 }
 
-func (st *Store) Delete(ctx context.Context, namespace, id string) error {
-	_, err := st.db.ExecContext(ctx, `DELETE FROM sessions WHERE namespace = ? AND id = ?`, namespace, id)
-	return err
+// Close closes the underlying database.
+func (s *Store) Close() error {
+	return s.db.Close()
 }
-
-func (st *Store) List(ctx context.Context, namespace string) ([]*agent.Session, error) {
-	rows, err := st.db.QueryContext(ctx, `SELECT namespace, id, system_prompt, messages, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills, streaming FROM sessions WHERE namespace = ? ORDER BY updated_at DESC`, namespace)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var sessions []*agent.Session
-	for rows.Next() {
-		session, err := scanRow(rows)
-		if err != nil {
-			return nil, err
-		}
-		sessions = append(sessions, session)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return sessions, nil
-}
-
-var _ agent.SessionStore = (*Store)(nil)

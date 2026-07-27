@@ -146,6 +146,9 @@ func SessionList(sm *agent.SessionManager) agent.Tool {
 			var b strings.Builder
 			b.WriteString(fmt.Sprintf("%d session(s):\n", len(sessions)))
 			for i, s := range sessions[:limit] {
+				if i > 0 {
+					b.WriteString("  ---\n")
+				}
 				msgCount := len(s.Messages())
 				created := s.Read().CreatedAt.Format("2006-01-02 15:04")
 				model := s.GetModel()

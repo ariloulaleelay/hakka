@@ -20,6 +20,7 @@ import (
 	"github.com/ariloulaleelay/hakka/agent/mcp"
 	"github.com/ariloulaleelay/hakka/agent/webfront"
 	sqlitestore "github.com/ariloulaleelay/hakka/agent/stores/sqlite"
+	postgresstore "github.com/ariloulaleelay/hakka/agent/stores/postgres"
 	hakkatools "github.com/ariloulaleelay/hakka/agent/tools"
 	"github.com/ariloulaleelay/hakka/batch"
 )
@@ -45,7 +46,7 @@ func main() {
 	flag.StringVar(&cfg.configPath, "config", "hakka.json", "Path to model config JSON")
 	flag.StringVar(&cfg.wsAddr, "ws-addr", ":8765", "WebSocket gateway bind address")
 	flag.StringVar(&cfg.webAddr, "web-addr", "", "Web frontend HTTP server address (e.g. :8080). Serves SPA + WebSocket on the same port. Empty = disabled")
-	flag.StringVar(&cfg.dbPath, "db", "", "Optional SQLite session DB path (default: in-memory)")
+	flag.StringVar(&cfg.dbPath, "db", "", "Session DB URL: sqlite:path/to/file, postgres://user:pass@host/db, or plain file path for SQLite (default: in-memory)")
 	flag.StringVar(&cfg.logLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	flag.StringVar(&cfg.llmDebug, "llm-debug", "", "Directory for LLM request/response debug logs (empty = disabled)")
 	flag.StringVar(&cfg.telegramToken, "telegram-token", "", "Telegram bot token (env: TELEGRAM_BOT_TOKEN)")
@@ -464,13 +465,34 @@ func newLogger(level string) *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
 }
 
-func openStore(path string) (agent.SessionStore, func(), error) {
-	if path == "" {
+func openStore(dataSource string) (agent.SessionStore, func(), error) {
+	if dataSource == "" {
 		return agent.NewMemoryStore(), func() {}, nil
 	}
-	sqlStore, err := sqlitestore.Open(path)
-	if err != nil {
-		return nil, nil, err
+
+	// URL-based scheme detection.
+	switch {
+	case strings.HasPrefix(dataSource, "postgres://"), strings.HasPrefix(dataSource, "postgresql://"):
+		store, err := postgresstore.Open(dataSource)
+		if err != nil {
+			return nil, nil, err
+		}
+		return store, func() { _ = store.Close() }, nil
+
+	case strings.HasPrefix(dataSource, "sqlite:"):
+		path := strings.TrimPrefix(dataSource, "sqlite:")
+		store, err := sqlitestore.Open(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		return store, func() { _ = store.Close() }, nil
+
+	default:
+		// Plain path — assume SQLite (backward compatibility).
+		store, err := sqlitestore.Open(dataSource)
+		if err != nil {
+			return nil, nil, err
+		}
+		return store, func() { _ = store.Close() }, nil
 	}
-	return sqlStore, func() { _ = sqlStore.Close() }, nil
 }
