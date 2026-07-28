@@ -11,7 +11,6 @@ import (
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
-// ToolCommands handles tool-related commands.
 type ToolCommands struct {
 	Sessions *agent.SessionManager
 	Tools    *agent.ToolRegistry

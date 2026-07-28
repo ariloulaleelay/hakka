@@ -220,7 +220,7 @@ func (sess *Session) CWDMessage() *Message {
 	}
 }
 
-// GetCWD returns the raw session working directory, or "" if not set.
+// GetCWD returns "" if not set.
 func (sess *Session) GetCWD() string {
 	sess.mu.RLock()
 	defer sess.mu.RUnlock()
@@ -280,7 +280,6 @@ func (sess *Session) IsToolConfigured(name string) bool {
 	return ok
 }
 
-// IsToolLocked returns true if the tool has been used in this session.
 func (sess *Session) IsToolLocked(name string) bool {
 	sess.mu.RLock()
 	defer sess.mu.RUnlock()
@@ -353,12 +352,6 @@ func (sess *Session) DenyTool(name string) error {
 	return nil
 }
 
-func (sess *Session) MarkToolUsed(name string) {
-	// This is a no-op at the data level because IsToolLocked scans history.
-	// We keep the method for future optimizations (e.g. a UsedTools map).
-	// For now, locking is derived from message history.
-}
-
 // --- SessionModelBinding ---
 
 func (sess *Session) GetModel() string {
@@ -388,12 +381,6 @@ func (sess *Session) AddTokenUsage(tokens int) {
 	sess.data.TotalTokens += tokens
 }
 
-func (sess *Session) SetTotalTokenUsage(tokens int) {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	sess.data.TotalTokens = tokens
-}
-
 func (sess *Session) TotalCost() float64 {
 	sess.mu.RLock()
 	defer sess.mu.RUnlock()
@@ -404,12 +391,6 @@ func (sess *Session) AddCost(cost float64) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	sess.data.TotalCost += cost
-}
-
-func (sess *Session) SetTotalCost(cost float64) {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	sess.data.TotalCost = cost
 }
 
 func (sess *Session) GetEstimatedContextTokens() int {
@@ -438,21 +419,7 @@ func (sess *Session) SetCompactSoftLimit(n int) {
 	sess.data.CompactSoftLimit = n
 }
 
-func (sess *Session) GetStreaming() bool {
-	sess.mu.RLock()
-	defer sess.mu.RUnlock()
-	return sess.data.Streaming
-}
-
-func (sess *Session) SetStreaming(v bool) {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	sess.data.Streaming = v
-	sess.data.UpdatedAt = time.Now()
-}
-
-// Metadata returns a canonical map of session metadata fields.
-// This is the single point of truth for session metadata format.
+// Metadata is the single point of truth for session metadata format.
 // All consumers (get_session, session_info, session_create, session_list,
 // welcome, type:"session" frames) must use this method to ensure
 // consistent field names and values.
@@ -477,7 +444,6 @@ func (sess *Session) Metadata() map[string]any {
 	}
 }
 
-// nowMillis returns the current Unix timestamp in milliseconds.
 func nowMillis() int64 {
 	return time.Now().UnixMilli()
 }
@@ -496,40 +462,13 @@ func formatTime(t, fallback time.Time) string {
 	return t.Format(time.RFC3339)
 }
 
-// --- Non-interface helpers ---
-
-func (sess *Session) SetNamespace(ns string) {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	sess.data.Namespace = ns
-}
-
-func (sess *Session) SetID(id string) {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	sess.data.ID = id
-}
-
+// --- ActiveSkills management ---
 func (sess *Session) SetClientCWD(cwd string) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	sess.data.ClientCWD = cwd
 	sess.data.UpdatedAt = time.Now()
 }
-
-func (sess *Session) SetUpdatedAt(t time.Time) {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	sess.data.UpdatedAt = t
-}
-
-func (sess *Session) SetCreatedAt(t time.Time) {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	sess.data.CreatedAt = t
-}
-
-// --- ActiveSkills management ---
 
 func (sess *Session) ActiveSkills() []string {
 	sess.mu.RLock()
@@ -558,12 +497,5 @@ func (sess *Session) RemoveActiveSkill(name string) {
 			break
 		}
 	}
-	sess.data.UpdatedAt = time.Now()
-}
-
-func (sess *Session) ClearActiveSkills() {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	sess.data.ActiveSkills = nil
 	sess.data.UpdatedAt = time.Now()
 }

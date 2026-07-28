@@ -8,7 +8,6 @@ import (
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
-// ModelCommands handles model-related commands.
 type ModelCommands struct {
 	Sessions *agent.SessionManager
 	Conv     *agent.Conversation

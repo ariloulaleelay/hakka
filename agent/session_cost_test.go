@@ -21,7 +21,7 @@ func TestSessionCost_Tracking(t *testing.T) {
 		t.Fatalf("expected cost %f, got %f", want, s.TotalCost())
 	}
 
-	s.SetTotalCost(0.5)
+	s.Update(func(d *SessionData) { d.TotalCost = 0.5 })
 	if s.TotalCost() != 0.5 {
 		t.Fatalf("expected cost 0.5, got %f", s.TotalCost())
 	}

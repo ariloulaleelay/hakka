@@ -55,7 +55,7 @@ func (ss *StreamSession) Execute(ctx context.Context, sessionID, userInput strin
 		return nil, err
 	}
 	if userInput != "" {
-		session.SetStreaming(true)
+		session.Update(func(d *SessionData) { d.Streaming = true; d.UpdatedAt = time.Now() })
 		session.Append(Message{Role: RoleUser, Content: userInput, Timestamp: nowMillis()})
 		if err := ss.conv.sessions.Save(ctx, ss.Namespace, session); err != nil {
 			return nil, err

@@ -32,14 +32,10 @@ type bufferedResponse struct {
 	createdAt time.Time
 }
 
-// NewInProcessResponseReader creates a reader with a default buffer TTL
-// of 30 seconds. A background goroutine sweeps expired buffered entries.
 func NewInProcessResponseReader() *InProcessResponseReader {
 	return newInProcessResponseReader(30 * time.Second)
 }
 
-// NewInProcessResponseReaderWithTTL creates a reader with the given buffer TTL.
-// Exposed for testing.
 func NewInProcessResponseReaderWithTTL(ttl time.Duration) *InProcessResponseReader {
 	return newInProcessResponseReader(ttl)
 }
@@ -79,8 +75,6 @@ func (reader *InProcessResponseReader) sweep() {
 	}
 }
 
-// Stop terminates the background sweep goroutine. After Stop returns, the
-// reader should not be used.
 func (reader *InProcessResponseReader) Stop() {
 	close(reader.done)
 }
@@ -130,7 +124,6 @@ func (reader *InProcessResponseReader) Deliver(resp *event.ClientResponse) bool 
 	return true
 }
 
-// Cleanup removes the pending entry for requestID.
 func (reader *InProcessResponseReader) Cleanup(requestID string) {
 	reader.mu.Lock()
 	defer reader.mu.Unlock()

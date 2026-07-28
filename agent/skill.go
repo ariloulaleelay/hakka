@@ -35,7 +35,6 @@ type SkillRegistry struct {
 	dirs   []string          // directories scanned for skills
 }
 
-// NewSkillRegistry creates an empty skill registry.
 func NewSkillRegistry() *SkillRegistry {
 	return &SkillRegistry{
 		skills: make(map[string]*Skill),

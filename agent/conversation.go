@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
@@ -60,20 +61,11 @@ type Conversation struct {
 	skills *SkillRegistry
 }
 
-// Sessions returns the SessionManager used by this conversation.
 func (conv *Conversation) Sessions() *SessionManager { return conv.sessions }
-
-// Router returns the Router used by this conversation.
-func (conv *Conversation) Router() *Router { return conv.router }
-
-// Config returns a copy of the engine configuration.
-func (conv *Conversation) Config() EngineConfig { return conv.config }
-
-// Namespace returns the namespace used by this conversation.
-func (conv *Conversation) Namespace() string { return conv.namespace }
-
-// Tools returns the ToolRegistry used by this conversation.
-func (conv *Conversation) Tools() *ToolRegistry { return conv.tools }
+func (conv *Conversation) Router() *Router             { return conv.router }
+func (conv *Conversation) Config() EngineConfig        { return conv.config }
+func (conv *Conversation) Namespace() string           { return conv.namespace }
+func (conv *Conversation) Tools() *ToolRegistry        { return conv.tools }
 
 // NewConversation builds a Conversation. Zero-valued config fields are
 // filled from DefaultEngineConfig() — the single source of truth for
@@ -221,7 +213,7 @@ func (conv *Conversation) prepareWithInput(ctx context.Context, sessionID, userI
 	}
 	conv.EnsureDefaultModel(ctx, session)
 	if userInput != "" {
-		session.SetStreaming(false)
+		session.Update(func(d *SessionData) { d.Streaming = false; d.UpdatedAt = time.Now() })
 		session.Append(Message{Role: RoleUser, Content: userInput, Timestamp: nowMillis()})
 		if err := conv.sessions.Save(ctx, ns, session); err != nil {
 			return nil, err
@@ -284,9 +276,8 @@ func (conv *Conversation) runTurnWithStep(ctx context.Context, session SessionVi
 	return eventCh
 }
 
-// SessionModel returns the name of the model currently bound to the
-// session, or the registry default if none is set. Returns "" if no
-// Router is configured.
+// SessionModel returns the model name, the registry default if none is set,
+// or "" when no Router is configured.
 func (conv *Conversation) SessionModel(s SessionView) string {
 	if conv.router == nil {
 		return ""

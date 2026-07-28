@@ -1218,7 +1218,7 @@ func TestUnknownCommand_ReturnsError(t *testing.T) {
 
 func TestShortestUniquePrefix_SingleSession(t *testing.T) {
 	sessions := []*agent.Session{
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abcdef"); return s }(),
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.Update(func(d *agent.SessionData) { d.ID = "abcdef" }); return s }(),
 	}
 	prefixes := shortestUniquePrefixes(sessions)
 	if prefixes["abcdef"] != "a" {
@@ -1228,9 +1228,9 @@ func TestShortestUniquePrefix_SingleSession(t *testing.T) {
 
 func TestShortestUniquePrefix_MultipleSessions(t *testing.T) {
 	sessions := []*agent.Session{
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abc123"); return s }(),
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abd456"); return s }(),
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("abe789"); return s }(),
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.Update(func(d *agent.SessionData) { d.ID = "abc123" }); return s }(),
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.Update(func(d *agent.SessionData) { d.ID = "abd456" }); return s }(),
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.Update(func(d *agent.SessionData) { d.ID = "abe789" }); return s }(),
 	}
 	prefixes := shortestUniquePrefixes(sessions)
 	if prefixes["abc123"] != "abc" {
@@ -1246,9 +1246,9 @@ func TestShortestUniquePrefix_MultipleSessions(t *testing.T) {
 
 func TestShortestUniquePrefix_DifferentLengths(t *testing.T) {
 	sessions := []*agent.Session{
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("a-long-id"); return s }(),
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("another-id"); return s }(),
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.SetID("b-short"); return s }(),
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.Update(func(d *agent.SessionData) { d.ID = "a-long-id" }); return s }(),
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.Update(func(d *agent.SessionData) { d.ID = "another-id" }); return s }(),
+		func() *agent.Session { s := agent.NewSession("ns", ""); s.Update(func(d *agent.SessionData) { d.ID = "b-short" }); return s }(),
 	}
 	prefixes := shortestUniquePrefixes(sessions)
 	if prefixes["a-long-id"] != "a-" {

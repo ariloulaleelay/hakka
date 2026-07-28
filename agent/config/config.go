@@ -39,7 +39,6 @@ type ModelConfig struct {
 	RetryConfig      *RetryConfigRaw   `json:"retry_config,omitempty"`      // per-provider retry policy
 }
 
-// File is the on-disk shape of the configuration.
 type File struct {
 	Default     string                          `json:"default"`
 	Models      map[string]ModelConfig          `json:"models"`
@@ -47,7 +46,6 @@ type File struct {
 	FeedbackURL string                          `json:"feedback_url,omitempty"`
 }
 
-// MCPServerConfig describes a single MCP server endpoint.
 type MCPServerConfig struct {
 	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`

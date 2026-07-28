@@ -84,7 +84,6 @@ func (reg *Registry) Get(name string) (LLMAdapter, bool) {
 	return p.Adapter, true
 }
 
-// GetProfile returns the full ModelProfile for the named model.
 func (reg *Registry) GetProfile(name string) (ModelProfile, bool) {
 	reg.mu.RLock()
 	defer reg.mu.RUnlock()
@@ -92,7 +91,6 @@ func (reg *Registry) GetProfile(name string) (ModelProfile, bool) {
 	return p, ok
 }
 
-// Names returns registered adapter names in sorted order.
 func (reg *Registry) Names() []string {
 	reg.mu.RLock()
 	defer reg.mu.RUnlock()

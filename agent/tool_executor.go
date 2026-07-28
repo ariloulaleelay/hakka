@@ -36,21 +36,16 @@ func newToolExecutor(tools *ToolRegistry, toolContext ToolContextDecorator, hook
 // Public API (used by Conversation)
 // ---------------------------------------------------------------------------
 
-// ExecuteToolCalls runs every tool requested by the model, then appends
-// all results to the session as tool-role messages.
-//
-// hooks MUST be the serialised hooks created by SerialisedHooks, not the
-// bare base hooks, because tool goroutines run concurrently and would
-// race on the shared hook writer otherwise.
+// ExecuteToolCalls hooks MUST be the serialised hooks created by
+// SerialisedHooks, not the bare base hooks — tool goroutines run
+// concurrently and would race on the shared hook writer otherwise.
 func (ex *toolExecutor) ExecuteToolCalls(ctx context.Context, session SessionView, calls []ToolCall, events eventSender, hooks Hooks) {
 	results := ex.runToolsConcurrently(ctx, session, calls, events, hooks)
 	ex.appendToolResults(session, calls, results)
 }
 
-// SerialisedHooks wraps the executor's base hooks so that every callback
-// is invoked under the provided mutex. This serialises hook invocations
-// across concurrent tool goroutines, preventing torn writes when hooks
-// write to a shared transport connection.
+// SerialisedHooks invokes every callback under the provided mutex,
+// preventing torn writes across concurrent tool goroutines.
 func (ex *toolExecutor) SerialisedHooks(turnMu *sync.Mutex) Hooks {
 	base := ex.hooks
 	return Hooks{

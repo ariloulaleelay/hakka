@@ -35,9 +35,9 @@ const (
 	ActionContinue                    // trigger LLM without adding a user message
 )
 
-// CommandProcessor handles structured JSON commands (/help, /model, /session, /tool, ...).
-// It delegates to domain-specific handlers. No text-based slash command parsing
-// happens here — clients are responsible for mapping slash-commands to JSON.
+// CommandProcessor handles structured JSON commands (/help, /model, /session,
+// /tool, ...). No text-based slash command parsing happens here — clients
+// are responsible for mapping slash-commands to JSON.
 type CommandProcessor struct {
 	Sessions     *agent.SessionManager
 	Conv         *agent.Conversation

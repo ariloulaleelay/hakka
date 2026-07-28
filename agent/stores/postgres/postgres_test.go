@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/ariloulaleelay/hakka/agent"
 )
@@ -242,7 +243,7 @@ func TestStreaming_is_preserved_across_Put_and_Get(t *testing.T) {
 	ns := "streaming-ns"
 
 	sess := agent.NewSession(ns, "test")
-	sess.SetStreaming(true)
+	sess.Update(func(d *agent.SessionData) { d.Streaming = true; d.UpdatedAt = time.Now() })
 	if err := s.Put(ctx, ns, sess); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -253,7 +254,7 @@ func TestStreaming_is_preserved_across_Put_and_Get(t *testing.T) {
 	if !ok {
 		t.Fatal("session not found")
 	}
-	if !got.GetStreaming() {
+	if !got.Read().Streaming {
 		t.Fatal("expected Streaming=true after round-trip")
 	}
 }

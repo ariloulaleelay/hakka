@@ -109,8 +109,8 @@ func buildNamingMessages(session SessionHistory) []Message {
 	return filtered
 }
 
-// notifyError fires the OnError hook and returns the error so callers can
-// propagate it. Falls back to logging if no hook is configured.
+// notifyError fires the OnError hook and returns the error. Falls back
+// to logging if no hook is configured.
 func notifyError(sessionID string, err error, hooks Hooks, logger *slog.Logger) error {
 	hooks.FireError(sessionID, err)
 	if hooks.OnError == nil {
@@ -128,8 +128,6 @@ func sendEngineEvent(events eventSender, ev event.EngineEvent) {
 	events <- ev
 }
 
-// logCompactifySkipped logs a debug message when the LLM chose not to
-// call context_compactify despite the soft limit being exceeded.
 func logCompactifySkipped(logger *slog.Logger, sessionID string, iteration int, needCompactify bool, toolCalls []ToolCall) {
 	if !needCompactify {
 		return

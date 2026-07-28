@@ -40,7 +40,7 @@ func (sm *SessionManager) GetOrCreate(ctx context.Context, namespace, id string)
 	}
 	session := NewSession(namespace, sm.SystemPrompt)
 	if id != "" {
-		session.SetID(id)
+		session.Update(func(d *SessionData) { d.ID = id })
 	}
 	if err := sm.Store.Put(ctx, namespace, session); err != nil {
 		return nil, err

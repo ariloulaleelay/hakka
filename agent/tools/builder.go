@@ -38,12 +38,10 @@ type paramDef struct {
 	Description string
 }
 
-// NewTool starts building a tool with the given name and description.
 func NewTool(name, description string) *ToolBuilder {
 	return &ToolBuilder{name: name, description: description}
 }
 
-// StringParam adds a string parameter.
 func (b *ToolBuilder) StringParam(name, desc string, required bool) *ToolBuilder {
 	b.params = append(b.params, paramDef{Name: name, Type: "string", Description: desc})
 	if required {
@@ -52,7 +50,6 @@ func (b *ToolBuilder) StringParam(name, desc string, required bool) *ToolBuilder
 	return b
 }
 
-// IntParam adds an integer parameter.
 func (b *ToolBuilder) IntParam(name, desc string, required bool) *ToolBuilder {
 	b.params = append(b.params, paramDef{Name: name, Type: "integer", Description: desc})
 	if required {
@@ -61,7 +58,6 @@ func (b *ToolBuilder) IntParam(name, desc string, required bool) *ToolBuilder {
 	return b
 }
 
-// BoolParam adds a boolean parameter.
 func (b *ToolBuilder) BoolParam(name, desc string, required bool) *ToolBuilder {
 	b.params = append(b.params, paramDef{Name: name, Type: "boolean", Description: desc})
 	if required {
@@ -70,7 +66,6 @@ func (b *ToolBuilder) BoolParam(name, desc string, required bool) *ToolBuilder {
 	return b
 }
 
-// ObjectParam adds an object parameter (arbitrary key-value map).
 func (b *ToolBuilder) ObjectParam(name, desc string, required bool) *ToolBuilder {
 	b.params = append(b.params, paramDef{Name: name, Type: "object", Description: desc})
 	if required {
@@ -79,19 +74,16 @@ func (b *ToolBuilder) ObjectParam(name, desc string, required bool) *ToolBuilder
 	return b
 }
 
-// Tags sets the tool's categorization tags.
 func (b *ToolBuilder) Tags(tags ...string) *ToolBuilder {
 	b.tags = append(b.tags, tags...)
 	return b
 }
 
-// Timeout sets an optional execution timeout for the tool.
 func (b *ToolBuilder) Timeout(d time.Duration) *ToolBuilder {
 	b.timeout = d
 	return b
 }
 
-// ExecSnippet sets a custom exec-snippet function.
 func (b *ToolBuilder) ExecSnippet(fn agent.ExecSnippetFunc) *ToolBuilder {
 	b.execSnippet = fn
 	return b
@@ -119,13 +111,11 @@ func (b *ToolBuilder) ExecSnippetField(field string) *ToolBuilder {
 	return b
 }
 
-// Handler sets the tool's execution handler.
 func (b *ToolBuilder) Handler(fn agent.ToolHandler) *ToolBuilder {
 	b.handler = fn
 	return b
 }
 
-// Build assembles the final agent.Tool.
 func (b *ToolBuilder) Build() agent.Tool {
 	properties := make(map[string]any, len(b.params))
 	for _, p := range b.params {

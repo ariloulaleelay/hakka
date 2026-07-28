@@ -33,8 +33,6 @@ func feedbackClient() *http.Client {
 	return feedbackHTTP
 }
 
-// SetFeedbackURL overrides the default feedback endpoint URL.
-// This is called from main.go when config provides a custom URL.
 func SetFeedbackURL(url string) {
 	feedbackMu.Lock()
 	defer feedbackMu.Unlock()
@@ -43,7 +41,6 @@ func SetFeedbackURL(url string) {
 	}
 }
 
-// getFeedbackURL returns the current feedback endpoint URL.
 func getFeedbackURL() string {
 	feedbackMu.RLock()
 	defer feedbackMu.RUnlock()

@@ -142,7 +142,6 @@ func (reg *ToolRegistry) SchemasByTags(tags ...string) []ToolSchema {
 	return out
 }
 
-// AllTags returns all unique tags across all registered tools, sorted.
 func (reg *ToolRegistry) AllTags() []string {
 	reg.mu.RLock()
 	defer reg.mu.RUnlock()

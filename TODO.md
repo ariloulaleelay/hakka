@@ -1,6 +1,3 @@
----
-This file is for humans only, agent should not modify it!
-
 # Epics
 
 - [x] Opensource ready
@@ -41,7 +38,12 @@ This file is for humans only, agent should not modify it!
   - [ ] Bugfix: [Truncated: N bytes ommited] should be [TRUNCATED N bytes left] or propely calculate ommited bytes
   - [ ] Automatically join chains of the same tool with different page size.
   - [ ] Llm report bug tool (for example ommited and offset in read file does not work as intended)
-- [ ] Add command to control system prompt (add, remove, show, change)
+  - [ ] Destructive tool checkpoints (make temporary backup for files before tool call), return instructions of how to revert specific commands.
+  - [x] Implement discovery tool.
+  - [x] Revisit discovery tool and check if it works great
+- [ ] System prompts managemet
+  - [ ] System prompt storage
+  - [ ] Commands to list/add/delete/enable/disable system prompts
 - [ ] Improve sessions
   - [x] Session autorename
   - [x] Session manual rename
@@ -53,12 +55,17 @@ This file is for humans only, agent should not modify it!
     - [ ] Session tags
   - [x] Better session persistence (dedicated table for messages, not a single json blob)
   - [x] Support PostgreSQL in addition to SQLite (URL-based DB: `sqlite:path`, `postgres://...`)
+  - [ ] Advanced session manipulation — on the fly context compression, guided context compression, stashes, forks
+      - [ ] Configurable session compression strategies
+      - [x] Guided session compression
+      - [ ] Simple session compression
+- [ ] Create detachable core library
+  - [ ] Extract system core
+  - [ ] Move project to new core
+  - [ ] Create dedicated generic agent
+  - [ ] Create dedicated telegram agent
 - [x] Add standalone agentic mode (batch run without human, for real autonomous tasks)
   - [ ] Better logging in batch mode (I want to see what actually happens)
-- [ ] Advanced session manipulation — on the fly context compression, guided context compression, stashes, forks
-    - [x] Guided session compression
-- [x] Implement discovery tool.
-- [x] Revisit discovery tool and check if it works great
 - [ ] Show user balance for current provider (how much money left)
 - [ ] Make end to end feature implementation:
   - [ ] Establish code and architecture quality control (self-improvement loop)

@@ -13,7 +13,6 @@ package agent
 //   - Conversation / StreamSession use the full SessionView composite
 // ---------------------------------------------------------------------------
 
-// SessionIdentity provides session identification and naming.
 type SessionIdentity interface {
 	SessionID() string
 	SessionName() string
@@ -21,7 +20,6 @@ type SessionIdentity interface {
 	DisplayName() string
 }
 
-// SessionHistory provides read/write access to conversation messages.
 type SessionHistory interface {
 	Append(msg Message)
 	SystemPrompt() string  // system prompt text (empty if none)
@@ -52,49 +50,34 @@ type SessionToolEditor interface {
 	DisableTool(name string) error
 	AllowTool(name string)
 	DenyTool(name string) error
-	MarkToolUsed(name string)
 }
 
-// SessionModelBinding stores and retrieves the session's model binding.
 type SessionModelBinding interface {
 	GetModel() string
 	SetModel(name string)
 }
 
-// SessionTokenTracking tracks accumulated token usage and cost.
 // SessionTokenTracking tracks accumulated token usage and estimated
 // context size for observability.
 type SessionTokenTracking interface {
 	TotalTokenUsage() int
 	AddTokenUsage(tokens int)
-	SetTotalTokenUsage(tokens int)
 
-	// TotalCost returns the accumulated monetary cost in USD.
 	TotalCost() float64
-	// AddCost adds to the accumulated monetary cost.
 	AddCost(cost float64)
-	// SetTotalCost sets the accumulated monetary cost.
-	SetTotalCost(cost float64)
-
-	// GetEstimatedContextTokens returns the last estimated context size in tokens.
 	GetEstimatedContextTokens() int
-
-	// SetEstimatedContextTokens stores the estimated context size in tokens.
 	SetEstimatedContextTokens(tokens int)
 }
 
-// SessionCompactLimits provides per-session compaction settings.
 type SessionCompactLimits interface {
 	GetCompactSoftLimit() int
 	SetCompactSoftLimit(n int)
 }
 
-// SessionSkills provides access to loaded skills for a session.
 type SessionSkills interface {
 	ActiveSkills() []string
 	AddActiveSkill(name string)
 	RemoveActiveSkill(name string)
-	ClearActiveSkills()
 }
 
 // SessionView is the full composite interface that the orchestration

@@ -74,14 +74,10 @@ func newTurnRunner(tools *ToolRegistry, toolExec *toolExecutor, config EngineCon
 // Public API (used by Conversation)
 // ---------------------------------------------------------------------------
 
-// run drives the LLM ↔ tool iteration loop using a caller-provided step
-// function. It is the shared core that both Complete-based and Stream-based
-// loops delegate to.
-//
-// The step function abstracts how the LLM response is obtained; run
-// handles everything else: hook serialisation, recording the assistant
-// response, firing events, tracking usage, and executing tools when the
-// model requests them.
+// run is the shared core that both Complete-based and Stream-based loops
+// delegate to. The step function abstracts how the LLM response is
+// obtained; run handles hook serialisation, recording the assistant
+// response, firing events, tracking usage, and executing tools.
 //
 // On success it returns the final assistant text. On exhaustion of
 // iterations it returns ErrMaxIterations.

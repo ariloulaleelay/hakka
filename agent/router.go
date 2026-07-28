@@ -24,10 +24,8 @@ func NewRouter(models *Registry) *Router {
 	return &Router{models: models}
 }
 
-// Adapter returns the LLMAdapter that should serve the given session.
-// If the session has a recorded model that is no longer registered,
-// we log a warning and fall back to the registry default so the
-// conversation can continue without error.
+// Adapter returns the LLMAdapter for the session. Falls back to the registry
+// default when the session's recorded model is no longer registered.
 func (router *Router) Adapter(session SessionModelBinding) LLMAdapter {
 	if router == nil || router.models == nil {
 		return nil
@@ -42,8 +40,8 @@ func (router *Router) Adapter(session SessionModelBinding) LLMAdapter {
 	return a
 }
 
-// Current returns the model name bound to the session, or the registry
-// default if none is bound. Returns "" only when there is no registry.
+// Current returns the model name, or the registry default if none is bound.
+// Returns "" only when there is no registry.
 func (router *Router) Current(session SessionModelBinding) string {
 	if router == nil || router.models == nil {
 		return ""
@@ -54,9 +52,8 @@ func (router *Router) Current(session SessionModelBinding) string {
 	return router.models.Default()
 }
 
-// Bind records a model choice on the session. It does not persist the
-// session; callers are expected to Save it through their SessionManager
-// once the call returns.
+// Bind records a model choice on the session. Does not persist — callers must
+// Save the session separately.
 func (router *Router) Bind(session SessionModelBinding, name string) error {
 	if router == nil || router.models == nil {
 		return errors.New("router: no registry configured")
@@ -68,7 +65,6 @@ func (router *Router) Bind(session SessionModelBinding, name string) error {
 	return nil
 }
 
-// Models returns the names of all registered models, sorted.
 func (router *Router) Models() []string {
 	if router == nil || router.models == nil {
 		return nil

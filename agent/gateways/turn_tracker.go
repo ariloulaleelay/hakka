@@ -66,8 +66,6 @@ func (tt *turnTracker) Start(sessionID string, eventCh <-chan event.EngineEvent,
 	return at
 }
 
-// Get returns the activeTurn for the given session, or nil if there
-// is no running turn.
 func (tt *turnTracker) Get(sessionID string) *activeTurn {
 	val, ok := tt.turns.Load(sessionID)
 	if !ok {
@@ -77,8 +75,6 @@ func (tt *turnTracker) Get(sessionID string) *activeTurn {
 	return at
 }
 
-// Cancel cancels a running turn for the given session. Returns true if
-// a running turn was found and cancelled.
 func (tt *turnTracker) Cancel(sessionID string) bool {
 	val, ok := tt.turns.LoadAndDelete(sessionID)
 	if !ok {

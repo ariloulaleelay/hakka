@@ -56,7 +56,6 @@ func shortestUniquePrefix(id string, allIDs []string) string {
 // in the gateway layer so that session_list can report the in_flight flag.
 type SessionActiveChecker func(sessionID string) bool
 
-// SessionCommands handles session-related commands.
 type SessionCommands struct {
 	Sessions           *agent.SessionManager
 	Conv               *agent.Conversation

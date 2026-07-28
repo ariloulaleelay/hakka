@@ -589,7 +589,7 @@ func TestEngineChat_SaveFailurePropagatesToTurnFinished(t *testing.T) {
 	memStore := NewMemoryStore()
 	// Seed the session first so prepareWithInput succeeds.
 	seedSession := NewSession("testns", "sys")
-	seedSession.SetID("save-fail-test")
+	seedSession.Update(func(d *SessionData) { d.ID = "save-fail-test" })
 	if err := memStore.Put(context.Background(), "testns", seedSession); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -635,7 +635,7 @@ func TestEngineChat_SaveFailureBeforeAutoRename(t *testing.T) {
 	memStore := NewMemoryStore()
 	// Seed the session with 2 user messages to enable auto-rename.
 	seedSession := NewSession("testns", "sys")
-	seedSession.SetID("auto-fail")
+	seedSession.Update(func(d *SessionData) { d.ID = "auto-fail" })
 	seedSession.Append(Message{Role: RoleUser, Content: "first"})
 	seedSession.Append(Message{Role: RoleAssistant, Content: "resp1"})
 	seedSession.Append(Message{Role: RoleUser, Content: "second"})

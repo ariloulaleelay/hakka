@@ -120,7 +120,6 @@ func Shell() agent.Tool {
 		Build()
 }
 
-// buildShellResult builds a structured JSON result for the shell tool.
 func buildShellResult(exitCode int, timedOut bool, stdoutPath, stderrPath string) map[string]any {
 	result := map[string]any{
 		"exit_code": exitCode,
@@ -131,8 +130,8 @@ func buildShellResult(exitCode int, timedOut bool, stdoutPath, stderrPath string
 	return result
 }
 
-// renderStreamResult reads a tempfile and returns either the inline content
-// or a reference to the file on disk for the agent to read/grep later.
+// renderStreamResult reads a tempfile and returns either inline content or
+// a file path for the agent to read/grep later.
 //
 // Design rationale: small outputs (≤ shellInlineLimit bytes) are inlined
 // directly into the tool result to keep the conversation compact. Large

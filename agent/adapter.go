@@ -50,7 +50,6 @@ type RetryConfig struct {
 	BackoffFactor float64 `json:"backoff_factor,omitempty"`
 }
 
-// DefaultRetryConfig returns a RetryConfig populated with the standard defaults.
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
 		MaxAttempts:   20,

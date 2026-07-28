@@ -50,19 +50,19 @@ func TestMemoryStoreList_OrderedByUpdatedAt(t *testing.T) {
 	// Create sessions with different creation times
 	// List returns most recently updated first.
 	s1 := NewSession("testns", "")
-	s1.SetCreatedAt(now.Add(-2 * time.Hour)) // oldest
+	s1.Update(func(d *SessionData) { d.CreatedAt = now.Add(-2 * time.Hour) }) // oldest
 	if err := store.Put(ctx, "testns", s1); err != nil {
 		t.Fatalf("put s1: %v", err)
 	}
 
 	s2 := NewSession("testns", "")
-	s2.SetCreatedAt(now.Add(-1 * time.Hour)) // middle
+	s2.Update(func(d *SessionData) { d.CreatedAt = now.Add(-1 * time.Hour) }) // middle
 	if err := store.Put(ctx, "testns", s2); err != nil {
 		t.Fatalf("put s2: %v", err)
 	}
 
 	s3 := NewSession("testns", "")
-	s3.SetCreatedAt(now) // newest
+	s3.Update(func(d *SessionData) { d.CreatedAt = now }) // newest
 	if err := store.Put(ctx, "testns", s3); err != nil {
 		t.Fatalf("put s3: %v", err)
 	}

@@ -19,7 +19,6 @@ import (
 // EngineEvent is a marker interface for all event types.
 type EngineEvent interface{ engineEvent() }
 
-// ToolCallStarted is emitted when the engine begins executing a tool.
 type ToolCallStarted struct {
 	SessionID   string
 	ID          string
@@ -30,11 +29,6 @@ type ToolCallStarted struct {
 
 func (ToolCallStarted) engineEvent() {}
 
-// ToolCallFinished is emitted when a tool handler returns (success or error).
-// Result is a typed ToolResult: callers should use Result.IsError() and
-// Result.Output / Result.Err instead of scanning a raw string. The Err
-// field on this event is a redundant shortcut equal to Result.Err and
-// retained for backward compatibility with existing observers.
 type ToolCallFinished struct {
 	SessionID   string
 	ID          string
@@ -63,9 +57,6 @@ type UsageInfo struct {
 	EstimatedContextTokens int
 }
 
-// UsageReported is emitted after every successful LLM call (including
-// intermediate tool-call rounds). Consumers can use this to track token
-// usage.
 type UsageReported struct {
 	SessionID string
 	Usage     UsageInfo
@@ -73,7 +64,6 @@ type UsageReported struct {
 
 func (UsageReported) engineEvent() {}
 
-// TextDelta is emitted during streaming for each content chunk from the LLM.
 type TextDelta struct {
 	SessionID string
 	Delta     string
@@ -81,8 +71,6 @@ type TextDelta struct {
 
 func (TextDelta) engineEvent() {}
 
-// TurnFinished is emitted once at the end of a turn, carrying the final
-// assistant message or an error along with consolidated session stats.
 type TurnFinished struct {
 	SessionID             string
 	Reply                 string
@@ -96,9 +84,6 @@ type TurnFinished struct {
 
 func (TurnFinished) engineEvent() {}
 
-// SessionRenamed is emitted when a session's name is changed (auto-rename,
-// tool rename, or explicit /session rename). The event contains both old
-// and new names so observers (gateways, UI) can update their display.
 type SessionRenamed struct {
 	SessionID string
 	OldName   string
@@ -176,8 +161,6 @@ func ContextWithCWD(ctx context.Context, cwd string) context.Context {
 	return context.WithValue(ctx, clientCWDKey{}, cwd)
 }
 
-// CWDFromContext returns the client working directory stored in the
-// context, or empty string if not set.
 func CWDFromContext(ctx context.Context) string {
 	cwd, _ := ctx.Value(clientCWDKey{}).(string)
 	return cwd
@@ -190,8 +173,6 @@ func ContextWithNamespace(ctx context.Context, ns string) context.Context {
 	return context.WithValue(ctx, sessionNamespaceKey{}, ns)
 }
 
-// NamespaceFromContext returns the session namespace stored in the
-// context, or "" if not set.
 func NamespaceFromContext(ctx context.Context) string {
 	ns, _ := ctx.Value(sessionNamespaceKey{}).(string)
 	return ns
@@ -204,8 +185,6 @@ func ContextWithSessionID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, sessionIDKey{}, id)
 }
 
-// SessionIDFromContext returns the current session ID from the context,
-// or "" if not set.
 func SessionIDFromContext(ctx context.Context) string {
 	id, _ := ctx.Value(sessionIDKey{}).(string)
 	return id

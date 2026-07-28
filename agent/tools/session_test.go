@@ -33,7 +33,7 @@ func (ts *testSessionStore) Get(_ context.Context, namespace, id string) (*agent
 func (ts *testSessionStore) Put(_ context.Context, namespace string, s *agent.Session) error {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	s.SetNamespace(namespace)
+	s.Update(func(d *agent.SessionData) { d.Namespace = namespace })
 	ts.sessions[namespace+":"+s.SessionID()] = s
 	return nil
 }

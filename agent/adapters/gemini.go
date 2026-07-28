@@ -107,7 +107,6 @@ type geminiResponse struct {
 
 // --- conversion -------------------------------------------------------------
 
-// appendGeminiSystem adds text to the system instruction.
 func appendGeminiSystem(sys *geminiSystemInstruction, content string) *geminiSystemInstruction {
 	if sys == nil {
 		sys = &geminiSystemInstruction{}
@@ -116,7 +115,6 @@ func appendGeminiSystem(sys *geminiSystemInstruction, content string) *geminiSys
 	return sys
 }
 
-// appendGeminiUserPart adds a user text part, merging with the last user content block.
 func appendGeminiUserPart(contents []geminiContent, content string) []geminiContent {
 	part := geminiPart{Text: content}
 	if len(contents) > 0 && contents[len(contents)-1].Role == "user" {
@@ -129,7 +127,6 @@ func appendGeminiUserPart(contents []geminiContent, content string) []geminiCont
 	})
 }
 
-// appendGeminiModelParts adds an assistant's text and function-call parts.
 func appendGeminiModelParts(contents []geminiContent, content string, toolCalls []agent.ToolCall, signatures []string) []geminiContent {
 	parts := geminiTextAndToolParts(content, toolCalls, signatures)
 	if len(parts) == 0 {
@@ -142,7 +139,6 @@ func appendGeminiModelParts(contents []geminiContent, content string, toolCalls 
 	return append(contents, geminiContent{Role: "model", Parts: parts})
 }
 
-// geminiTextAndToolParts builds gemini parts from text and tool calls.
 func geminiTextAndToolParts(content string, toolCalls []agent.ToolCall, signatures []string) []geminiPart {
 	var parts []geminiPart
 	if content != "" {
@@ -164,7 +160,6 @@ func geminiTextAndToolParts(content string, toolCalls []agent.ToolCall, signatur
 	return parts
 }
 
-// appendGeminiToolResult adds a function-response part for tool results.
 func appendGeminiToolResult(contents []geminiContent, name, content string) []geminiContent {
 	var result map[string]any
 	if err := json.Unmarshal([]byte(content), &result); err != nil || result == nil {
@@ -183,7 +178,6 @@ func appendGeminiToolResult(contents []geminiContent, name, content string) []ge
 	})
 }
 
-// toGemini maps hakka history -> Gemini system instruction + contents.
 func toGemini(history []agent.Message) (sys *geminiSystemInstruction, contents []geminiContent) {
 	for _, msg := range history {
 		switch msg.Role {

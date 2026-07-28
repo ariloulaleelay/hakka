@@ -188,7 +188,7 @@ func (h *TurnHandler) handleJSONCommand(ctx context.Context, req FrameRequest, w
 	// the request's (command frames have no stream field, always false).
 	if cmdRes.Action == commands.ActionContinue && sessionID != "" {
 		if session, _, err := h.Conv.Sessions().Get(context.Background(), h.Namespace, sessionID); err == nil {
-			req.Stream = session.GetStreaming()
+			req.Stream = session.Read().Streaming
 		}
 		h.startNewTurn(ctx, w, responseReader, req, sessionID, "")
 	}

@@ -93,8 +93,6 @@ func toAnthropicSystem(system string, content string) string {
 	return system + "\n\n" + content
 }
 
-// appendUserBlock adds a user text block to the message list, merging with
-// the last message if it is also a user message.
 func appendUserBlock(messages []anthMessage, content string) []anthMessage {
 	block := anthBlock{Type: "text", Text: content}
 	if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
@@ -104,7 +102,6 @@ func appendUserBlock(messages []anthMessage, content string) []anthMessage {
 	return append(messages, anthMessage{Role: "user", Content: []anthBlock{block}})
 }
 
-// appendAssistantBlocks adds text and tool_use blocks for an assistant message.
 func appendAssistantBlocks(messages []anthMessage, content string, toolCalls []agent.ToolCall) []anthMessage {
 	blocks := textAndToolBlocks(content, toolCalls)
 	if len(blocks) == 0 {
@@ -117,10 +114,6 @@ func appendAssistantBlocks(messages []anthMessage, content string, toolCalls []a
 	return append(messages, anthMessage{Role: "assistant", Content: blocks})
 }
 
-// textAndToolBlocks converts assistant text and tool calls into anthropic blocks.
-// The Arguments in each tool call are expected to be valid JSON (an invariant
-// enforced by ingestion in Complete/Stream). Empty arguments are normalised to
-// "{}" — the Anthropic API requires a JSON object for the input field.
 func textAndToolBlocks(content string, toolCalls []agent.ToolCall) []anthBlock {
 	var blocks []anthBlock
 	if content != "" {
@@ -141,7 +134,6 @@ func textAndToolBlocks(content string, toolCalls []agent.ToolCall) []anthBlock {
 	return blocks
 }
 
-// appendToolResultBlock adds a tool_result block, merging with the last user message.
 func appendToolResultBlock(messages []anthMessage, toolCallID, content string) []anthMessage {
 	block := anthBlock{
 		Type:      "tool_result",
@@ -158,7 +150,6 @@ func appendToolResultBlock(messages []anthMessage, toolCallID, content string) [
 	})
 }
 
-// toAnthropic maps hakka history -> Anthropic system + messages.
 func toAnthropic(history []agent.Message) (system string, messages []anthMessage) {
 	for _, msg := range history {
 		switch msg.Role {

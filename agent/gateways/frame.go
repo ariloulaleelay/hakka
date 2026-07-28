@@ -19,7 +19,6 @@ import (
 // The discriminator is the "type" field alone.
 // ---------------------------------------------------------------------------
 
-// CommandRequest is a structured command sent by a JSON-capable client.
 type CommandRequest struct {
 	Cmd    string          `json:"cmd"`
 	Params json.RawMessage `json:"params,omitempty"`
