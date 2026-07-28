@@ -398,7 +398,7 @@ func (ad *GeminiAdapter) Stream(ctx context.Context, msgs []agent.Message, tools
 							Cost:                  cost,
 						}
 					}
-					sendStreamFinal(resultCh, accum.flush(), pendingUsage, "")
+					sendStreamFinal(resultCh, accum.flush(), pendingUsage, candidate.FinishReason)
 					return
 				}
 			}

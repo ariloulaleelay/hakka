@@ -231,3 +231,127 @@ func TestContextEstimatedStoredOnSession(t *testing.T) {
 		t.Fatalf("expected positive estimated context tokens, got %d", estimated)
 	}
 }
+
+// TestToolCallBrokenJSONArguments — regression for provider truncation
+// (e.g. Gemini MAX_TOKENS mid-tool-call): the resulting invalid JSON
+// arguments must not corrupt session history.
+func TestToolCallBrokenJSONArguments(t *testing.T) {
+	conv, _, _, tools := newTestComponents(t, []LLMResponse{
+		{
+			Message: Message{
+				Role: RoleAssistant,
+				ToolCalls: []ToolCall{{
+					ID: "call-broken", Name: "echo_tool", Arguments: `{"message": "`,
+				}},
+			},
+			FinishReason: "MAX_TOKENS",
+		},
+	})
+	tools.Register(Tool{
+		Schema: ToolSchema{
+			Name:        "echo_tool",
+			Description: "Echoes input",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"message": map[string]any{"type": "string"}},
+			},
+		},
+		Handler: func(_ context.Context, raw json.RawMessage) (string, error) {
+			return "echoed", nil
+		},
+	})
+
+	session, err := conv.sessions.GetOrCreate(context.Background(), "testns", "broken-json-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.EnableTool("echo_tool")
+	if err := conv.sessions.Save(context.Background(), "testns", session); err != nil {
+		t.Fatal(err)
+	}
+
+	eventCh, err := conv.Execute(context.Background(), "broken-json-test", "echo something")
+	if err != nil {
+		t.Fatalf("Execute returned unexpected error: %v", err)
+	}
+
+	var turnErr error
+	for evt := range eventCh {
+		if te, ok := evt.(event.TurnFinished); ok {
+			turnErr = te.Err
+		}
+	}
+	if turnErr == nil {
+		t.Fatal("expected error for broken JSON arguments, got nil")
+	}
+
+	for _, m := range session.Messages() {
+		if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
+			t.Fatalf("tool calls recorded despite broken JSON: %+v", m.ToolCalls)
+		}
+	}
+}
+
+// TestToolCallEmptyArguments — the JSON-validation guard must not
+// misfire on legitimate zero-arg tool calls where the model omits
+// the arguments object entirely.
+func TestToolCallEmptyArguments(t *testing.T) {
+	conv, _, _, tools := newTestComponents(t, []LLMResponse{
+		{
+			Message: Message{
+				Role: RoleAssistant,
+				ToolCalls: []ToolCall{{
+					ID: "call-empty", Name: "list_dir_tool", Arguments: "",
+				}},
+			},
+			FinishReason: "tool_calls",
+		},
+		{
+			Message:      Message{Role: RoleAssistant, Content: "listed the directory"},
+			FinishReason: "stop",
+		},
+	})
+
+	var listDirCalled bool
+	tools.Register(Tool{
+		Schema: ToolSchema{
+			Name:        "list_dir_tool",
+			Description: "Lists directory entries",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"path": map[string]any{"type": "string"}},
+			},
+		},
+		Handler: func(_ context.Context, raw json.RawMessage) (string, error) {
+			listDirCalled = true
+			return "listed", nil
+		},
+	})
+
+	session, err := conv.sessions.GetOrCreate(context.Background(), "testns", "empty-args-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.EnableTool("list_dir_tool")
+	if err := conv.sessions.Save(context.Background(), "testns", session); err != nil {
+		t.Fatal(err)
+	}
+
+	eventCh, err := conv.Execute(context.Background(), "empty-args-test", "list the dir")
+	if err != nil {
+		t.Fatalf("Execute returned unexpected error: %v", err)
+	}
+
+	var turnErr error
+	for evt := range eventCh {
+		if te, ok := evt.(event.TurnFinished); ok {
+			turnErr = te.Err
+		}
+	}
+	if turnErr != nil {
+		t.Fatalf("unexpected error for empty args: %v", turnErr)
+	}
+	if !listDirCalled {
+		t.Fatal("list_dir_tool was not executed — empty args should have been normalised to {}")
+	}
+}

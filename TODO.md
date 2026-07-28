@@ -95,6 +95,7 @@
 - [x] Discover tool fails, need to debug
 - [ ] User can switch to unexistent session (it creates new session)
 - [x] Autorename does not work
+- [x] When gemini prematurely stops by max tokens on tool call generation we save broken tool call to the session and it breaks completely
 
 # Minor bugs
 - [ ] Snippet stripping for `\n` makes one character longer for each backslash. And tabs make string appear longer too.

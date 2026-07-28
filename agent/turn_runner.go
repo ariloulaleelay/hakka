@@ -295,14 +295,26 @@ func (r *turnRunner) runOneIteration(
 		"tool_calls", len(resp.toolCalls),
 		"content_len", len(resp.content))
 
-	// Enrich tool calls with exec snippets before recording into session
-	// history, so that clients (web, nvim) can display human-readable
-	// summaries when loading previously executed turns.
+	for i := range resp.toolCalls {
+		if resp.toolCalls[i].Arguments == "" {
+			resp.toolCalls[i].Arguments = "{}"
+		}
+	}
+
 	for i := range resp.toolCalls {
 		resp.toolCalls[i].ExecSnippet = r.tools.ExecSnippet(
 			resp.toolCalls[i].Name,
 			resp.toolCalls[i].Arguments,
 		)
+	}
+
+	// Reject invalid JSON before recording — catches provider truncation
+	// (MAX_TOKENS mid-tool-call) so broken calls never reach session history.
+	for _, tc := range resp.toolCalls {
+		if !json.Valid([]byte(tc.Arguments)) {
+			err := fmt.Errorf("tool call %q has invalid (truncated?) JSON arguments", tc.Name)
+			return nil, needCompactify, notifyError(session.SessionID(), err, hooks, r.logger)
+		}
 	}
 
 	recordLLMResponse(session, resp, hooks, events)

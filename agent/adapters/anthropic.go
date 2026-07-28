@@ -311,6 +311,7 @@ func (ad *AnthropicAdapter) Stream(ctx context.Context, msgs []agent.Message, to
 
 		accum := newIndexAccumulator()
 		var pendingUsage *agent.Usage
+		var pendingFinishReason string
 
 		scanErr := scanSSELines(ctx, body, func(payload string) error {
 			result, parseErr := ad.parseSSEPayload(payload)
@@ -337,8 +338,10 @@ func (ad *AnthropicAdapter) Stream(ctx context.Context, msgs []agent.Message, to
 				accum.add(result.BlockIndex, "", "", result.PartialJSON)
 			}
 
+			pendingFinishReason = result.FinishReason
+
 			if result.Done {
-				sendStreamFinal(resultCh, accum.flush(), pendingUsage, "")
+				sendStreamFinal(resultCh, accum.flush(), pendingUsage, pendingFinishReason)
 				return io.EOF
 			}
 
@@ -358,12 +361,13 @@ func (ad *AnthropicAdapter) Stream(ctx context.Context, msgs []agent.Message, to
 
 // parsedAnthEvent holds the parsed result of a single SSE payload.
 type parsedAnthEvent struct {
-	Delta       string
-	PartialJSON string          // incremental JSON from input_json_delta events
-	BlockIndex  int             // content block index (for tool calls and partial JSON)
-	ToolCall    *agent.ToolCall
-	Done        bool
-	Usage       *agent.Usage
+	Delta        string
+	PartialJSON  string          // incremental JSON from input_json_delta events
+	BlockIndex   int             // content block index (for tool calls and partial JSON)
+	ToolCall     *agent.ToolCall
+	Done         bool
+	Usage        *agent.Usage
+	FinishReason string
 }
 
 func (ad *AnthropicAdapter) parseSSEPayload(payload string) (*parsedAnthEvent, error) {
@@ -427,6 +431,10 @@ func (ad *AnthropicAdapter) parseSSEPayload(payload string) (*parsedAnthEvent, e
 
 	case "message_delta":
 		var evt struct {
+			Delta struct {
+				StopReason   string `json:"stop_reason"`
+				StopSequence string `json:"stop_sequence"`
+			} `json:"delta"`
 			Usage struct {
 				InputTokens  int `json:"input_tokens"`
 				OutputTokens int `json:"output_tokens"`
@@ -441,6 +449,7 @@ func (ad *AnthropicAdapter) parseSSEPayload(payload string) (*parsedAnthEvent, e
 			cost = calculateCostFromPricing(ad.Pricing, raw)
 		}
 		return &parsedAnthEvent{
+			FinishReason: evt.Delta.StopReason,
 			Usage: &agent.Usage{
 				PromptTokens:          evt.Usage.InputTokens,
 				CompletionTokens:      evt.Usage.OutputTokens,
