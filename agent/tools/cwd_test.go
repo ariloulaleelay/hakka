@@ -55,7 +55,7 @@ func TestShellRespectsCWDFromContext(t *testing.T) {
 	}
 
 	// Run shell command that checks the marker file exists (relative path)
-	out := runWithCWD(t, Shell().Handler, map[string]any{
+	out := runWithCWD(t, Shell(nil).Handler, map[string]any{
 		"cmd": "cat marker.txt",
 	}, baseDir)
 
@@ -90,7 +90,7 @@ func TestShellCWDFromContextOverridenByExplicitArg(t *testing.T) {
 		"cwd": dirB,
 	})
 	ctx := event.ContextWithCWD(context.Background(), dirA)
-	res, err := Shell().Handler(ctx, raw)
+	res, err := Shell(nil).Handler(ctx, raw)
 	if err != nil {
 		t.Fatalf("tool: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestReadFileWithAbsolutePathStillWorks(t *testing.T) {
 func TestWriteFileRespectsCWDFromContext(t *testing.T) {
 	baseDir := t.TempDir()
 
-	res := runWithCWDPlain(t, WriteFile().Handler, map[string]any{
+	res := runWithCWDPlain(t, WriteFile(nil).Handler, map[string]any{
 		"path":    "nested/output.txt",
 		"content": "data",
 	}, baseDir)
@@ -182,7 +182,7 @@ func TestEditFileRespectsCWDFromContext(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	res := runWithCWDPlain(t, EditFile().Handler, map[string]any{
+	res := runWithCWDPlain(t, EditFile(nil).Handler, map[string]any{
 		"path": "example.txt", // relative path
 		"old":  "foo",
 		"new":  "bar",
@@ -266,7 +266,7 @@ func TestToolWithoutCWDInContextStillWorks(t *testing.T) {
 // (the default behavior of exec.Command - Dir is empty means process cwd).
 func TestShellWithoutCWDInContextDefaultsToServerCWD(t *testing.T) {
 	// Just run pwd and check we get something reasonable
-	out := run(t, Shell().Handler, map[string]any{"cmd": "pwd"})
+	out := run(t, Shell(nil).Handler, map[string]any{"cmd": "pwd"})
 	if int(out["exit_code"].(float64)) != 0 {
 		t.Fatalf("expected exit_code=0, got %v", out["exit_code"])
 	}
@@ -290,7 +290,7 @@ func TestShellWithoutCWDInContextDefaultsToServerCWD(t *testing.T) {
 // is exercised.
 func TestAllToolsRespectCWD(t *testing.T) {
 	reg := agent.NewToolRegistry()
-	RegisterAll(reg)
+	RegisterAll(reg, nil)
 
 	schemas := reg.Schemas()
 

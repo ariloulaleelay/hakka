@@ -45,26 +45,57 @@ type CommandProcessor struct {
 	Namespace    string
 	Tools        *agent.ToolRegistry
 
-	modelHandler   *ModelCommands
-	sessionHandler *SessionCommands
-	toolHandler    *ToolCommands
+	registry       *CommandRegistry
+	sessionHandler *SessionCommands // kept for SetSessionActiveChecker wiring
 }
 
+// SessionActiveChecker returns true if the given session ID has an
+// active (in-flight) turn running. This is wired from the TurnTracker
+// in the gateway layer so that session_list can report the in_flight flag.
+type SessionActiveChecker func(sessionID string) bool
+
 func New(sm *agent.SessionManager, conv *agent.Conversation, systemPrompt, namespace string) *CommandProcessor {
+	reg := NewCommandRegistry()
 	cp := &CommandProcessor{
 		Sessions:     sm,
 		Conv:         conv,
 		SystemPrompt: systemPrompt,
 		Namespace:    namespace,
+		registry:     reg,
 	}
-	cp.modelHandler = NewModelCommands(sm, conv, namespace)
-	cp.sessionHandler = NewSessionCommands(sm, conv, namespace)
+
+	// Register top-level commands owned by CommandProcessor itself.
+	reg.Register(Command{Name: "help", Description: "Show this help menu", Handler: cp.execHelp})
+	reg.Register(Command{Name: "continue", Description: "Continue the conversation (LLM responds without new input)",
+		Handler: func(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
+			return CommandResult{Action: ActionContinue}
+		},
+	})
+	reg.Register(Command{
+		Name: "start", Description: "Start a fresh session with all tools enabled",
+		Handler: cp.execStart,
+	})
+	reg.Register(Command{
+		Name: "cwd_set", Description: "Set working directory for the session",
+		Params: map[string]string{"cwd": "/path/to/dir"},
+		Handler: cp.execCWDSet,
+	})
+	reg.Register(Command{
+		Name: "compact", Description: "Set context soft limit in tokens",
+		Params: map[string]string{"n": "int (0=off)"},
+		Handler: cp.execCompact,
+	})
+
+	// Delegate model and session commands to sub-handlers.
+	cp.sessionHandler = NewSessionCommands(sm, conv, namespace, reg)
+	NewModelCommands(sm, conv, namespace, reg)
+
 	return cp
 }
 
 func (cp *CommandProcessor) SetTools(tools *agent.ToolRegistry) {
 	cp.Tools = tools
-	cp.toolHandler = NewToolCommands(cp.Sessions, tools, cp.Namespace)
+	NewToolCommands(cp.Sessions, tools, cp.Namespace, cp.registry)
 }
 
 // SetSessionActiveChecker sets the active checker on the session handler,
@@ -93,71 +124,8 @@ func (cp *CommandProcessor) ExecuteJSON(ctx context.Context, sessionID, cmd stri
 		ctx = event.ContextWithNamespace(ctx, cp.Namespace)
 	}
 
-	switch cmd {
-	case "help":
-		return cp.execHelp(ctx, sessionID)
-	case "continue":
-		return CommandResult{Handled: true, Action: ActionContinue, Cmd: cmd}
-	case "cwd_set":
-		return cp.execCWDSet(ctx, sessionID, params)
-	case "start":
-		return cp.execStart(ctx, sessionID)
-	case "compact":
-		return cp.execCompact(ctx, sessionID, params)
-
-	// Session commands
-	case "session_list":
-		if cp.sessionHandler != nil {
-			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
-		}
-	case "session_create":
-		if cp.sessionHandler != nil {
-			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
-		}
-	case "get_session":
-		if cp.sessionHandler != nil {
-			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
-		}
-	case "session_delete":
-		if cp.sessionHandler != nil {
-			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
-		}
-	case "session_info":
-		if cp.sessionHandler != nil {
-			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
-		}
-	case "session_rename":
-		if cp.sessionHandler != nil {
-			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
-		}
-	case "session_autorename":
-		if cp.sessionHandler != nil {
-			return cp.sessionHandler.HandleJSON(ctx, sessionID, cmd, params)
-		}
-
-	// Model commands
-	case "model_list":
-		if cp.modelHandler != nil {
-			return cp.modelHandler.HandleJSON(ctx, sessionID, cmd, params)
-		}
-	case "model_switch":
-		if cp.modelHandler != nil {
-			return cp.modelHandler.HandleJSON(ctx, sessionID, cmd, params)
-		}
-
-	// Tool commands
-	case "tool_list":
-		if cp.toolHandler != nil {
-			return cp.toolHandler.HandleJSON(ctx, sessionID, cmd, params)
-		}
-	case "tool_allow":
-		if cp.toolHandler != nil {
-			return cp.toolHandler.HandleJSON(ctx, sessionID, cmd, params)
-		}
-	case "tool_deny":
-		if cp.toolHandler != nil {
-			return cp.toolHandler.HandleJSON(ctx, sessionID, cmd, params)
-		}
+	if result, ok := cp.registry.Execute(ctx, sessionID, cmd, params); ok {
+		return result
 	}
 
 	return CommandResult{
@@ -167,40 +135,34 @@ func (cp *CommandProcessor) ExecuteJSON(ctx context.Context, sessionID, cmd stri
 	}
 }
 
-// --- JSON handlers ---
+// --- Help generation ---
 
-func (cp *CommandProcessor) execHelp(ctx context.Context, sessionID string) CommandResult {
+func (cp *CommandProcessor) execHelp(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	type cmdEntry struct {
-		Cmd     string `json:"cmd"`
-		Desc    string `json:"desc"`
-		Params  any    `json:"params,omitempty"`
-		Display string `json:"display,omitempty"`
+		Cmd     string            `json:"cmd"`
+		Desc    string            `json:"desc"`
+		Params  any               `json:"params,omitempty"`
+		Display string            `json:"display,omitempty"`
+	}
+	all := cp.registry.List()
+	entries := make([]cmdEntry, 0, len(all))
+	for _, c := range all {
+		entry := cmdEntry{Cmd: c.Name, Desc: c.Description}
+		if c.Display != "" {
+			entry.Display = c.Display
+		}
+		if len(c.Params) > 0 {
+			entry.Params = c.Params
+		}
+		entries = append(entries, entry)
 	}
 	helpJSON, _ := json.Marshal(map[string]any{
-		"commands": []cmdEntry{
-			{Cmd: "help", Desc: "Show this help menu"},
-			{Cmd: "continue", Desc: "Continue the conversation (LLM responds without new input)"},
-			{Cmd: "start", Desc: "Start a fresh session with all tools enabled"},
-			{Cmd: "cwd_set", Desc: "Set working directory for the session", Params: map[string]string{"cwd": "/path/to/dir"}},
-			{Cmd: "compact", Desc: "Set context soft limit in tokens", Params: map[string]string{"n": "int (0=off)"}},
-			{Cmd: "session_list", Desc: "List all sessions", Display: "session list"},
-			{Cmd: "session_create", Desc: "Create a new session", Display: "session create"},
-			{Cmd: "get_session", Desc: "Fetch session data by ID", Display: "session get", Params: map[string]string{"id": "session ID or prefix"}},
-			{Cmd: "session_delete", Desc: "Delete a session", Display: "session delete", Params: map[string]string{"id": "session ID or 'this'"}},
-			{Cmd: "session_info", Desc: "Show current session details", Display: "session info"},
-			{Cmd: "session_rename", Desc: "Rename current session", Display: "session rename", Params: map[string]string{"name": "new name"}},
-			{Cmd: "session_autorename", Desc: "Auto-generate name using LLM", Display: "session autorename"},
-			{Cmd: "model_list", Desc: "List available models", Display: "model list"},
-			{Cmd: "model_switch", Desc: "Switch to a different model", Display: "model switch", Params: map[string]string{"name": "model name"}},
-			{Cmd: "tool_list", Desc: "List available tools with status", Display: "tool list"},
-			{Cmd: "tool_allow", Desc: "Allow (and enable) a tool or tag", Display: "tool allow", Params: map[string]string{"name": "tool name or #tag"}},
-			{Cmd: "tool_deny", Desc: "Deny (hide) a tool or tag", Display: "tool deny", Params: map[string]string{"name": "tool name or #tag"}},
-		},
+		"commands": entries,
 	})
 	return CommandResult{Handled: true, Cmd: "help", Data: helpJSON}
 }
 
-func (cp *CommandProcessor) execStart(ctx context.Context, sessionID string) CommandResult {
+func (cp *CommandProcessor) execStart(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 	session, err := cp.Sessions.GetOrCreate(ctx, ns, "")
 	if err != nil {

@@ -129,7 +129,7 @@ func TestListDir(t *testing.T) {
 
 func TestWriteFile(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "nested", "file.txt")
-	res := runPlain(t, WriteFile().Handler, map[string]any{"path": p, "content": "data"})
+	res := runPlain(t, WriteFile(nil).Handler, map[string]any{"path": p, "content": "data"})
 	if !strings.Contains(res, "Written 4 bytes") {
 		t.Fatalf("expected 'Written 4 bytes', got: %q", res)
 	}
@@ -145,7 +145,7 @@ func TestWriteFile(t *testing.T) {
 func TestEditFileFirstOccurrence(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "x.txt")
 	_ = os.WriteFile(p, []byte("foo foo"), 0o644)
-	res := runPlain(t, EditFile().Handler, map[string]any{"path": p, "old": "foo", "new": "bar"})
+	res := runPlain(t, EditFile(nil).Handler, map[string]any{"path": p, "old": "foo", "new": "bar"})
 	if !strings.Contains(res, "Replaced 1 occurrence(s)") {
 		t.Fatalf("expected 'Replaced 1 occurrence(s)', got: %q", res)
 	}
@@ -158,7 +158,7 @@ func TestEditFileFirstOccurrence(t *testing.T) {
 func TestEditFileReplaceAll(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "x.txt")
 	_ = os.WriteFile(p, []byte("foo foo foo"), 0o644)
-	res := runPlain(t, EditFile().Handler, map[string]any{"path": p, "old": "foo", "new": "bar", "replace_all": true})
+	res := runPlain(t, EditFile(nil).Handler, map[string]any{"path": p, "old": "foo", "new": "bar", "replace_all": true})
 	if !strings.Contains(res, "Replaced 3 occurrence(s)") {
 		t.Fatalf("expected 'Replaced 3 occurrence(s)', got: %q", res)
 	}
@@ -171,14 +171,14 @@ func TestEditFileReplaceAll(t *testing.T) {
 func TestEditFileNotFound(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "x.txt")
 	_ = os.WriteFile(p, []byte("abc"), 0o644)
-	errMsg := runErr(t, EditFile().Handler, map[string]any{"path": p, "old": "xyz", "new": "q"})
+	errMsg := runErr(t, EditFile(nil).Handler, map[string]any{"path": p, "old": "xyz", "new": "q"})
 	if !strings.Contains(errMsg, "pattern not found") {
 		t.Fatalf("expected pattern not found error, got: %q", errMsg)
 	}
 }
 
 func TestShellInlinesShortOutput(t *testing.T) {
-	out := run(t, Shell().Handler, map[string]any{"cmd": "echo hello"})
+	out := run(t, Shell(nil).Handler, map[string]any{"cmd": "echo hello"})
 	if int(out["exit_code"].(float64)) != 0 {
 		t.Fatalf("exit_code: %v", out["exit_code"])
 	}
@@ -193,7 +193,7 @@ func TestShellInlinesShortOutput(t *testing.T) {
 }
 
 func TestShellNonZero(t *testing.T) {
-	out := run(t, Shell().Handler, map[string]any{"cmd": "exit 3"})
+	out := run(t, Shell(nil).Handler, map[string]any{"cmd": "exit 3"})
 	if int(out["exit_code"].(float64)) != 3 {
 		t.Fatalf("exit_code: %v", out["exit_code"])
 	}
@@ -201,7 +201,7 @@ func TestShellNonZero(t *testing.T) {
 
 func TestShellLargeOutputGoesToFile(t *testing.T) {
 	// Produce ~10000 bytes of stdout — well above the inline threshold.
-	out := run(t, Shell().Handler, map[string]any{
+	out := run(t, Shell(nil).Handler, map[string]any{
 		"cmd": "yes hakka | head -c 10000",
 	})
 	if int(out["exit_code"].(float64)) != 0 {
@@ -230,7 +230,7 @@ func TestShellLargeOutputGoesToFile(t *testing.T) {
 }
 
 func TestShellEmptyCmd(t *testing.T) {
-	errMsg := runErr(t, Shell().Handler, map[string]any{"cmd": "   "})
+	errMsg := runErr(t, Shell(nil).Handler, map[string]any{"cmd": "   "})
 	if !strings.Contains(errMsg, "cmd is required") {
 		t.Fatalf("expected cmd is required error, got: %q", errMsg)
 	}
@@ -309,7 +309,7 @@ func TestExecSnippet_ListDir(t *testing.T) {
 }
 
 func TestExecSnippet_WriteFileShowsPathOnly(t *testing.T) {
-	s := snippetFor(t, WriteFile(), map[string]any{"path": "/tmp/foo.txt", "content": "secret data"})
+	s := snippetFor(t, WriteFile(nil), map[string]any{"path": "/tmp/foo.txt", "content": "secret data"})
 	if !strings.Contains(s, `"/tmp/foo.txt"`) {
 		t.Fatalf("expected path in snippet, got %q", s)
 	}
@@ -319,7 +319,7 @@ func TestExecSnippet_WriteFileShowsPathOnly(t *testing.T) {
 }
 
 func TestExecSnippet_EditFile(t *testing.T) {
-	s := snippetFor(t, EditFile(), map[string]any{"path": "main.go", "old": "foo", "new": "bar"})
+	s := snippetFor(t, EditFile(nil), map[string]any{"path": "main.go", "old": "foo", "new": "bar"})
 	if !strings.Contains(s, `"main.go"`) {
 		t.Fatalf("expected path in snippet, got %q", s)
 	}
@@ -330,7 +330,7 @@ func TestExecSnippet_EditFile(t *testing.T) {
 
 func TestEditFileExecSnippet_TruncatesLongOld(t *testing.T) {
 	longOld := strings.Repeat("x", 100)
-	s := snippetFor(t, EditFile(), map[string]any{"path": "main.go", "old": longOld})
+	s := snippetFor(t, EditFile(nil), map[string]any{"path": "main.go", "old": longOld})
 	// Server no longer truncates — full old value is sent to the client
 	if !strings.Contains(s, longOld) {
 		t.Fatalf("expected full old value in snippet (client truncates), got %q", s)
@@ -338,7 +338,7 @@ func TestEditFileExecSnippet_TruncatesLongOld(t *testing.T) {
 }
 
 func TestShellExecSnippet(t *testing.T) {
-	s := snippetFor(t, Shell(), map[string]any{"cmd": "echo hello"})
+	s := snippetFor(t, Shell(nil), map[string]any{"cmd": "echo hello"})
 	if !strings.Contains(s, `echo hello`) {
 		t.Fatalf("expected cmd in snippet, got %q", s)
 	}
@@ -346,7 +346,7 @@ func TestShellExecSnippet(t *testing.T) {
 
 func TestShellExecSnippet_TruncatesLongCmd(t *testing.T) {
 	longCmd := "echo " + strings.Repeat("x", 100)
-	s := snippetFor(t, Shell(), map[string]any{"cmd": longCmd})
+	s := snippetFor(t, Shell(nil), map[string]any{"cmd": longCmd})
 	// Server no longer truncates — full cmd is sent to the client
 	if !strings.Contains(s, longCmd) {
 		t.Fatalf("expected full cmd in snippet (client truncates), got %q", s)
@@ -354,7 +354,7 @@ func TestShellExecSnippet_TruncatesLongCmd(t *testing.T) {
 }
 
 func TestShellExecSnippet_EmptyCmd(t *testing.T) {
-	s := snippetFor(t, Shell(), map[string]any{})
+	s := snippetFor(t, Shell(nil), map[string]any{})
 	if s != "" {
 		t.Fatalf("expected empty snippet for empty cmd, got %q", s)
 	}
@@ -517,9 +517,9 @@ func TestExecSnippet_AllToolsDontTruncate(t *testing.T) {
 	tools := []agent.Tool{
 		ReadFile(),
 		ListDir(),
-		WriteFile(),
-		EditFile(),
-		Shell(),
+		WriteFile(nil),
+		EditFile(nil),
+		Shell(nil),
 		Search(),
 		HTTPGet(),
 	}
@@ -540,7 +540,7 @@ func TestExecSnippet_AllToolsDontTruncate(t *testing.T) {
 
 func TestRegisterAllDoesNotIncludeMetaTools(t *testing.T) {
 	reg := agent.NewToolRegistry()
-	RegisterAll(reg)
+	RegisterAll(reg, nil)
 	schemas := reg.Schemas()
 
 	for _, s := range schemas {
@@ -756,7 +756,7 @@ func TestReadFileByteTruncation(t *testing.T) {
 func TestEditFileStrictUnknownParam(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "x.txt")
 	_ = os.WriteFile(p, []byte("foo"), 0o644)
-	errMsg := runErr(t, EditFile().Handler, map[string]any{"path": p, "old_string": "foo", "new_string": "bar"})
+	errMsg := runErr(t, EditFile(nil).Handler, map[string]any{"path": p, "old_string": "foo", "new_string": "bar"})
 	if !strings.Contains(errMsg, "unknown parameter") {
 		t.Fatalf("expected 'unknown parameter' error, got: %q", errMsg)
 	}
@@ -772,7 +772,7 @@ func TestEditFileStrictUnknownParam(t *testing.T) {
 }
 
 func TestShellStrictUnknownParam(t *testing.T) {
-	errMsg := runErr(t, Shell().Handler, map[string]any{"cmd": "echo hi", "description": "say hi"})
+	errMsg := runErr(t, Shell(nil).Handler, map[string]any{"cmd": "echo hi", "description": "say hi"})
 	if !strings.Contains(errMsg, "unknown parameter") {
 		t.Fatalf("expected 'unknown parameter' error, got: %q", errMsg)
 	}

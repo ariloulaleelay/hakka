@@ -25,7 +25,7 @@ func TestShellTimeoutKillsChildProcess(t *testing.T) {
 	cmd := "sleep 120; echo " + marker
 
 	// Run the shell tool with a very short timeout.
-	out := run(t, Shell().Handler, map[string]any{
+	out := run(t, Shell(nil).Handler, map[string]any{
 		"cmd":             cmd,
 		"timeout_seconds": 2,
 	})

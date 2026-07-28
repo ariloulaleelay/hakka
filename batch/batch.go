@@ -35,6 +35,7 @@ type RunBatchParams struct {
 	Logger           *slog.Logger        // optional; defaults to slog.Default()
 	Store            agent.SessionStore  // optional; defaults to in-memory store
 	Skills           *agent.SkillRegistry // optional; skill registry for skill tools and context injection
+	Checkpoints      *hakkatools.CheckpointStore // optional; defaults to temp-dir store
 }
 
 // ResolveToolsByTagOrName resolves a list of tool/tag references to a
@@ -120,7 +121,11 @@ func RunBatchWithOutput(ctx context.Context, p RunBatchParams, output io.Writer,
 	if tools == nil {
 		tools = agent.NewToolRegistry()
 		pm := hakkatools.NewProcessManager()
-		hakkatools.RegisterAll(tools)
+		ck := p.Checkpoints
+		if ck == nil {
+			ck, _ = hakkatools.NewCheckpointStore(hakkatools.DefaultCheckpointDir())
+		}
+		hakkatools.RegisterAll(tools, ck)
 		hakkatools.RegisterMeta(tools)
 		hakkatools.RegisterProcessTools(tools, pm)
 		hakkatools.RegisterToolManagementTools(tools)

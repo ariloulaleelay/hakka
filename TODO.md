@@ -19,12 +19,8 @@
   - [ ] Response in group chats
     - [x] In a group chat form message with author info in heading (@login + Name)
     - [x] Silently listen group chat (respond only on mentions)
-- [ ] Vim integraion improvement
-  - [x] Ability to cancel request from vim (now it seems not working)
-  - [x] Disable vim_run_command (it's too buggy)
-  - [x] Make vim_list_buffers, vim_read_buffer
-  - [x] vim_list_buffers breaks with some json error on neovim side (hakka however still processing request)
-  - [ ] Show more data on start (cwd, model info)
+- [ ] Web server
+  - [ ] Add handle to read files (we can show images in chat)
 - [ ] Tool improvements
   - [x] Get access to mcp servers
   - [x] Add tool controls, disable tools by default
@@ -38,7 +34,7 @@
   - [ ] Bugfix: [Truncated: N bytes ommited] should be [TRUNCATED N bytes left] or propely calculate ommited bytes
   - [ ] Automatically join chains of the same tool with different page size.
   - [ ] Llm report bug tool (for example ommited and offset in read file does not work as intended)
-  - [ ] Destructive tool checkpoints (make temporary backup for files before tool call), return instructions of how to revert specific commands.
+  - [x] Destructive tool checkpoints (make temporary backup for files before tool call), return instructions of how to revert specific commands.
   - [x] Implement discovery tool.
   - [x] Revisit discovery tool and check if it works great
 - [ ] System prompts managemet
@@ -84,12 +80,9 @@
 # Minor features
 
 - [x] Fix annoying glitch with first message (no newline) — initial `### you` prompt now has a trailing blank line so cursor starts on its own line, not on the header
-- [x] Add more info at initial prompt message (current session, model info, etc.) — session ID and model shown in winbar and available via `vim.g.hakka_status`
-- [x] On switching sessions, clear screen in Neovim — `/session switch <id>` and `/session create` now clear the buffer
 - [x] Command processor should intercept all commands starting with `/` so typos would not leat to LLM
 - [x] Client could send current working directory to session, and session should keep it. It shoud appear in tools context. Now cwd is server's cwd.
 - [x] Send full command parameters, and shrink them on client (cleaner). In other words, do not strip snippet on server side.
-- [x] Change vim prompts from `### you` `### hakka` to `# Me` `# Hakka`
 - [x] After implementing cwd, parameters length increased. Need to solve this issue. And add message to system prompt that all tools follow user's cwd.
 - [x] Move from examples to server
 - [x] OpenAi adapter, want reasonable retry on _error: error, status code: 429, status: 429 Too Many Requests, message: _
@@ -102,16 +95,12 @@
 - [x] Discover tool fails, need to debug
 - [ ] User can switch to unexistent session (it creates new session)
 - [x] Autorename does not work
-- [ ] When try to enter something `in flight` `# Me` appears after error message (nvim bug)
 
 # Minor bugs
 - [ ] Snippet stripping for `\n` makes one character longer for each backslash. And tabs make string appear longer too.
-- [ ] When run multiple tools, nvim statuses not updated properly
 - [x] Remove protocol_version from wire
 - [ ] Migrate from client_cwd to cwd on the wire
-- [ ] Fix nvim leaking foreign session info
 
 # Architecture
-- [ ] Clean Architecture fix: route vim_request through the engine event system (more architectural, but larger change)
 - [x] Refactor environment substitution to all text fields in config (now it is some hacks)
 

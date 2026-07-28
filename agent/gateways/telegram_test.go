@@ -259,6 +259,7 @@ func newTelegramGatewayComponents(t *testing.T, reply string) (*agent.Conversati
 	cfg := agent.EngineConfig{MaxToolIterations: 2}
 	conv := agent.NewConversation(sm, router, tools, "tg", cfg)
 	cmd := commands.New(sm, conv, "", "tg")
+	cmd.SetTools(tools)
 	return conv, cmd
 }
 

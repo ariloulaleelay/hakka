@@ -51,44 +51,52 @@ func shortestUniquePrefix(id string, allIDs []string) string {
 	return id
 }
 
-// SessionActiveChecker returns true if the given session ID has an
-// active (in-flight) turn running. This is wired from the TurnTracker
-// in the gateway layer so that session_list can report the in_flight flag.
-type SessionActiveChecker func(sessionID string) bool
-
 type SessionCommands struct {
-	Sessions           *agent.SessionManager
-	Conv               *agent.Conversation
-	NS                 string
-	ActiveChecker      SessionActiveChecker
+	Sessions      *agent.SessionManager
+	Conv          *agent.Conversation
+	NS            string
+	ActiveChecker SessionActiveChecker
 }
 
-func NewSessionCommands(sm *agent.SessionManager, conv *agent.Conversation, ns string) *SessionCommands {
-	return &SessionCommands{Sessions: sm, Conv: conv, NS: ns}
+func NewSessionCommands(sm *agent.SessionManager, conv *agent.Conversation, ns string, reg *CommandRegistry) *SessionCommands {
+	sc := &SessionCommands{Sessions: sm, Conv: conv, NS: ns}
+
+	reg.Register(Command{
+		Name: "session_list", Description: "List all sessions", Display: "session list",
+		Handler: sc.jsonSessionList,
+	})
+	reg.Register(Command{
+		Name: "session_create", Description: "Create a new session", Display: "session create",
+		Handler: sc.jsonSessionCreate,
+	})
+	reg.Register(Command{
+		Name: "get_session", Description: "Fetch session data by ID", Display: "session get",
+		Params:  map[string]string{"id": "session ID or prefix"},
+		Handler: sc.jsonGetSession,
+	})
+	reg.Register(Command{
+		Name: "session_delete", Description: "Delete a session", Display: "session delete",
+		Params:  map[string]string{"id": "session ID or 'this'"},
+		Handler: sc.jsonSessionDelete,
+	})
+	reg.Register(Command{
+		Name: "session_info", Description: "Show current session details", Display: "session info",
+		Handler: sc.jsonSessionInfo,
+	})
+	reg.Register(Command{
+		Name: "session_rename", Description: "Rename current session", Display: "session rename",
+		Params:  map[string]string{"name": "new name"},
+		Handler: sc.jsonSessionRename,
+	})
+	reg.Register(Command{
+		Name: "session_autorename", Description: "Auto-generate name using LLM", Display: "session autorename",
+		Handler: sc.jsonSessionAutoRename,
+	})
+
+	return sc
 }
 
-// HandleJSON handles a structured JSON session command.
-func (sc *SessionCommands) HandleJSON(ctx context.Context, sessionID, cmd string, params json.RawMessage) CommandResult {
-	switch cmd {
-	case "session_list":
-		return sc.jsonSessionList(ctx, sessionID)
-	case "session_create":
-		return sc.jsonSessionCreate(ctx, sessionID)
-	case "get_session":
-		return sc.jsonGetSession(ctx, sessionID, params)
-	case "session_delete":
-		return sc.jsonSessionDelete(ctx, sessionID, params)
-	case "session_info":
-		return sc.jsonSessionInfo(ctx, sessionID)
-	case "session_rename":
-		return sc.jsonSessionRename(ctx, sessionID, params)
-	case "session_autorename":
-		return sc.jsonSessionAutoRename(ctx, sessionID)
-	}
-	return CommandResult{Handled: false}
-}
-
-func (sc *SessionCommands) jsonSessionList(ctx context.Context, sessionID string) CommandResult {
+func (sc *SessionCommands) jsonSessionList(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 	sessions, err := sc.Sessions.List(ctx, ns)
 	if err != nil {
@@ -129,7 +137,7 @@ func (sc *SessionCommands) jsonSessionList(ctx context.Context, sessionID string
 	return CommandResult{Handled: true, Cmd: "session_list", Data: data}
 }
 
-func (sc *SessionCommands) jsonSessionCreate(ctx context.Context, prevSessionID string) CommandResult {
+func (sc *SessionCommands) jsonSessionCreate(ctx context.Context, prevSessionID string, params json.RawMessage) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 	session, err := sc.Sessions.GetOrCreate(ctx, ns, "")
 	if err != nil {
@@ -199,6 +207,7 @@ func (sc *SessionCommands) jsonGetSession(ctx context.Context, sessionID string,
 	data, _ := json.Marshal(map[string]any{
 		"session":  session.Metadata(),
 		"messages": session.Messages(),
+		"events":   sessionEvents(session),
 	})
 	return CommandResult{
 		Handled: true,
@@ -215,60 +224,57 @@ func (sc *SessionCommands) jsonSessionDelete(ctx context.Context, sessionID stri
 	var p struct {
 		ID string `json:"id"`
 	}
+
 	if params != nil {
 		json.Unmarshal(params, &p)
 	}
 	if p.ID == "" {
-		return CommandResult{Handled: true, Cmd: "session_delete", Reply: "error: please specify a session ID"}
+		return CommandResult{Handled: true, Cmd: "session_delete", Reply: "error: please specify a session ID or 'this'"}
 	}
 
+	var target string
+	var err error
 	if p.ID == "this" {
-		if sessionID == "" {
-			return CommandResult{Handled: true, Cmd: "session_delete", Reply: "error: no active session to delete"}
+		target = sessionID
+	} else {
+		target, err = sc.Sessions.ResolveSessionID(ctx, ns, p.ID)
+		if err != nil {
+			return CommandResult{Handled: true, Cmd: "session_delete", Reply: err.Error()}
 		}
-		if err := sc.Sessions.Drop(ctx, ns, sessionID); err != nil {
-			return CommandResult{Handled: true, Cmd: "session_delete", Error: err}
-		}
-		data, _ := json.Marshal(map[string]any{"deleted": sessionID, "active_cleared": true})
-		return CommandResult{Handled: true, Action: ActionClearSession, Cmd: "session_delete", Data: data}
 	}
 
-	target, err := sc.Sessions.ResolveSessionID(ctx, ns, p.ID)
+	_, _, err = sc.Sessions.Get(ctx, ns, target)
 	if err != nil {
-		return CommandResult{Handled: true, Cmd: "session_delete", Reply: err.Error()}
-	}
-
-	if err := sc.Sessions.Drop(ctx, ns, target); err != nil {
 		return CommandResult{Handled: true, Cmd: "session_delete", Error: err}
 	}
 
 	data, _ := json.Marshal(map[string]any{
-		"deleted":        target,
-		"active_cleared": target == sessionID,
+		"deleted": target,
 	})
-	if target == sessionID {
+
+	// Track whether the deleted session is the currently active one.
+	wasCurrent := target == sessionID
+
+	// Delete the session.
+	if err := sc.Sessions.Drop(ctx, ns, target); err != nil {
+		return CommandResult{Handled: true, Cmd: "session_delete", Error: err}
+	}
+
+	if wasCurrent {
 		return CommandResult{Handled: true, Action: ActionClearSession, Cmd: "session_delete", Data: data}
 	}
-	return CommandResult{Handled: true, Cmd: "session_delete", Data: data}
+
+	return CommandResult{Handled: true, Action: ActionClearSession, Cmd: "session_delete", Data: data}
 }
 
-func (sc *SessionCommands) jsonSessionInfo(ctx context.Context, sessionID string) CommandResult {
+func (sc *SessionCommands) jsonSessionInfo(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 	session, err := sc.Sessions.GetOrCreate(ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "session_info", Error: err}
 	}
-	if sc.Conv != nil {
-		sc.Conv.EnsureDefaultModel(ctx, session)
-		sc.Sessions.Save(ctx, ns, session)
-	}
-
-	meta := session.Metadata()
-	// include system prompt in estimated context
-	sysTokens := len(session.SystemPrompt()) / 4
-	meta["estimated_context"] = estimateTokenCount(session.Messages()) + sysTokens
 	data, _ := json.Marshal(map[string]any{
-		"session": meta,
+		"session": session.Metadata(),
 	})
 	return CommandResult{Handled: true, Cmd: "session_info", Data: data, Session: session}
 }
@@ -282,9 +288,8 @@ func (sc *SessionCommands) jsonSessionRename(ctx context.Context, sessionID stri
 	if params != nil {
 		json.Unmarshal(params, &p)
 	}
-	p.Name = strings.Trim(p.Name, `"'`)
 	if p.Name == "" {
-		return CommandResult{Handled: true, Cmd: "session_rename", Reply: "error: name cannot be empty"}
+		return CommandResult{Handled: true, Cmd: "session_rename", Reply: "error: name must not be empty"}
 	}
 
 	session, err := sc.Sessions.GetOrCreate(ctx, ns, sessionID)
@@ -297,35 +302,93 @@ func (sc *SessionCommands) jsonSessionRename(ctx context.Context, sessionID stri
 	}
 
 	data, _ := json.Marshal(map[string]any{
-		"session": sessionToMap(session),
+		"id":   session.SessionID(),
+		"name": p.Name,
 	})
 	return CommandResult{Handled: true, Cmd: "session_rename", Data: data, Session: session}
 }
 
-func (sc *SessionCommands) jsonSessionAutoRename(ctx context.Context, sessionID string) CommandResult {
-	if sc.Conv == nil {
-		return CommandResult{Handled: true, Cmd: "session_autorename", Reply: "error: no conversation engine available"}
-	}
+func (sc *SessionCommands) jsonSessionAutoRename(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 	session, err := sc.Sessions.GetOrCreate(ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "session_autorename", Error: err}
 	}
+	if sc.Conv == nil {
+		return CommandResult{Handled: true, Cmd: "session_autorename", Reply: "auto-rename not available"}
+	}
 
-	_, renameErr := sc.Conv.AutoRename(ctx, session)
-	if renameErr != nil {
-		return CommandResult{Handled: true, Cmd: "session_autorename", Reply: "session auto-rename failed: " + renameErr.Error(), Session: session}
+	newName, err := sc.Conv.AutoRename(ctx, session)
+	if err != nil {
+		return CommandResult{Handled: true, Cmd: "session_autorename", Error: err}
 	}
 
 	data, _ := json.Marshal(map[string]any{
-		"session": session.Metadata(),
+		"id":   session.SessionID(),
+		"name": newName,
 	})
 	return CommandResult{Handled: true, Cmd: "session_autorename", Data: data, Session: session}
 }
 
-func (sc *SessionCommands) modelName(session *agent.Session) string {
-	if sc.Conv != nil {
-		return sc.Conv.SessionModel(session)
+// sessionEvents builds a replay-friendly event slice from the session
+// history, mirroring the live wire protocol. Returns []map[string]any
+// directly so the gateway can inject "done" metadata.
+func sessionEvents(session *agent.Session) []map[string]any {
+	var events []map[string]any
+	totalTokens := 0
+	totalCost := float64(0)
+
+	for _, m := range session.Messages() {
+		switch m.Role {
+		case agent.RoleUser:
+			events = append(events, map[string]any{
+				"type":    "chat",
+				"session": session.SessionID(),
+				"text":    m.Content,
+				"ts":      m.Timestamp,
+			})
+		case agent.RoleAssistant:
+			if len(m.ToolCalls) > 0 {
+				for _, tc := range m.ToolCalls {
+					var args any
+					json.Unmarshal([]byte(tc.Arguments), &args)
+					events = append(events, map[string]any{
+						"type": "tool",
+						"id":   tc.ID,
+						"tool": tc.Name,
+						"args": args,
+					})
+				}
+			}
+			if m.Content != "" {
+				events = append(events, map[string]any{
+					"type": "delta",
+					"text": m.Content,
+				})
+				events = append(events, map[string]any{
+					"type": "done",
+					"text": m.Content,
+				})
+			}
+			if m.Usage != nil {
+				totalTokens += m.Usage.TotalTokens
+				totalCost += m.Usage.Cost
+			}
+		case agent.RoleTool:
+			// Tool results are not replayed as separate events
+			// in the current protocol version.
+		}
 	}
-	return session.GetModel()
+
+	// Append the final "done" replay event if the session has messages
+	if len(session.Messages()) > 0 {
+		events = append(events, map[string]any{
+			"type":         "done",
+			"total_tokens": totalTokens,
+			"total_cost":   totalCost,
+			"is_replay":    true,
+		})
+	}
+
+	return events
 }

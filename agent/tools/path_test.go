@@ -121,7 +121,7 @@ func TestResolvePathTildeWriteFileIntegration(t *testing.T) {
 	os.Remove(tmpFile)
 	defer os.Remove(tmpFile)
 
-	res := runWithCWDPlain(t, WriteFile().Handler, map[string]any{
+	res := runWithCWDPlain(t, WriteFile(nil).Handler, map[string]any{
 		"path":    "~/.hakka_test_tilde_write",
 		"content": "written via tilde",
 	}, "/tmp/whatever")

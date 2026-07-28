@@ -253,8 +253,10 @@ func ListDir() agent.Tool {
 }
 
 // WriteFile writes content to a file (creates dirs as needed).
-func WriteFile() agent.Tool {
-	return NewTool("write_file", "Create or overwrite a file with the given content. Creates parent dirs.").
+func WriteFile(cs *CheckpointStore) agent.Tool {
+	return NewTool("write_file", "Create or overwrite a file with the given content. Creates parent dirs. "+
+		"Automatically creates a checkpoint before overwriting existing files (≤1 MB). "+
+		"Use rollback(checkpoint_id) to undo.").
 		StringParam("path", "", true).
 		StringParam("content", "", true).
 		Tags("filesystem", "write", "developer", "all").
@@ -262,7 +264,9 @@ func WriteFile() agent.Tool {
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args writeFileArgs
 			if err := unmarshalToolArgsStrict(raw, "write_file",
-				"Create or overwrite a file with the given content. Creates parent dirs.",
+				"Create or overwrite a file with the given content. Creates parent dirs. "+
+					"Automatically creates a checkpoint before overwriting existing files (≤1 MB). "+
+					"Use rollback(checkpoint_id) to undo.",
 				&args, []paramInfo{
 					{Name: "path", Type: "string", Description: "", Required: true},
 					{Name: "content", Type: "string", Description: "", Required: true},
@@ -270,6 +274,11 @@ func WriteFile() agent.Tool {
 				return "", err
 			}
 			resolved := resolvePath(ctx, args.Path)
+			// Create checkpoint before mutation.
+			ckID, ckErr := cs.Snapshot(resolved)
+			if ckErr != nil {
+				return "", fmt.Errorf("write_file: checkpoint: %w", ckErr)
+			}
 			if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
 				return "", fmt.Errorf("write_file: %w", err)
 			}
@@ -277,17 +286,22 @@ func WriteFile() agent.Tool {
 				return "", fmt.Errorf("write_file: %w", err)
 			}
 			byteCount := len(args.Content)
+			result := fmt.Sprintf("Written %d bytes", byteCount)
 			if byteCount == 0 {
-				return fmt.Sprintf("Written 0 bytes (empty file)"), nil
+				result = "Written 0 bytes (empty file)"
 			}
-			return fmt.Sprintf("Written %d bytes", byteCount), nil
+			if ckID != "" {
+				result += fmt.Sprintf(" [checkpoint: %s]", ckID)
+			}
+			return result, nil
 		}).
 		Build()
 }
 
 // EditFile applies a single literal-string replacement to a file.
-func EditFile() agent.Tool {
-	return NewTool("edit_file", "Replace the first occurrence of `old` with `new` in the given file. Set replace_all=true to replace every occurrence.").
+func EditFile(cs *CheckpointStore) agent.Tool {
+	return NewTool("edit_file", "Replace the first occurrence of `old` with `new` in the given file. Set replace_all=true to replace every occurrence. "+
+		"Automatically creates a checkpoint before editing. Use rollback(checkpoint_id) to undo.").
 		StringParam("path", "", true).
 		StringParam("old", "", true).
 		StringParam("new", "", true).
@@ -303,7 +317,8 @@ func EditFile() agent.Tool {
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args editFileArgs
 			if err := unmarshalToolArgsStrict(raw, "edit_file",
-				"Replace the first occurrence of `old` with `new` in the given file. Set replace_all=true to replace every occurrence.",
+				"Replace the first occurrence of `old` with `new` in the given file. Set replace_all=true to replace every occurrence. "+
+					"Automatically creates a checkpoint before editing. Use rollback(checkpoint_id) to undo.",
 				&args, []paramInfo{
 					{Name: "path", Type: "string", Description: "", Required: true},
 					{Name: "old", Type: "string", Description: "", Required: true},
@@ -322,6 +337,13 @@ func EditFile() agent.Tool {
 			if replaceCount == 0 {
 				return "", fmt.Errorf("pattern not found in %s", args.Path)
 			}
+
+			// Create checkpoint before mutation.
+			ckID, ckErr := cs.Snapshot(resolved)
+			if ckErr != nil {
+				return "", fmt.Errorf("edit_file: checkpoint: %w", ckErr)
+			}
+
 			var out string
 			if args.ReplaceAll {
 				out = strings.ReplaceAll(src, args.Old, args.New)
@@ -333,13 +355,50 @@ func EditFile() agent.Tool {
 				return "", fmt.Errorf("edit_file: %w", err)
 			}
 
+			result := ""
 			if args.ReplaceAll {
-				return fmt.Sprintf("Replaced %d occurrence(s) (replace_all)", replaceCount), nil
+				result = fmt.Sprintf("Replaced %d occurrence(s) (replace_all)", replaceCount)
+			} else {
+				result = fmt.Sprintf("Replaced %d occurrence(s)", replaceCount)
 			}
-			return fmt.Sprintf("Replaced %d occurrence(s)", replaceCount), nil
+			if ckID != "" {
+				result += fmt.Sprintf(" [checkpoint: %s]", ckID)
+			}
+			return result, nil
 		}).
 		Build()
 }
 
-
-
+// Rollback restores a file from a checkpoint previously created by
+// write_file, edit_file, or shell.
+func Rollback(cs *CheckpointStore) agent.Tool {
+	return NewTool("rollback",
+		"Restore a file to its pre-modification state using a checkpoint ID. "+
+			"The ID is returned by write_file, edit_file, or shell results "+
+			"(look for \"[checkpoint: xxx]\" in the output or the \"checkpoints\" field in shell JSON). "+
+			"Use this when you need to undo file changes.").
+		StringParam("checkpoint_id", "Checkpoint ID from a tool result (e.g. ck_a3f2b901)", true).
+		Tags("filesystem", "write", "developer", "all").
+		ExecSnippetField("checkpoint_id").
+		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
+			var args struct {
+				CheckpointID string `json:"checkpoint_id"`
+			}
+			if err := unmarshalToolArgsStrict(raw, "rollback",
+				"Restore a file to its pre-modification state using a checkpoint ID. "+
+					"The ID is returned by write_file, edit_file, or shell results "+
+					"(look for \"[checkpoint: xxx]\" in the output or the \"checkpoints\" field in shell JSON). "+
+					"Use this when you need to undo file changes.",
+				&args, []paramInfo{
+					{Name: "checkpoint_id", Type: "string", Description: "Checkpoint ID from a tool result (e.g. ck_a3f2b901)", Required: true},
+				}); err != nil {
+				return "", err
+			}
+			restoredPath, err := cs.Restore(args.CheckpointID)
+			if err != nil {
+				return "", fmt.Errorf("rollback: %w", err)
+			}
+			return fmt.Sprintf("Restored %s from checkpoint %s", restoredPath, args.CheckpointID), nil
+		}).
+		Build()
+}

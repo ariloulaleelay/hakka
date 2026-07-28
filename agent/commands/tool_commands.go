@@ -17,24 +17,28 @@ type ToolCommands struct {
 	NS       string
 }
 
-func NewToolCommands(sm *agent.SessionManager, tools *agent.ToolRegistry, ns string) *ToolCommands {
-	return &ToolCommands{Sessions: sm, Tools: tools, NS: ns}
+func NewToolCommands(sm *agent.SessionManager, tools *agent.ToolRegistry, ns string, reg *CommandRegistry) *ToolCommands {
+	tc := &ToolCommands{Sessions: sm, Tools: tools, NS: ns}
+
+	reg.Register(Command{
+		Name: "tool_list", Description: "List available tools with status", Display: "tool list",
+		Handler: tc.jsonToolList,
+	})
+	reg.Register(Command{
+		Name: "tool_allow", Description: "Allow (and enable) a tool or tag", Display: "tool allow",
+		Params:  map[string]string{"name": "tool name or #tag"},
+		Handler: tc.jsonToolAllow,
+	})
+	reg.Register(Command{
+		Name: "tool_deny", Description: "Deny (hide) a tool or tag", Display: "tool deny",
+		Params:  map[string]string{"name": "tool name or #tag"},
+		Handler: tc.jsonToolDeny,
+	})
+
+	return tc
 }
 
-// HandleJSON handles a structured JSON tool command.
-func (tc *ToolCommands) HandleJSON(ctx context.Context, sessionID, cmd string, params json.RawMessage) CommandResult {
-	switch cmd {
-	case "tool_list":
-		return tc.jsonToolList(ctx, sessionID)
-	case "tool_allow":
-		return tc.jsonToolAllow(ctx, sessionID, params)
-	case "tool_deny":
-		return tc.jsonToolDeny(ctx, sessionID, params)
-	}
-	return CommandResult{Handled: false}
-}
-
-func (tc *ToolCommands) jsonToolList(ctx context.Context, sessionID string) CommandResult {
+func (tc *ToolCommands) jsonToolList(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
 	session, err := tc.Sessions.GetOrCreate(ctx, ns, sessionID)
 	if err != nil {
@@ -198,15 +202,8 @@ func (tc *ToolCommands) jsonDenyByTag(ctx context.Context, sessionID, tag string
 
 func (tc *ToolCommands) collectTagged(tags []string) []agent.ToolSchema {
 	var allTagged []agent.ToolSchema
-	seen := make(map[string]bool)
 	for _, tag := range tags {
-		tagged := tc.Tools.SchemasByTags(tag)
-		for _, ts := range tagged {
-			if !seen[ts.Name] {
-				seen[ts.Name] = true
-				allTagged = append(allTagged, ts)
-			}
-		}
+		allTagged = append(allTagged, tc.Tools.SchemasByTags(tag)...)
 	}
 	return allTagged
 }

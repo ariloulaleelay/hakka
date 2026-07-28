@@ -3,18 +3,19 @@ package tools
 import "github.com/ariloulaleelay/hakka/agent"
 
 // RegisterAll registers the full builtin toolset on the given registry.
-func RegisterAll(r *agent.ToolRegistry) {
+func RegisterAll(r *agent.ToolRegistry, cs *CheckpointStore) {
 	r.Register(ReadFile())
 	r.Register(ListDir())
-	r.Register(WriteFile())
-	r.Register(EditFile())
+	r.Register(WriteFile(cs))
+	r.Register(EditFile(cs))
 	r.Register(Search())
-	r.Register(Shell())
+	r.Register(Shell(cs))
 	r.Register(HTTPGet())
 	r.Register(Random())
 	r.Register(FeedbackTool())
 	r.Register(VimListBuffers())
 	r.Register(VimReadBuffer())
+	r.Register(Rollback(cs))
 }
 
 // RegisterMeta registers system meta-tools that are always executable

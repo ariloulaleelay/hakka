@@ -102,10 +102,11 @@ incremental message operations.
 | Tool | Description |
 |---|---|
 | `read_file` | Read UTF-8 text files; supports offset+limit for windowed reading, truncates with `[TRUNCATED ...]` marker |
-| `write_file` | Create/overwrite files; creates parent directories automatically |
-| `edit_file` | Literal string search-and-replace (first or all occurrences) |
+| `write_file` | Create/overwrite files; creates parent directories automatically; auto-checkpoints before overwrite |
+| `edit_file` | Literal string search-and-replace (first or all occurrences); auto-checkpoints before edit |
 | `list_dir` | List directory entries (dirs as `name/`, files as `name\t<size>`) |
-| `shell` | Execute `sh -c` commands; short output inlined, large output saved to tempfiles |
+| `shell` | Execute `sh -c` commands; short output inlined, large output saved to tempfiles, auto-checkpoints for likely modified files |
+| `rollback` | Restore a file to its pre-modification state from a checkpoint ID |
 | `http_get` | HTTP GET with headers, status, headers, and body; HTML converted to Markdown |
 | `feedback` | Submit anonymous feedback (feature request or bug report) |
 | `random` | Generate a random integer between min_value and max_value (inclusive) |

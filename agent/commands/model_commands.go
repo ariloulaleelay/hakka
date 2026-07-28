@@ -14,26 +14,27 @@ type ModelCommands struct {
 	NS       string
 }
 
-func NewModelCommands(sm *agent.SessionManager, conv *agent.Conversation, ns string) *ModelCommands {
-	return &ModelCommands{Sessions: sm, Conv: conv, NS: ns}
+func NewModelCommands(sm *agent.SessionManager, conv *agent.Conversation, ns string, reg *CommandRegistry) *ModelCommands {
+	mc := &ModelCommands{Sessions: sm, Conv: conv, NS: ns}
+
+	reg.Register(Command{
+		Name: "model_list", Description: "List available models", Display: "model list",
+		Handler: mc.jsonModelList,
+	})
+	reg.Register(Command{
+		Name: "model_switch", Description: "Switch to a different model", Display: "model switch",
+		Params:  map[string]string{"name": "model name"},
+		Handler: mc.jsonModelSwitch,
+	})
+
+	return mc
 }
 
 func (mc *ModelCommands) resolveNamespace(ctx context.Context) string {
 	return event.NamespaceFromContext(ctx)
 }
 
-// HandleJSON handles a structured JSON model command.
-func (mc *ModelCommands) HandleJSON(ctx context.Context, sessionID, cmd string, params json.RawMessage) CommandResult {
-	switch cmd {
-	case "model_list":
-		return mc.jsonModelList(ctx, sessionID)
-	case "model_switch":
-		return mc.jsonModelSwitch(ctx, sessionID, params)
-	}
-	return CommandResult{Handled: false}
-}
-
-func (mc *ModelCommands) jsonModelList(ctx context.Context, sessionID string) CommandResult {
+func (mc *ModelCommands) jsonModelList(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	ns := mc.resolveNamespace(ctx)
 	session, err := mc.Sessions.GetOrCreate(ctx, ns, sessionID)
 	if err != nil {

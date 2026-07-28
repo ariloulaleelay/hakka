@@ -114,7 +114,8 @@ func runBatch(logger *slog.Logger, configPath, task string, enableTools []string
 	// Connect MCP servers if configured.
 	tools := agent.NewToolRegistry()
 	pm := hakkatools.NewProcessManager()
-	hakkatools.RegisterAll(tools)
+	ck, _ := hakkatools.NewCheckpointStore(hakkatools.DefaultCheckpointDir())
+	hakkatools.RegisterAll(tools, ck)
 	hakkatools.RegisterMeta(tools)
 	hakkatools.RegisterProcessTools(tools, pm)
 
@@ -254,7 +255,8 @@ func setupComponents(store agent.SessionStore, registry *agent.Registry, logger 
 
 	pm := hakkatools.NewProcessManager()
 	tools := agent.NewToolRegistry()
-	hakkatools.RegisterAll(tools)
+	ck, _ := hakkatools.NewCheckpointStore(hakkatools.DefaultCheckpointDir())
+	hakkatools.RegisterAll(tools, ck)
 	hakkatools.RegisterMeta(tools)
 	hakkatools.RegisterProcessTools(tools, pm)
 	hakkatools.RegisterToolManagementTools(tools)
@@ -297,7 +299,8 @@ func buildGateways(p gatewayParams, wsAddr, webAddr, telegramToken, telegramWhit
 	tools := p.Tools
 	if tools == nil {
 		tools = agent.NewToolRegistry()
-		hakkatools.RegisterAll(tools)
+		ck, _ := hakkatools.NewCheckpointStore(hakkatools.DefaultCheckpointDir())
+		hakkatools.RegisterAll(tools, ck)
 		hakkatools.RegisterMeta(tools)
 	}
 

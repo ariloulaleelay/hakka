@@ -435,7 +435,7 @@ func TestVimRunCommand_SendsRequestID(t *testing.T) {
 
 func TestVimRunCommand_NotRegistered(t *testing.T) {
 	reg := agent.NewToolRegistry()
-	RegisterAll(reg)
+	RegisterAll(reg, nil)
 	schemas := reg.Schemas()
 
 	for _, s := range schemas {
@@ -684,7 +684,7 @@ func TestVimReadBuffer_ExecSnippet_EmptyArgs(t *testing.T) {
 
 func TestVimToolsRegistered(t *testing.T) {
 	reg := agent.NewToolRegistry()
-	RegisterAll(reg)
+	RegisterAll(reg, nil)
 	schemas := reg.Schemas()
 
 	foundList := false

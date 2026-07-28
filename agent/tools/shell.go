@@ -26,12 +26,13 @@ const shellInlineLimit = 5000
 // the parts it needs via read_file / search / shell.
 //
 // Default timeout is 30s; override with the `timeout_seconds` arg.
-func Shell() agent.Tool {
+func Shell(cs *CheckpointStore) agent.Tool {
 	return NewTool("shell",
 		"Execute a shell command via `sh -c`.\n"+
 			"Stdout/stderr are written to tempfiles;\n"+
 			"short output is returned inline, otherwise the file path is reported so the agent can read or grep it.\n"+
-			"Project cwd applied by default").
+			"Project cwd applied by default. Automatically creates checkpoints for files likely to be modified.\n"+
+			"Check checkpoint IDs in the result and use rollback(checkpoint_id) to undo.").
 		StringParam("cmd", "", true).
 		StringParam("cwd", "Working directory (optional).", false).
 		IntParam("timeout_seconds", "Default 30.", false).
@@ -55,7 +56,8 @@ func Shell() agent.Tool {
 				"Execute a shell command via `sh -c`.\n"+
 					"Stdout/stderr are written to tempfiles;\n"+
 					"short output is returned inline, otherwise the file path is reported so the agent can read or grep it.\n"+
-					"Project cwd applied by default",
+					"Project cwd applied by default. Automatically creates checkpoints for files likely to be modified.\n"+
+					"Check checkpoint IDs in the result and use rollback(checkpoint_id) to undo.",
 				&args, []paramInfo{
 					{Name: "cmd", Type: "string", Description: "", Required: true},
 					{Name: "cwd", Type: "string", Description: "Working directory (optional)."},
@@ -68,6 +70,22 @@ func Shell() agent.Tool {
 			}
 			if args.Timeout <= 0 {
 				args.Timeout = 30
+			}
+
+			// Guess which files might be modified and checkpoint them.
+			workDir := args.Cwd
+			if workDir == "" {
+				workDir = event.CWDFromContext(ctx)
+			}
+			var ckIDs []string
+			for _, f := range GuessModifiedFiles(args.Cmd, workDir) {
+				id, ckErr := cs.Snapshot(f)
+				if ckErr != nil {
+					continue // best-effort, don't fail the command
+				}
+				if id != "" {
+					ckIDs = append(ckIDs, id)
+				}
 			}
 
 			outFile, err := os.CreateTemp("", "hakka-shell-*-stdout.log")
@@ -88,10 +106,6 @@ func Shell() agent.Tool {
 			// On Unix, set up process-group isolation so timeout kills
 			// all child processes, not just the immediate sh.
 			setProcessGroupKill(cmd)
-			workDir := args.Cwd
-			if workDir == "" {
-				workDir = event.CWDFromContext(ctx)
-			}
 			if workDir != "" {
 				cmd.Dir = workDir
 			}
@@ -113,20 +127,24 @@ func Shell() agent.Tool {
 			}
 			timedOut := errors.Is(runCtx.Err(), context.DeadlineExceeded)
 
-			result := buildShellResult(exitCode, timedOut, outFile.Name(), errFile.Name())
+			result := buildShellResult(exitCode, timedOut, outFile.Name(), errFile.Name(), ckIDs)
 			b, _ := json.Marshal(result)
 			return string(b), nil
 		}).
 		Build()
 }
 
-func buildShellResult(exitCode int, timedOut bool, stdoutPath, stderrPath string) map[string]any {
+func buildShellResult(exitCode int, timedOut bool, stdoutPath, stderrPath string, ckIDs []string) map[string]any {
 	result := map[string]any{
 		"exit_code": exitCode,
 		"timed_out": timedOut,
 	}
 	result["stdout"] = renderStreamResult(stdoutPath)
 	result["stderr"] = renderStreamResult(stderrPath)
+	if ckIDs == nil {
+		ckIDs = []string{}
+	}
+	result["checkpoints"] = ckIDs
 	return result
 }
 

@@ -147,7 +147,7 @@ func TestFeedbackExecSnippet(t *testing.T) {
 
 func TestFeedbackRegisterAllIncludesFeedback(t *testing.T) {
 	reg := agent.NewToolRegistry()
-	RegisterAll(reg)
+	RegisterAll(reg, nil)
 	_, ok := reg.Get("feedback")
 	if !ok {
 		t.Fatal("expected 'feedback' tool to be registered by RegisterAll")
@@ -156,7 +156,7 @@ func TestFeedbackRegisterAllIncludesFeedback(t *testing.T) {
 
 func TestFeedbackHasAllTag(t *testing.T) {
 	reg := agent.NewToolRegistry()
-	RegisterAll(reg)
+	RegisterAll(reg, nil)
 	schemas := reg.SchemasByTags("all")
 	found := false
 	for _, s := range schemas {
