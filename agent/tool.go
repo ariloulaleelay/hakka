@@ -262,19 +262,15 @@ func BuildToolListMessage(tools *ToolRegistry, session SessionToolAuth) string {
 		desc string
 	}
 	items := make([]item, len(schemas))
-	maxLen := 0
 	for i, s := range schemas {
 		sig := s.Signature()
 		items[i] = item{sig: sig, desc: compactDescription(s.Description)}
-		if len(sig) > maxLen {
-			maxLen = len(sig)
-		}
 	}
 
 	var b strings.Builder
 	b.WriteString("You are allowed to use next tools:\n")
 	for _, it := range items {
-		b.WriteString(fmt.Sprintf("  %-*s - %s\n", maxLen, it.sig, it.desc))
+		b.WriteString(fmt.Sprintf("%s - %s\n", it.sig, it.desc))
 	}
 	b.WriteString("\nTo activate any tool or get detailed info, use show_tool call.")
 	return b.String()

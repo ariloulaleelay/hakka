@@ -190,13 +190,49 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	}
 	defer closeStore()
 
-	sessions, router, tools, _, skillRegistry, systemPrompt, engineCfg := setupComponents(store, registry, logger)
-
 	// Override feedback URL if configured.
 	if url := modelCfg.FeedbackEndpoint(); url != "" {
 		hakkatools.SetFeedbackURL(url)
 	}
 
+	// ── Platform: once-per-process engine components ──────────────────
+	engineCfg := agent.DefaultEngineConfig()
+	engineCfg.Logger = logger
+	engineCfg.Hooks = agent.Hooks{
+		OnToolCall: func(sessionID string, call agent.ToolCall) {
+			logger.Info("tool call", "session", sessionID, "name", call.Name, "args", call.Arguments)
+		},
+		OnToolResult: func(sessionID string, call agent.ToolCall, result event.ToolResult) {
+			logger.Info("tool result", "session", sessionID, "name", call.Name, "result", result.ForLLM())
+		},
+		OnError: func(sessionID string, err error) {
+			logger.Error("engine error", "session", sessionID, "err", err)
+		},
+	}
+
+	skillRegistry := agent.NewSkillRegistry()
+
+	platform := agent.NewPlatform(agent.PlatformConfig{
+		Store:         store,
+		Registry:      registry,
+		SystemPrompt:  "You are Hakka, a helpful assistant.",
+		EngineCfg:     engineCfg,
+		SkillRegistry: skillRegistry,
+	})
+
+	// ── Shared tool registry (WebSocket / webfront) ───────────────────
+	pm := hakkatools.NewProcessManager()
+	tools := agent.NewToolRegistry()
+	ck, _ := hakkatools.NewCheckpointStore(hakkatools.DefaultCheckpointDir())
+	hakkatools.RegisterAll(tools, ck)
+	hakkatools.RegisterMeta(tools)
+	hakkatools.RegisterProcessTools(tools, pm)
+	hakkatools.RegisterToolManagementTools(tools)
+	hakkatools.RegisterSkillTools(tools, platform.Skills())
+	hakkatools.RegisterSessionTools(tools, platform.Sessions(), nil)
+	hakkatools.RegisterSubagentTools(tools, platform.Router(), tools, engineCfg, platform.Skills())
+
+	// ── MCP servers ───────────────────────────────────────────────────
 	mcpMgr := mcp.NewManager()
 	mcpMgr.Logger = logger
 	if servers := modelCfg.MCPServerConfigs(); len(servers) > 0 {
@@ -222,16 +258,23 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	gws, err := buildGateways(gatewayParams{
-		Sessions:     sessions,
-		Router:       router,
-		Tools:        tools,
-		SystemPrompt: systemPrompt,
-		EngineCfg:    engineCfg,
-		Skills:       skillRegistry,
-	}, cfg.wsAddr, cfg.webAddr, cfg.telegramToken, cfg.telegramWhitelist, cfg.telegramSOCKS5)
+	// ── Gateways ──────────────────────────────────────────────────────
+	clientDecorator := agent.EngineChannelClientDecorator()
+
+	wsGw := buildWebSocketGateway(platform, tools, clientDecorator, cfg.wsAddr)
+
+	tgGw, err := buildTelegramGateway(platform, cfg.telegramToken, cfg.telegramWhitelist, cfg.telegramSOCKS5)
 	if err != nil {
-		return fmt.Errorf("build gateways: %w", err)
+		return fmt.Errorf("build telegram gateway: %w", err)
+	}
+
+	gws := []gateways.Gateway{wsGw}
+	if tgGw != nil {
+		gws = append(gws, tgGw)
+	}
+	if cfg.webAddr != "" {
+		wfGw := buildWebFrontGateway(platform, tools, cfg.webAddr)
+		gws = append(gws, wfGw)
 	}
 
 	if err := startGateways(ctx, gws); err != nil {
@@ -247,123 +290,31 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	return shutdownGateways(gws)
 }
 
-func setupComponents(store agent.SessionStore, registry *agent.Registry, logger *slog.Logger) (*agent.SessionManager, *agent.Router, *agent.ToolRegistry, *hakkatools.ProcessManager, *agent.SkillRegistry, string, agent.EngineConfig) {
-	const systemPrompt = "You are Hakka, a helpful assistant."
-
-	sessions := agent.NewSessionManager(store, systemPrompt)
-	router := agent.NewRouter(registry)
-
-	pm := hakkatools.NewProcessManager()
-	tools := agent.NewToolRegistry()
-	ck, _ := hakkatools.NewCheckpointStore(hakkatools.DefaultCheckpointDir())
-	hakkatools.RegisterAll(tools, ck)
-	hakkatools.RegisterMeta(tools)
-	hakkatools.RegisterProcessTools(tools, pm)
-	hakkatools.RegisterToolManagementTools(tools)
-
-	cfg := agent.DefaultEngineConfig()
-	cfg.Logger = logger
-	cfg.Hooks = agent.Hooks{
-		OnToolCall: func(sessionID string, call agent.ToolCall) {
-			logger.Info("tool call", "session", sessionID, "name", call.Name, "args", call.Arguments)
-		},
-		OnToolResult: func(sessionID string, call agent.ToolCall, result event.ToolResult) {
-			logger.Info("tool result", "session", sessionID, "name", call.Name, "result", result.ForLLM())
-		},
-		OnError: func(sessionID string, err error) {
-			logger.Error("engine error", "session", sessionID, "err", err)
-		},
-	}
-
-	// Create skill registry (empty for now, can be populated from config)
-	skillRegistry := agent.NewSkillRegistry()
-	hakkatools.RegisterSkillTools(tools, skillRegistry)
-	hakkatools.RegisterSubagentTools(tools, router, tools, cfg, skillRegistry)
-
-	return sessions, router, tools, pm, skillRegistry, systemPrompt, cfg
-}
-
-// gatewayParams holds shared dependencies passed to individual gateway
-// builders. Each builder picks the fields it needs; the assembler
-// passes the same struct to all of them.
-type gatewayParams struct {
-	Sessions     *agent.SessionManager
-	Router       *agent.Router
-	Tools        *agent.ToolRegistry
-	SystemPrompt string
-	EngineCfg    agent.EngineConfig
-	Skills       *agent.SkillRegistry
-}
-
-func buildGateways(p gatewayParams, wsAddr, webAddr, telegramToken, telegramWhitelist, telegramSOCKS5 string) ([]gateways.Gateway, error) {
-	tools := p.Tools
-	if tools == nil {
-		tools = agent.NewToolRegistry()
-		ck, _ := hakkatools.NewCheckpointStore(hakkatools.DefaultCheckpointDir())
-		hakkatools.RegisterAll(tools, ck)
-		hakkatools.RegisterMeta(tools)
-	}
-
-	// Register session-control tools on the main tool registry.
-	// These tools let the LLM manage sessions within its own namespace.
-	hakkatools.RegisterSessionTools(tools, p.Sessions, nil)
-
-	// The WebSocket gateway serves clients (e.g. Neovim) that can
-	// receive client-bound requests from tools. Install a decorator so
-	// those requests flow through the engine event loop and stay
-	// serialised on a single writer goroutine.
-	clientDecorator := agent.EngineChannelClientDecorator()
-
-	wsGw := buildWebSocketGateway(p, tools, clientDecorator, wsAddr)
-
-	tgGw, err := buildTelegramGateway(p, telegramToken, telegramWhitelist, telegramSOCKS5)
-	if err != nil {
-		return nil, err
-	}
-
-	gws := []gateways.Gateway{wsGw}
-	if tgGw != nil {
-		gws = append(gws, tgGw)
-	}
-	if webAddr != "" {
-		wfGw := buildWebFrontGateway(p, webAddr)
-		gws = append(gws, wfGw)
-	}
-	return gws, nil
-}
-
-// buildWebSocketGateway wires the WebSocket gateway, sharing the same
-// tool registry but with its own conversation namespace.
-func buildWebSocketGateway(p gatewayParams, tools *agent.ToolRegistry, clientDecorator agent.ToolContextDecorator, addr string) *gateways.WebSocketGateway {
-	conv := agent.NewConversation(p.Sessions, p.Router, tools, "ws", p.EngineCfg)
-	conv.SetToolContext(clientDecorator)
-	conv.SetSkills(p.Skills)
-	streamer := agent.NewStreamSession(conv, "ws")
-	cmd := commands.New(p.Sessions, conv, p.SystemPrompt, "ws")
+// buildWebSocketGateway wires the WebSocket gateway using the platform.
+func buildWebSocketGateway(platform *agent.Platform, tools *agent.ToolRegistry, decorator agent.ToolContextDecorator, addr string) *gateways.WebSocketGateway {
+	ns := platform.ForNamespace("ws", tools, decorator)
+	cmd := commands.New(platform.Sessions(), ns.Conversation, platform.SystemPrompt(), "ws")
 	cmd.SetTools(tools)
-	return gateways.NewWebSocketGateway(conv, streamer, cmd, addr)
+	return gateways.NewWebSocketGateway(ns.Conversation, ns.Streamer, cmd, addr)
 }
 
 // buildWebFrontGateway creates a webfront Gateway that serves the embedded
 // SPA and a WebSocket endpoint on the same HTTP port. It shares the same
-// engine components (conversation, streamer, command processor) as the
-// standalone WebSocket gateway so sessions are consistent.
-func buildWebFrontGateway(p gatewayParams, addr string) *webfront.Gateway {
-	conv := agent.NewConversation(p.Sessions, p.Router, p.Tools, "ws", p.EngineCfg)
-	clientDecorator := agent.EngineChannelClientDecorator()
-	conv.SetToolContext(clientDecorator)
-	conv.SetSkills(p.Skills)
-	streamer := agent.NewStreamSession(conv, "ws")
-	cmd := commands.New(p.Sessions, conv, p.SystemPrompt, "ws")
-	cmd.SetTools(p.Tools)
-	return webfront.New(addr, conv, streamer, cmd)
+// namespace ("ws") as the standalone WebSocket gateway so sessions are
+// consistent.
+func buildWebFrontGateway(platform *agent.Platform, tools *agent.ToolRegistry, addr string) *webfront.Gateway {
+	decorator := agent.EngineChannelClientDecorator()
+	ns := platform.ForNamespace("ws", tools, decorator)
+	cmd := commands.New(platform.Sessions(), ns.Conversation, platform.SystemPrompt(), "ws")
+	cmd.SetTools(tools)
+	return webfront.New(addr, ns.Conversation, ns.Streamer, cmd)
 }
 
 // buildTelegramGateway wires the Telegram gateway with a restricted
 // toolset (no filesystem, shell, or Neovim tools). Returns (nil, nil)
 // when no Telegram token is configured. Token, whitelist, and SOCKS5
 // proxy fall back to environment variables when the flags are empty.
-func buildTelegramGateway(p gatewayParams, telegramToken, telegramWhitelist, telegramSOCKS5 string) (*gateways.TelegramGateway, error) {
+func buildTelegramGateway(platform *agent.Platform, telegramToken, telegramWhitelist, telegramSOCKS5 string) (*gateways.TelegramGateway, error) {
 	if telegramToken == "" {
 		telegramToken = os.Getenv("TELEGRAM_BOT_TOKEN")
 	}
@@ -383,16 +334,15 @@ func buildTelegramGateway(p gatewayParams, telegramToken, telegramWhitelist, tel
 	tgTools := agent.NewToolRegistry()
 	hakkatools.RegisterTelegramTools(tgTools)
 	hakkatools.RegisterToolManagementTools(tgTools)
-	hakkatools.RegisterSessionTools(tgTools, p.Sessions, nil)
+	hakkatools.RegisterSessionTools(tgTools, platform.Sessions(), nil)
 	// NOTE: subagent_run is intentionally NOT registered for Telegram.
 	// External users should not be able to fork autonomous subagents.
 
-	conv := agent.NewConversation(p.Sessions, p.Router, tgTools, "tg", p.EngineCfg)
-	conv.SetSkills(p.Skills)
-	cmd := commands.New(p.Sessions, conv, p.SystemPrompt, "tg")
+	ns := platform.ForNamespace("tg", tgTools, nil)
+	cmd := commands.New(platform.Sessions(), ns.Conversation, platform.SystemPrompt(), "tg")
 	cmd.SetTools(tgTools)
 
-	gw := gateways.NewTelegramGateway(conv, cmd, telegramToken)
+	gw := gateways.NewTelegramGateway(ns.Conversation, cmd, telegramToken)
 	gw.SOCKS5 = telegramSOCKS5
 
 	whitelist, err := parseWhitelist(telegramWhitelist)
