@@ -96,3 +96,22 @@ func TestNewSessionDoesNotSetSuppressCWD(t *testing.T) {
 		t.Fatal("expected ClientCWD to be set to server's CWD")
 	}
 }
+
+func TestSessionGetCWD(t *testing.T) {
+	s := NewSession("testns", "you are helpful")
+	// Default should be server's CWD
+	serverCWD, _ := os.Getwd()
+	if cwd := s.GetCWD(); cwd != serverCWD {
+		t.Fatalf("expected GetCWD=%q, got %q", serverCWD, cwd)
+	}
+
+	s.SetClientCWD("/home/user/project")
+	if cwd := s.GetCWD(); cwd != "/home/user/project" {
+		t.Fatalf("expected GetCWD=/home/user/project, got %q", cwd)
+	}
+
+	s.SetClientCWD("")
+	if cwd := s.GetCWD(); cwd != "" {
+		t.Fatalf("expected GetCWD= empty, got %q", cwd)
+	}
+}

@@ -3,6 +3,8 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -1962,5 +1964,144 @@ func TestBuildCompactContext_TwoToolRoundsWithCompactifyBetween_NoUserMessage(t 
 	}
 	if strings.Contains(markers[1], "Reading files") {
 		t.Fatalf("marker[1] should NOT contain 'Reading files', got %q", markers[1])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildAgentMarkdownMessage tests
+// ---------------------------------------------------------------------------
+
+func TestBuildAgentMarkdownMessage_EmptyCWD(t *testing.T) {
+	msg := buildAgentMarkdownMessage("")
+	if msg != nil {
+		t.Fatal("expected nil for empty CWD")
+	}
+}
+
+func TestBuildAgentMarkdownMessage_NoMatchingFiles(t *testing.T) {
+	dir := t.TempDir()
+	msg := buildAgentMarkdownMessage(dir)
+	if msg != nil {
+		t.Fatal("expected nil when no AGENTS.md files exist")
+	}
+}
+
+func TestBuildAgentMarkdownMessage_FindsAGENTS(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "AGENTS.md", "# Test Project\nInstructions here.")
+
+	msg := buildAgentMarkdownMessage(dir)
+	if msg == nil {
+		t.Fatal("expected non-nil for AGENTS.md")
+	}
+	if msg.Role != RoleSystem {
+		t.Fatalf("expected RoleSystem, got %v", msg.Role)
+	}
+	if !strings.Contains(msg.Content, "## Project instructions (AGENTS.md)") {
+		t.Fatalf("expected header in content, got: %q", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "# Test Project") {
+		t.Fatalf("expected file content in message, got: %q", msg.Content)
+	}
+}
+
+func TestBuildAgentMarkdownMessage_FindsAGENT(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "AGENT.md", "Fallback instructions.")
+
+	msg := buildAgentMarkdownMessage(dir)
+	if msg == nil {
+		t.Fatal("expected non-nil for AGENT.md")
+	}
+	if !strings.Contains(msg.Content, "## Project instructions (AGENT.md)") {
+		t.Fatalf("expected AGENT.md header, got: %q", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "Fallback instructions.") {
+		t.Fatalf("expected file content, got: %q", msg.Content)
+	}
+}
+
+func TestBuildAgentMarkdownMessage_FindsClaude(t *testing.T) {
+	dir := t.TempDir()
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.Mkdir(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, claudeDir, "AGENTS.md", "Claude-style instructions.")
+
+	msg := buildAgentMarkdownMessage(dir)
+	if msg == nil {
+		t.Fatal("expected non-nil for .claude/AGENTS.md")
+	}
+	if !strings.Contains(msg.Content, "## Project instructions (.claude/AGENTS.md)") {
+		t.Fatalf("expected .claude/AGENTS.md header, got: %q", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "Claude-style instructions.") {
+		t.Fatalf("expected file content, got: %q", msg.Content)
+	}
+}
+
+func TestBuildAgentMarkdownMessage_PriorityAGENTSOverAGENT(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "AGENTS.md", "Primary AGENTS.md")
+	writeFile(t, dir, "AGENT.md", "Fallback AGENT.md")
+
+	msg := buildAgentMarkdownMessage(dir)
+	if msg == nil {
+		t.Fatal("expected non-nil")
+	}
+	if !strings.Contains(msg.Content, "Primary AGENTS.md") {
+		t.Fatalf("expected AGENTS.md content to win, got: %q", msg.Content)
+	}
+	if strings.Contains(msg.Content, "Fallback AGENT.md") {
+		t.Fatal("expected AGENT.md content NOT to appear when AGENTS.md exists")
+	}
+}
+
+func TestBuildAgentMarkdownMessage_InjectedIntoBuildCompactContext(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "AGENTS.md", "# Proj\nBe concise.")
+
+	s := NewSession("test", "You are helpful.")
+	s.SetClientCWD(dir)
+	s.Append(Message{Role: RoleUser, Content: "hello"})
+
+	result, _, _ := BuildCompactContext(s, 100000, nil)
+
+	// Find the AGENTS.md message
+	found := false
+	for _, m := range result {
+		if m.Role == RoleSystem && strings.Contains(m.Content, "## Project instructions (AGENTS.md)") {
+			found = true
+			if !strings.Contains(m.Content, "Be concise.") {
+				t.Fatalf("expected project content, got: %q", m.Content)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected AGENTS.md message in BuildCompactContext output")
+	}
+}
+
+func TestBuildAgentMarkdownMessage_NoFileWhenCWDEmpty(t *testing.T) {
+	s := NewSession("test", "You are helpful.")
+	s.SetClientCWD("") // explicitly clear
+	s.Append(Message{Role: RoleUser, Content: "hello"})
+
+	result, _, _ := BuildCompactContext(s, 100000, nil)
+
+	for _, m := range result {
+		if strings.Contains(m.Content, "## Project instructions") {
+			t.Fatal("expected NO project instructions when CWD is empty")
+		}
+	}
+}
+
+func writeFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
 	}
 }

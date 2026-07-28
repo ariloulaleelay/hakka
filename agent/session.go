@@ -39,7 +39,6 @@ type Message struct {
 	Timestamp        int64          `json:"ts,omitempty"` // Unix timestamp in milliseconds
 }
 
-// ---------------------------------------------------------------------------
 // SessionData — plain data struct, no methods, no mutex.
 //
 // SessionData holds the raw state of a conversation session. It is the
@@ -47,17 +46,10 @@ type Message struct {
 // it with thread-safe access.
 //
 // The composite primary key is (Namespace, ID), where Namespace isolates
-// sessions from different gateways (e.g. "ws", "tg:12345").
+// sessions from different gateways (e.g. "default", "tg:12345").
 //
-// Tool authorisation model (v2):
-//   - BlockedTools[name]=true  → denied (completely invisible to LLM)
-//   - BlockedTools missing/false → allowed (visible in system prompt)
-//   - EnabledTools[name]=true  → enabled (appears in API "tools" section)
-//   - EnabledTools missing/false → disabled (system prompt only, but
-//     mutual activation allows execution if LLM calls anyway)
-//   - Once a tool appears in conversation history as a tool call, it
-//     becomes "locked" and cannot be denied or disabled.
-// ---------------------------------------------------------------------------
+// Tool authorisation is managed through EnabledTools and BlockedTools maps.
+// See AGENT.md §"Core Components | Session" for the full v2 model.
 
 type SessionData struct {
 	Namespace        string
@@ -226,6 +218,13 @@ func (sess *Session) CWDMessage() *Message {
 		Role:    RoleSystem,
 		Content: "You are working in the user's project directory: " + sess.data.ClientCWD + ".\nAll tools operate relative to this directory.\nUse relative paths whenever possible (every tool).",
 	}
+}
+
+// GetCWD returns the raw session working directory, or "" if not set.
+func (sess *Session) GetCWD() string {
+	sess.mu.RLock()
+	defer sess.mu.RUnlock()
+	return sess.data.ClientCWD
 }
 
 // --- SessionToolAuth (v2) ---

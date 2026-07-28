@@ -27,6 +27,7 @@ type SessionHistory interface {
 	SystemPrompt() string  // system prompt text (empty if none)
 	Messages() []Message   // conversation messages only (no system prompt)
 	CWDMessage() *Message
+	GetCWD() string        // raw working directory (empty if not set)
 }
 
 // SessionToolAuth authorises tool usage for this session.

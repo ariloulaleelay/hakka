@@ -8,15 +8,12 @@ import (
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
-// toolExecutor handles the execution of LLM-requested tool calls.
-// It fans out handlers across goroutines, enriches the context with
-// a transport-aware ClientWriter when configured, and fires
-// observability hooks for every call and result.
+// toolExecutor fans out LLM-requested tool calls across goroutines,
+// enriches the execution context with a transport-aware ClientWriter,
+// and fires observability hooks for every call and result.
 //
-// Hook safety: the caller MUST pass serialised hooks (obtained via
-// SerialisedHooks) to ExecuteToolCalls when tool calls run concurrently.
-// Using the bare base hooks from parallel goroutines causes data races
-// on shared hook writers.
+// Hook safety: the caller MUST use SerialisedHooks — parallel goroutines
+// with the bare base hooks will race on the shared hook writer.
 type toolExecutor struct {
 	tools       *ToolRegistry
 	toolContext ToolContextDecorator

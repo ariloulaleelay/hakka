@@ -21,46 +21,11 @@ type TurnExecutor interface {
 	Execute(ctx context.Context, sessionID, userInput string) (<-chan event.EngineEvent, error)
 }
 
-// Conversation drives the LLM ↔ tool loop for a single conversational
-// turn. It is the public-facing facade that gateways interact with;
-// the heavy lifting (iteration loop, compaction, tool execution) is
-// delegated to turnRunner.
+// Conversation is the public facade that gateways use to run turns and
+// manage sessions. It delegates the LLM ↔ tool iteration loop to
+// turnRunner and tool execution to toolExecutor.
 //
-// Conversation owns:
-//   - Session lifecycle (get/create, append user input, persist)
-//   - Turn lifecycle (background goroutine, event channel, finalisation)
-//   - Auto-rename (LLM-generated session names)
-//   - Model binding (per-session model selection)
-//   - Tool context decoration (transport-aware ClientWriter)
-//
-// It delegates to turnRunner for:
-//   - The LLM ↔ tool iteration loop
-//   - Default (non-streaming) step function creation
-//   - Compaction limit resolution and schema augmentation
-//
-// Namespace is used to isolate sessions from different gateways
-// (e.g. "default", "tg:12345"). All store operations from this
-// Conversation use this namespace, unless overridden via the context
-// (see resolveNamespace). Gateways that serve multiple isolated namespaces
-// (e.g. Telegram per-chat) should set the namespace in the context via
-// event.ContextWithNamespace rather than mutating the field — this
-// ensures thread safety when multiple chats are handled concurrently.
-//
-// Thread safety: Hook invocations (OnToolCall, OnToolResult, etc.) within
-// a single turn are serialised so that concurrent tool goroutines do not
-// interleave events on a shared writer. Different turns (even on different
-// sessions) run independently and do not block each other.
-//
-// All exported fields are unexported to prevent external mutation. Accessor
-// methods (Sessions, Router, Config, Namespace, Tools) provide safe read
-// access for external packages. SetToolContext must be called before any
-// Execute call — it is not safe for concurrent use with running turns.
-//
-// Conversation depends on SessionView (not the concrete Session type)
-// to decouple orchestration policy from session data structures
-// (Dependency Inversion Principle). Where possible, internal helpers
-// accept narrower interfaces (e.g. SessionHistory)
-// to follow the Interface Segregation Principle.
+// See AGENT.md §"Brief Architecture" for the full component split.
 type Conversation struct {
 	router    *Router
 	sessions  *SessionManager

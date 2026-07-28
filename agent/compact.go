@@ -3,6 +3,8 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -355,7 +357,7 @@ func BuildCompactContext(session SessionHistory, softLimit int, skills *SkillReg
 		view = append(view, buildCompactionWarning(estimatedTokens, softLimit))
 	}
 
-	result := buildContextPrefix(session, needCompactify, skills)
+	result := buildContextPrefix(session, needCompactify, skills, session.GetCWD())
 	result = append(result, view...)
 	return result, needCompactify, estimatedTokens
 }
@@ -415,13 +417,17 @@ func buildCompactionWarning(estimatedTokens, softLimit int) Message {
 }
 
 // buildContextPrefix assembles the opening messages for every turn:
-// system prompt (if present), optional compactify usage notice, and
+// system prompt (if present), AGENTS.md from CWD (if found),
+// optional compactify usage notice, loaded skills, and
 // the working-directory message (if set).
-func buildContextPrefix(session SessionHistory, needCompactify bool, skills *SkillRegistry) []Message {
-	result := make([]Message, 0, 6)
+func buildContextPrefix(session SessionHistory, needCompactify bool, skills *SkillRegistry, cwd string) []Message {
+	result := make([]Message, 0, 8)
 
 	if sp := session.SystemPrompt(); sp != "" {
 		result = append(result, Message{Role: RoleSystem, Content: sp})
+	}
+	if agentsMsg := buildAgentMarkdownMessage(cwd); agentsMsg != nil {
+		result = append(result, *agentsMsg)
 	}
 	if needCompactify {
 		result = append(result, Message{
@@ -437,6 +443,35 @@ func buildContextPrefix(session SessionHistory, needCompactify bool, skills *Ski
 		result = append(result, *cwdMsg)
 	}
 	return result
+}
+
+// agentMarkdownCandidates lists the file paths to search for project
+// instructions in the session's working directory, in priority order.
+var agentMarkdownCandidates = []string{
+	"AGENTS.md",
+	"AGENT.md",
+	".claude/AGENTS.md",
+}
+
+// buildAgentMarkdownMessage reads an AGENTS.md/AGENT.md file from the
+// session's working directory if one exists. Returns nil when no file
+// is found or cwd is empty — silent fallback.
+func buildAgentMarkdownMessage(cwd string) *Message {
+	if cwd == "" {
+		return nil
+	}
+	for _, relPath := range agentMarkdownCandidates {
+		path := filepath.Join(cwd, relPath)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		return &Message{
+			Role:    RoleSystem,
+			Content: "## Project instructions (" + relPath + ")\n\n" + string(data),
+		}
+	}
+	return nil
 }
 
 // heuristicTokens returns a chars/4 token estimate for the given messages.
