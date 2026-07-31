@@ -513,7 +513,7 @@ func generateLLMSummary(ctx context.Context, adapter agent.LLMAdapter, s *agent.
 		)},
 	}
 
-	resp, err := adapter.Complete(ctx, summaryMsgs, nil, agent.CompleteOptions{MaxTokens: &maxTokens})
+	resp, err := adapter.Complete(ctx, summaryMsgs, nil, agent.CompleteOptions{MaxTokens: &maxTokens}, nil)
 	if err != nil {
 		return "", err
 	}
@@ -689,7 +689,7 @@ func SessionAskQuestion(sm *agent.SessionManager, conv *agent.Conversation) agen
 
 			msgs := buildAskQuestionMessages(s, args.Question)
 
-			resp, err := adapter.Complete(ctx, msgs, nil, conv.Config().Options)
+			resp, err := adapter.Complete(ctx, msgs, nil, conv.Config().Options, nil)
 			if err != nil {
 				return "", fmt.Errorf("session_ask_question: LLM call failed: %w", err)
 			}

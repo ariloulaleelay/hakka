@@ -295,7 +295,7 @@ func buildWebSocketGateway(platform *agent.Platform, tools *agent.ToolRegistry, 
 	ns := platform.ForNamespace("ws", tools, decorator)
 	cmd := commands.New(platform.Sessions(), ns.Conversation, platform.SystemPrompt(), "ws")
 	cmd.SetTools(tools)
-	return gateways.NewWebSocketGateway(ns.Conversation, ns.Streamer, cmd, addr)
+	return gateways.NewWebSocketGateway(ns.Conversation, cmd, addr)
 }
 
 // buildWebFrontGateway creates a webfront Gateway that serves the embedded
@@ -307,7 +307,7 @@ func buildWebFrontGateway(platform *agent.Platform, tools *agent.ToolRegistry, a
 	ns := platform.ForNamespace("ws", tools, decorator)
 	cmd := commands.New(platform.Sessions(), ns.Conversation, platform.SystemPrompt(), "ws")
 	cmd.SetTools(tools)
-	return webfront.New(addr, ns.Conversation, ns.Streamer, cmd)
+	return webfront.New(addr, ns.Conversation, cmd)
 }
 
 // buildTelegramGateway wires the Telegram gateway with a restricted

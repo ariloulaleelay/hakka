@@ -1,7 +1,10 @@
 package adapters
 
 import (
+	"bufio"
+	"io"
 	"sort"
+	"strings"
 
 	"github.com/ariloulaleelay/hakka/agent"
 )
@@ -98,10 +101,27 @@ func (a *appendAccumulator) flush() []agent.ToolCall {
 	return a.calls
 }
 
-func sendStreamFinal(ch chan<- agent.StreamResult, toolCalls []agent.ToolCall, usage *agent.Usage, finishReason string) {
-	if len(toolCalls) > 0 {
-		ch <- agent.StreamResult{ToolCalls: toolCalls, Usage: usage, FinishReason: finishReason}
-	} else {
-		ch <- agent.StreamResult{Done: true, Usage: usage, FinishReason: finishReason}
+// scanSSE iterates over "data: " lines of an SSE stream, invoking fn for each
+// payload (without the "data: " prefix). Returns when the stream is exhausted
+// or a "[DONE]" sentinel is encountered.
+func scanSSE(r io.Reader, fn func(payload string) error) error {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			return nil
+		}
+		if err := fn(payload); err != nil {
+			return err
+		}
 	}
+	return scanner.Err()
 }

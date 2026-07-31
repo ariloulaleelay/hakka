@@ -126,7 +126,7 @@ func (m *MockProvider) getStep(sessionID string, msgs []agent.Message) (ScriptSt
 	return steps[idx], nil
 }
 
-func (m *MockProvider) Complete(ctx context.Context, msgs []agent.Message, _ []agent.ToolSchema, opts agent.CompleteOptions) (*agent.LLMResponse, error) {
+func (m *MockProvider) Complete(ctx context.Context, msgs []agent.Message, _ []agent.ToolSchema, opts agent.CompleteOptions, onDelta func(string)) (*agent.LLMResponse, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -138,8 +138,19 @@ func (m *MockProvider) Complete(ctx context.Context, msgs []agent.Message, _ []a
 	}
 
 	if step.Message != nil {
+		content := step.Message.Content
+		if onDelta != nil {
+			// Stream in chunks for realism.
+			if len(content) > 3 {
+				mid := len(content) / 2
+				onDelta(content[:mid])
+				onDelta(content[mid:])
+			} else if len(content) > 0 {
+				onDelta(content)
+			}
+		}
 		return &agent.LLMResponse{
-			Message:      agent.Message{Role: agent.RoleAssistant, Content: step.Message.Content},
+			Message:      agent.Message{Role: agent.RoleAssistant, Content: content},
 			FinishReason: "stop",
 		}, nil
 	}
@@ -162,50 +173,6 @@ func (m *MockProvider) Complete(ctx context.Context, msgs []agent.Message, _ []a
 	return nil, fmt.Errorf("mock: invalid step (no message or run_tool)")
 }
 
-func (m *MockProvider) Stream(ctx context.Context, msgs []agent.Message, _ []agent.ToolSchema, opts agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-	}
-	step, err := m.getStep(opts.SessionID, msgs)
-	if err != nil {
-		return nil, err
-	}
-
-	ch := make(chan agent.StreamResult, 4)
-
-	if step.Message != nil {
-		content := step.Message.Content
-		// Stream in chunks for realism.
-		if len(content) > 3 {
-			mid := len(content) / 2
-			ch <- agent.StreamResult{Delta: content[:mid]}
-			ch <- agent.StreamResult{Delta: content[mid:]}
-		} else if len(content) > 0 {
-			ch <- agent.StreamResult{Delta: content}
-		}
-		ch <- agent.StreamResult{Done: true}
-		close(ch)
-		return ch, nil
-	}
-
-	if step.RunTool != nil {
-		argsJSON, _ := json.Marshal(step.RunTool.Args)
-		ch <- agent.StreamResult{
-			ToolCalls: []agent.ToolCall{{
-				ID:        "mock_call_" + step.RunTool.Name,
-				Name:      step.RunTool.Name,
-				Arguments: string(argsJSON),
-			}},
-		}
-		close(ch)
-		return ch, nil
-	}
-
-	close(ch)
-	return nil, fmt.Errorf("mock: invalid step (no message or run_tool)")
-}
 
 // Reset clears all per-session indices. Used in test cleanup.
 func (m *MockProvider) Reset() {

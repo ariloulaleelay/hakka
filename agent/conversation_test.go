@@ -180,7 +180,7 @@ type response struct {
 	msg Message
 }
 
-func (a *simpleAdapter) Complete(ctx context.Context, msgs []Message, tools []ToolSchema, opts CompleteOptions) (*LLMResponse, error) {
+func (a *simpleAdapter) Complete(ctx context.Context, msgs []Message, tools []ToolSchema, opts CompleteOptions, _ func(string)) (*LLMResponse, error) {
 	a.mu.Lock()
 	if a.callCount >= len(a.responses) {
 		a.mu.Unlock()
@@ -192,11 +192,6 @@ func (a *simpleAdapter) Complete(ctx context.Context, msgs []Message, tools []To
 	return &LLMResponse{Message: r.msg}, nil
 }
 
-func (a *simpleAdapter) Stream(ctx context.Context, msgs []Message, tools []ToolSchema, opts CompleteOptions) (<-chan StreamResult, error) {
-	ch := make(chan StreamResult)
-	close(ch)
-	return ch, nil
-}
 
 // ---------------------------------------------------------------------------
 // Auto-rename tests
@@ -211,7 +206,7 @@ type namingTestAdapter struct {
 	NamingRequested bool
 }
 
-func (a *namingTestAdapter) Complete(ctx context.Context, msgs []Message, tools []ToolSchema, opts CompleteOptions) (*LLMResponse, error) {
+func (a *namingTestAdapter) Complete(ctx context.Context, msgs []Message, tools []ToolSchema, opts CompleteOptions, _ func(string)) (*LLMResponse, error) {
 	// Detect naming request by checking the last user message
 	for _, m := range msgs {
 		if m.Role == RoleUser && strings.Contains(m.Content, "Suggest name for this chat") {
@@ -233,11 +228,6 @@ func (a *namingTestAdapter) Complete(ctx context.Context, msgs []Message, tools 
 	return &LLMResponse{Message: r.msg}, nil
 }
 
-func (a *namingTestAdapter) Stream(ctx context.Context, msgs []Message, tools []ToolSchema, opts CompleteOptions) (<-chan StreamResult, error) {
-	ch := make(chan StreamResult)
-	close(ch)
-	return ch, nil
-}
 
 func TestAutoRename_NamesSessionAfterTwoUserMessages(t *testing.T) {
 	adapter := &namingTestAdapter{
@@ -495,23 +485,13 @@ type capturingAdapter struct {
 	sessionFn func() *Session
 }
 
-func (a *capturingAdapter) Complete(ctx context.Context, msgs []Message, tools []ToolSchema, opts CompleteOptions) (*LLMResponse, error) {
+func (a *capturingAdapter) Complete(ctx context.Context, msgs []Message, tools []ToolSchema, opts CompleteOptions, _ func(string)) (*LLMResponse, error) {
 	if a.capture != nil {
 		a.capture(tools)
 	}
 	return &LLMResponse{Message: Message{Role: RoleAssistant, Content: "done"}}, nil
 }
 
-func (a *capturingAdapter) Stream(ctx context.Context, msgs []Message, tools []ToolSchema, opts CompleteOptions) (<-chan StreamResult, error) {
-	ch := make(chan StreamResult, 4)
-	if a.capture != nil {
-		a.capture(tools)
-	}
-	ch <- StreamResult{Delta: "done"}
-	ch <- StreamResult{Done: true}
-	close(ch)
-	return ch, nil
-}
 
 // TestConversation_SomeToolsEnabled_LLMGetsThoseSchemas verifies that when
 // some tools are enabled and others disabled, only the enabled schemas

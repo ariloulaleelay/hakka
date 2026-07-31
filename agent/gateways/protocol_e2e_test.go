@@ -37,7 +37,7 @@ import (
 // The mock provider is pre-configured with the given namespace. All mock
 // tools (echo_tool, fail_tool, slow_tool) are registered and the #all
 // tag is pre-enabled on every session.
-func mockE2ESetup(t *testing.T, ns string) (*agent.Conversation, *agent.StreamSession, *commands.CommandProcessor, *adapters.MockProvider, *agent.ToolRegistry, string) {
+func mockE2ESetup(t *testing.T, ns string) (*agent.Conversation, *commands.CommandProcessor, *adapters.MockProvider, *agent.ToolRegistry, string) {
 	t.Helper()
 
 	mockAdapter := adapters.NewMockProvider()
@@ -56,17 +56,16 @@ func mockE2ESetup(t *testing.T, ns string) (*agent.Conversation, *agent.StreamSe
 		Logger:            logger,
 	}
 	conv := agent.NewConversation(sm, router, toolReg, ns, cfg)
-	streamer := agent.NewStreamSession(conv, ns)
 	cmd := commands.New(sm, conv, "", ns)
 
 	addr := freeAddr(t)
-	return conv, streamer, cmd, mockAdapter, toolReg, addr
+	return conv, cmd, mockAdapter, toolReg, addr
 }
 
 // startMockGateway starts a WebSocket gateway and returns it.
-func startMockGateway(t *testing.T, conv *agent.Conversation, streamer *agent.StreamSession, cmd *commands.CommandProcessor, addr string) *WebSocketGateway {
+func startMockGateway(t *testing.T, conv *agent.Conversation, cmd *commands.CommandProcessor, addr string) *WebSocketGateway {
 	t.Helper()
-	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	gw := NewWebSocketGateway(conv, cmd, addr)
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("start gateway: %v", err)
 	}
@@ -144,8 +143,8 @@ func readUntilFrame(t *testing.T, conn *websocket.Conn, targetType string, timeo
 // TestE2E_WelcomeOnConnect verifies that connecting to the gateway sends
 // a "welcome" frame with sessions at the top level.
 func TestE2E_WelcomeOnConnect(t *testing.T) {
-	conv, streamer, cmd, _, _, addr := mockE2ESetup(t, "e2e")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, _, _, addr := mockE2ESetup(t, "e2e")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 
 	conn := wsConnect(t, addr)
@@ -170,8 +169,8 @@ func TestE2E_WelcomeOnConnect(t *testing.T) {
 //  1. Send chat with a message script
 //  2. Receive a single "done" frame with the reply text and embedded stats
 func TestE2E_SimpleChat(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -191,7 +190,6 @@ func TestE2E_SimpleChat(t *testing.T) {
 		"type":       "chat",
 		"session_id": sessionID,
 		"input":      script,
-		"stream":     false,
 	})
 
 	// Read until done.
@@ -233,8 +231,8 @@ func TestE2E_SimpleChat(t *testing.T) {
 //  2. Receive "delta" frames with text chunks
 //  3. Receive a final "done" frame with the full text and stats
 func TestE2E_StreamingChat(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -253,7 +251,6 @@ func TestE2E_StreamingChat(t *testing.T) {
 		"type":       "chat",
 		"session_id": sessionID,
 		"input":      script,
-		"stream":     true,
 	})
 
 	// Read all frames until done.
@@ -316,8 +313,8 @@ func TestE2E_StreamingChat(t *testing.T) {
 //  2. Receive tool(start) → tool(ok) → delta → done
 //  3. The tool result is visible in the conversation
 func TestE2E_ToolCallThenText(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -339,7 +336,6 @@ func TestE2E_ToolCallThenText(t *testing.T) {
 		"type":       "chat",
 		"session_id": sessionID,
 		"input":      script,
-		"stream":     false,
 	})
 
 	// Read frames until done.
@@ -433,8 +429,8 @@ done:
 //  1. Send a script that calls fail_tool
 //  2. Receive tool(start) → tool(err) with error message
 func TestE2E_ToolError(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -501,8 +497,8 @@ check:
 // TestE2E_JSONCommand verifies that sending a JSON command returns a
 // structured "result" frame.
 func TestE2E_JSONCommand(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -549,8 +545,8 @@ func TestE2E_JSONCommand(t *testing.T) {
 //  2. Immediately send cancel
 //  3. Receive done frame with cancelled:true
 func TestE2E_CancelMidTurn(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -612,8 +608,8 @@ func TestE2E_CancelMidTurn(t *testing.T) {
 // TestE2E_GetSessionEvents verifies that get_session returns an events
 // field with replay-friendly typed events that mirror the wire protocol.
 func TestE2E_GetSessionEvents(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -727,8 +723,8 @@ func TestE2E_GetSessionEvents(t *testing.T) {
 // TestE2E_InvalidScript verifies that sending non-JSON input produces an
 // error frame (or done frame with error).
 func TestE2E_InvalidScript(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -779,8 +775,8 @@ func TestE2E_InvalidScript(t *testing.T) {
 // tool call correctly cycles through the tool loop and returns the final
 // response in a single done frame.
 func TestE2E_NonStreamingToolLoop(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -802,7 +798,6 @@ func TestE2E_NonStreamingToolLoop(t *testing.T) {
 		"type":       "chat",
 		"session_id": sessionID,
 		"input":      script,
-		"stream":     false,
 	})
 
 	// Read all frames until done. Should see tool frames and then a done
@@ -862,8 +857,8 @@ check:
 // messages in sequence works correctly — each turn completes before the
 // next begins, and the session accumulates messages.
 func TestE2E_MultipleSequentialChats(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := mockE2ESetup(t, "e2e")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 

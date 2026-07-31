@@ -42,15 +42,13 @@ func TestOpenAIExtraThroughBuildRegistry(t *testing.T) {
 	cfg.BaseURL = srv.URL
 	cfg.HTTPClient = httpClient
 
-	adapter := NewOpenAIAdapter(openai.NewClientWithConfig(cfg), "test-model")
-	adapter.Extra = extra
-	adapter.LLMDebugDir = ""
+	adapter := NewOpenAIAdapter(openai.NewClientWithConfig(cfg), "test-model", NewOpenAIConfig("", agent.RetryConfig{}, agent.Pricing{}, extra))
 
 	_, err := adapter.Complete(context.Background(),
 		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}},
 		nil, agent.CompleteOptions{
 			SessionID: "my-test-session-uuid",
-		},
+		}, nil,
 	)
 	if err != nil {
 		t.Fatalf("complete: %v", err)
@@ -97,13 +95,12 @@ func TestOpenAIExtraWithoutSessionID(t *testing.T) {
 	cfg.BaseURL = srv.URL
 	cfg.HTTPClient = httpClient
 
-	adapter := NewOpenAIAdapter(openai.NewClientWithConfig(cfg), "test-model")
-	adapter.Extra = extra
+	adapter := NewOpenAIAdapter(openai.NewClientWithConfig(cfg), "test-model", NewOpenAIConfig("", agent.RetryConfig{}, agent.Pricing{}, extra))
 
 	// No SessionID in opts — placeholder is replaced with empty string
 	_, err := adapter.Complete(context.Background(),
 		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}},
-		nil, agent.CompleteOptions{},
+		nil, agent.CompleteOptions{}, nil,
 	)
 	if err != nil {
 		t.Fatalf("complete: %v", err)

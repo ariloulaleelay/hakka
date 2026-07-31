@@ -74,9 +74,9 @@ func writeWSFrame(t *testing.T, conn *websocket.Conn, v any) {
 // immediately on WebSocket connect, listing all sessions with in_flight
 // status at the top level (not inside "data").
 func TestWelcomeOnConnect(t *testing.T) {
-	conv, streamer, cmd := newGatewayComponents("pong")
+	conv, cmd := newGatewayComponents("pong")
 	addr := freeAddr(t)
-	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	gw := NewWebSocketGateway(conv, cmd, addr)
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -253,9 +253,6 @@ func TestInboundFrameTypeParsing(t *testing.T) {
 	if chat.Input != "hello" {
 		t.Fatalf("expected input 'hello', got %q", chat.Input)
 	}
-	if !chat.Stream {
-		t.Fatal("expected stream true")
-	}
 
 	// Cmd frame
 	var cmd FrameRequest
@@ -294,9 +291,9 @@ func TestInboundFrameTypeParsing(t *testing.T) {
 // TestWebSocketV2RoundTrip tests a full chat turn using the v2 protocol.
 // Sends type:"chat", receives type:"done" with embedded stats and "text" field.
 func TestWebSocketV2RoundTrip(t *testing.T) {
-	conv, streamer, cmd := newNamedGatewayComponents("hello from llm", "v2test")
+	conv, cmd := newNamedGatewayComponents("hello from llm", "v2test")
 	addr := freeAddr(t)
-	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	gw := NewWebSocketGateway(conv, cmd, addr)
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -318,7 +315,6 @@ func TestWebSocketV2RoundTrip(t *testing.T) {
 	writeWSFrame(t, conn, map[string]any{
 		"type":   "chat",
 		"input":  "hello",
-		"stream": false,
 	})
 
 	// Read frames until done
@@ -371,9 +367,9 @@ func TestWebSocketV2RoundTrip(t *testing.T) {
 // in_flight status and the connection is ready to receive events without
 // extra round trips.
 func TestAutoSubscribeOnConnect(t *testing.T) {
-	conv, streamer, cmd := newNamedGatewayComponents("response from running turn", "autosub")
+	conv, cmd := newNamedGatewayComponents("response from running turn", "autosub")
 	addr := freeAddr(t)
-	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	gw := NewWebSocketGateway(conv, cmd, addr)
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -435,9 +431,9 @@ func TestAutoSubscribeOnConnect(t *testing.T) {
 // done). Tool calls from history are replayed as typed events so the
 // UI can render them the same way as live streaming frames.
 func TestGetSessionEvents(t *testing.T) {
-	conv, streamer, cmd := newNamedGatewayComponents("unused", "default")
+	conv, cmd := newNamedGatewayComponents("unused", "default")
 	addr := freeAddr(t)
-	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	gw := NewWebSocketGateway(conv, cmd, addr)
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}

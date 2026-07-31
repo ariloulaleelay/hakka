@@ -11,7 +11,7 @@ type loopFakeAdapter struct {
 	callCount int
 }
 
-func (a *loopFakeAdapter) Complete(ctx context.Context, msgs []Message, tools []ToolSchema, opts CompleteOptions) (*LLMResponse, error) {
+func (a *loopFakeAdapter) Complete(ctx context.Context, msgs []Message, tools []ToolSchema, opts CompleteOptions, _ func(string)) (*LLMResponse, error) {
 	if a.callCount >= len(a.responses) {
 		return &LLMResponse{Message: Message{Role: RoleAssistant, Content: "fallback"}}, nil
 	}
@@ -20,11 +20,6 @@ func (a *loopFakeAdapter) Complete(ctx context.Context, msgs []Message, tools []
 	return &LLMResponse{Message: resp}, nil
 }
 
-func (a *loopFakeAdapter) Stream(ctx context.Context, msgs []Message, tools []ToolSchema, opts CompleteOptions) (<-chan StreamResult, error) {
-	ch := make(chan StreamResult)
-	close(ch)
-	return ch, nil
-}
 
 func TestMaxToolIterations_IsPerTurn(t *testing.T) {
 	adapter := &loopFakeAdapter{

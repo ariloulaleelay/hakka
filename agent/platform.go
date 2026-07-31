@@ -2,10 +2,7 @@ package agent
 
 // Platform bundles once-per-process engine components and provides
 // namespace-scoped building blocks for gateways.
-//
-// Create once at startup, then call ForNamespace for each gateway
-// (WebSocket, Telegram, gRPC, etc.) to get namespace-isolated
-// Conversation and StreamSession instances.
+// Create once at startup, then call ForNamespace for each gateway.
 //
 // Usage:
 //
@@ -42,7 +39,6 @@ type PlatformConfig struct {
 // construct a TurnHandler for your gateway transport.
 type NamespaceComponents struct {
 	Conversation *Conversation
-	Streamer     *StreamSession
 	Tools        *ToolRegistry
 }
 
@@ -107,11 +103,8 @@ func (p *Platform) ForNamespace(ns string, tools *ToolRegistry, decorator ToolCo
 		conv.SetSkills(p.skills)
 	}
 
-	streamer := NewStreamSession(conv, ns)
-
 	return NamespaceComponents{
 		Conversation: conv,
-		Streamer:     streamer,
 		Tools:        tools,
 	}
 }

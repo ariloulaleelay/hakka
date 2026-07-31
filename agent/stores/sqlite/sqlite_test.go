@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/ariloulaleelay/hakka/agent"
 )
@@ -307,61 +306,6 @@ func TestGet_returns_error_for_corrupted_created_at(t *testing.T) {
 	_, _, err = s.Get(ctx, ns, sess.SessionID())
 	if err == nil {
 		t.Fatal("expected error for corrupted created_at, got nil")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Streaming flag persistence
-// ---------------------------------------------------------------------------
-
-func TestStreaming_defaults_to_true(t *testing.T) {
-	sess := agent.NewSession("testns", "test")
-	if !sess.Read().Streaming {
-		t.Fatal("expected Streaming to default to true")
-	}
-}
-
-func TestStreaming_is_preserved_across_Put_and_Get(t *testing.T) {
-	ctx := context.Background()
-	s := newStore(t)
-	ns := "streaming-ns"
-
-	sess := agent.NewSession(ns, "test")
-	sess.Update(func(d *agent.SessionData) { d.Streaming = true; d.UpdatedAt = time.Now() })
-	if err := s.Put(ctx, ns, sess); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	got, ok, err := s.Get(ctx, ns, sess.SessionID())
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if !ok {
-		t.Fatal("session not found")
-	}
-	if !got.Read().Streaming {
-		t.Fatal("expected Streaming=true after round-trip")
-	}
-}
-
-func TestStreaming_false_is_also_persisted(t *testing.T) {
-	ctx := context.Background()
-	s := newStore(t)
-	ns := "streaming-ns2"
-
-	sess := agent.NewSession(ns, "test")
-	sess.Update(func(d *agent.SessionData) { d.Streaming = false; d.UpdatedAt = time.Now() })
-	if err := s.Put(ctx, ns, sess); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	got, ok, err := s.Get(ctx, ns, sess.SessionID())
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if !ok {
-		t.Fatal("session not found")
-	}
-	if got.Read().Streaming {
-		t.Fatal("expected Streaming=false after round-trip")
 	}
 }
 

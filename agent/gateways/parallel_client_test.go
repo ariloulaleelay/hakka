@@ -26,7 +26,7 @@ import (
 // connection cannot be reused. All helper functions respect this.
 // ---------------------------------------------------------------------------
 
-func parallelSetup(t *testing.T, ns string) (*agent.Conversation, *agent.StreamSession, *commands.CommandProcessor, *adapters.MockProvider, *agent.ToolRegistry, string) {
+func parallelSetup(t *testing.T, ns string) (*agent.Conversation, *commands.CommandProcessor, *adapters.MockProvider, *agent.ToolRegistry, string) {
 	t.Helper()
 	mockAdapter := adapters.NewMockProvider()
 	sm := agent.NewSessionManager(nil, "sys")
@@ -37,10 +37,9 @@ func parallelSetup(t *testing.T, ns string) (*agent.Conversation, *agent.StreamS
 	tools.RegisterMockTools(toolReg)
 	cfg := agent.EngineConfig{MaxToolIterations: 8}
 	conv := agent.NewConversation(sm, router, toolReg, ns, cfg)
-	streamer := agent.NewStreamSession(conv, ns)
 	cmd := commands.New(sm, conv, "", ns)
 	addr := freeAddr(t)
-	return conv, streamer, cmd, mockAdapter, toolReg, addr
+	return conv, cmd, mockAdapter, toolReg, addr
 }
 
 func enableToolsDirect(session *agent.Session, names ...string) {
@@ -120,8 +119,8 @@ func getSessionViaWebSocket(t *testing.T, conn *websocket.Conn, sessionID string
 // Test 1: New session not broadcast (design limitation)
 // ---------------------------------------------------------------------------
 func TestParallel_NewSessionNotBroadcast(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := parallelSetup(t, "par1")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := parallelSetup(t, "par1")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -164,8 +163,8 @@ func TestParallel_NewSessionNotBroadcast(t *testing.T) {
 // is running. Both receive the same tool and done events.
 // ---------------------------------------------------------------------------
 func TestParallel_SharedSessionBothReceiveEvents(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := parallelSetup(t, "par2")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := parallelSetup(t, "par2")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -238,8 +237,8 @@ func TestParallel_SharedSessionBothReceiveEvents(t *testing.T) {
 // Test 3: Cross-client cancellation
 // ---------------------------------------------------------------------------
 func TestParallel_CrossClientCancel(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := parallelSetup(t, "par3")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := parallelSetup(t, "par3")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -299,8 +298,8 @@ func TestParallel_CrossClientCancel(t *testing.T) {
 // Test 4: Independent sessions — two clients chat on different sessions.
 // ---------------------------------------------------------------------------
 func TestParallel_IndependentSessions(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := parallelSetup(t, "par4")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := parallelSetup(t, "par4")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -355,8 +354,8 @@ func TestParallel_IndependentSessions(t *testing.T) {
 // Test 5: Session list visibility across clients
 // ---------------------------------------------------------------------------
 func TestParallel_SessionListVisibility(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := parallelSetup(t, "par5")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := parallelSetup(t, "par5")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -387,8 +386,8 @@ func TestParallel_SessionListVisibility(t *testing.T) {
 // Test 6: Two clients create sessions simultaneously — unique IDs.
 // ---------------------------------------------------------------------------
 func TestParallel_SimultaneousSessionCreate(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := parallelSetup(t, "par6")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := parallelSetup(t, "par6")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -417,8 +416,8 @@ func TestParallel_SimultaneousSessionCreate(t *testing.T) {
 // Test 7: Mid-turn reconnect (slow_tool keeps turn alive)
 // ---------------------------------------------------------------------------
 func TestParallel_MidTurnReconnect(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := parallelSetup(t, "par7")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := parallelSetup(t, "par7")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -461,8 +460,8 @@ func TestParallel_MidTurnReconnect(t *testing.T) {
 // Test 8: Streaming mid-turn reconnect (slow_tool keeps turn alive)
 // ---------------------------------------------------------------------------
 func TestParallel_StreamingMidTurnReconnect(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := parallelSetup(t, "par8")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := parallelSetup(t, "par8")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 
@@ -478,7 +477,6 @@ func TestParallel_StreamingMidTurnReconnect(t *testing.T) {
 	writeWSFrame(t, connA, map[string]any{
 		"type": "chat", "session_id": sessionID,
 		"input": `[{"run_tool":{"name":"slow_tool","args":{"seconds":2}}},{"message":{"content":"Done streaming"}}]`,
-		"stream": true,
 	})
 	time.Sleep(200 * time.Millisecond)
 
@@ -507,8 +505,8 @@ func TestParallel_StreamingMidTurnReconnect(t *testing.T) {
 // Test 9: Two concurrent tool turns on different sessions.
 // ---------------------------------------------------------------------------
 func TestParallel_ConcurrentToolTurnsDifferentSessions(t *testing.T) {
-	conv, streamer, cmd, mockAdapter, _, addr := parallelSetup(t, "par9")
-	gw := startMockGateway(t, conv, streamer, cmd, addr)
+	conv, cmd, mockAdapter, _, addr := parallelSetup(t, "par9")
+	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
 	defer mockAdapter.Reset()
 

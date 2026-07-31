@@ -450,14 +450,8 @@ type errorAdapter struct {
 	msg string
 }
 
-func (a *errorAdapter) Complete(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (*agent.LLMResponse, error) {
+func (a *errorAdapter) Complete(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions, _ func(string)) (*agent.LLMResponse, error) {
 	return nil, fmt.Errorf("%s", a.msg)
-}
-
-func (a *errorAdapter) Stream(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	ch := make(chan agent.StreamResult)
-	close(ch)
-	return ch, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1020,7 +1014,7 @@ type captureInputAdapter struct {
 	reply       string
 }
 
-func (a *captureInputAdapter) Complete(_ context.Context, msgs []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (*agent.LLMResponse, error) {
+func (a *captureInputAdapter) Complete(_ context.Context, msgs []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions, _ func(string)) (*agent.LLMResponse, error) {
 	// Build full context from all messages
 	var b strings.Builder
 	for _, msg := range msgs {
@@ -1043,26 +1037,4 @@ func (a *captureInputAdapter) Complete(_ context.Context, msgs []agent.Message, 
 		Message: agent.Message{Role: agent.RoleAssistant, Content: a.reply},
 		Usage:   &agent.Usage{TotalTokens: 2},
 	}, nil
-}
-
-func (a *captureInputAdapter) Stream(_ context.Context, msgs []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	var b strings.Builder
-	for _, msg := range msgs {
-		b.WriteString(string(msg.Role))
-		b.WriteString(": ")
-		b.WriteString(msg.Content)
-		b.WriteString("\n")
-	}
-	a.fullContext = b.String()
-
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == agent.RoleUser {
-			a.lastInput = msgs[i].Content
-			break
-		}
-	}
-	a.reply = "got it"
-	ch := make(chan agent.StreamResult)
-	close(ch)
-	return ch, nil
 }

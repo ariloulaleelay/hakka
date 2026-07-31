@@ -10,6 +10,16 @@ import (
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
+// stepScriptedAdapter implements LLMAdapter with a callback-based Complete.
+type stepScriptedAdapter struct {
+	onComplete func() LLMResponse
+}
+
+func (a *stepScriptedAdapter) Complete(_ context.Context, _ []Message, _ []ToolSchema, _ CompleteOptions, _ func(string)) (*LLMResponse, error) {
+	r := a.onComplete()
+	return &r, nil
+}
+
 // TestConversationMidTurnEnableTool_EndToEnd verifies that when the LLM
 // calls enable_tool for a tool and then that tool in the next iteration,
 // the tool is actually executed (not rejected as "disabled").
@@ -162,35 +172,42 @@ func TestConversationMidTurnEnableTool_ContextInjection_Run(t *testing.T) {
 		},
 	})
 
-	adapter := &fakeAdapter{
-		responses: []LLMResponse{
-			{
-				Message: Message{
-					Role: RoleAssistant,
-					ToolCalls: []ToolCall{{
-						ID: "call-enable", Name: "enable_tool", Arguments: `{"name":"test_tool"}`,
-					}},
-				},
-				FinishReason: "tool_calls",
-			},
-			{
-				Message: Message{
-					Role: RoleAssistant,
-					ToolCalls: []ToolCall{{
-						ID: "call-test", Name: "test_tool", Arguments: `{}`,
-					}},
-				},
-				FinishReason: "tool_calls",
-			},
-			{
-				Message:      Message{Role: RoleAssistant, Content: "done"},
-				FinishReason: "stop",
-			},
+	callCount := 0
+	stepAdapter := &stepScriptedAdapter{
+		onComplete: func() LLMResponse {
+			callCount++
+			switch callCount {
+			case 1:
+				return LLMResponse{
+					Message: Message{
+						Role: RoleAssistant,
+						ToolCalls: []ToolCall{{
+							ID: "call-enable", Name: "enable_tool", Arguments: `{"name":"test_tool"}`,
+						}},
+					},
+					FinishReason: "tool_calls",
+				}
+			case 2:
+				return LLMResponse{
+					Message: Message{
+						Role: RoleAssistant,
+						ToolCalls: []ToolCall{{
+							ID: "call-test", Name: "test_tool", Arguments: `{}`,
+						}},
+					},
+					FinishReason: "tool_calls",
+				}
+			default:
+				return LLMResponse{
+					Message:      Message{Role: RoleAssistant, Content: "done"},
+					FinishReason: "stop",
+				}
+			}
 		},
 	}
 
 	reg := NewRegistry()
-	reg.Register("default", adapter)
+	reg.Register("default", stepAdapter)
 	router := NewRouter(reg)
 
 	engineCfg := EngineConfig{MaxToolIterations: 5, Logger: testLogger(t)}
@@ -202,35 +219,20 @@ func TestConversationMidTurnEnableTool_ContextInjection_Run(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	callCount := 0
-	eventCh := make(chan event.EngineEvent, 256)
-	step := func(ctx context.Context, msgs []Message, schemas []ToolSchema, ev eventSender) (*llmStepResult, error) {
-		callCount++
-		switch callCount {
-		case 1:
-			return &llmStepResult{
-				toolCalls: []ToolCall{{
-					ID: "call-enable", Name: "enable_tool", Arguments: `{"name":"test_tool"}`,
-				}},
-			}, nil
-		case 2:
-			return &llmStepResult{
-				toolCalls: []ToolCall{{
-					ID: "call-test", Name: "test_tool", Arguments: `{}`,
-				}},
-			}, nil
-		default:
-			return &llmStepResult{content: "done"}, nil
-		}
-	}
-
 	saveFn := func(ctx context.Context, s SessionView) error {
 		return sm.Save(ctx, "testns", s)
 	}
+	noopRenameFn := func(ctx context.Context, s SessionView, ev eventSender) {}
 
-	reply, err := rr.run(context.Background(), session, eventCh, step, saveFn)
-	if err != nil {
-		t.Fatalf("run failed: %v", err)
+	eventCh := rr.executeTurn(context.Background(), session, saveFn, noopRenameFn)
+	var reply string
+	for evt := range eventCh {
+		if te, ok := evt.(event.TurnFinished); ok {
+			if te.Err != nil {
+				t.Fatalf("executeTurn failed: %v", te.Err)
+			}
+			reply = te.Reply
+		}
 	}
 	if reply != "done" {
 		t.Fatalf("unexpected reply: %q", reply)

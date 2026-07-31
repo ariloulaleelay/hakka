@@ -51,14 +51,14 @@ type Gateway struct {
 // New creates a Gateway. If addr is empty, Start is a no-op (disabled).
 // The turnHandler is shared with the standalone WebSocket gateway so
 // sessions and turn tracking are consistent across all transports.
-func New(addr string, conv *agent.Conversation, streamer *agent.StreamSession, cmd *commands.CommandProcessor) *Gateway {
+func New(addr string, conv *agent.Conversation, cmd *commands.CommandProcessor) *Gateway {
 	ns := conv.Namespace()
 	if ns == "" {
 		ns = "default"
 	}
 	return &Gateway{
 		addr:    addr,
-		handler: gateways.NewTurnHandler(conv, streamer, cmd, ns),
+		handler: gateways.NewTurnHandler(conv, cmd, ns),
 	}
 }
 

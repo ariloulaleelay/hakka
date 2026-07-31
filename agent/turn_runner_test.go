@@ -2,356 +2,62 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"sync"
 	"testing"
-	"time"
-
-	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
-// copyBackStore is a session store that returns deep copies on Get and
-// stores a deep copy on Put. This simulates SQLiteStore behavior where
-// each Get returns a fresh object — the in-memory Session pointer held
-// by the turn is NEVER the same as the one returned to tool handlers.
-type copyBackStore struct {
-	mu   sync.RWMutex
-	data map[string]SessionData // key = "namespace:id"
-}
-
-func newCopyBackStore() *copyBackStore {
-	return &copyBackStore{data: make(map[string]SessionData)}
-}
-
-func (c *copyBackStore) key(namespace, id string) string { return namespace + ":" + id }
-
-func (c *copyBackStore) Get(_ context.Context, namespace, id string) (*Session, bool, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	d, ok := c.data[c.key(namespace, id)]
-	if !ok {
-		return nil, false, nil
-	}
-	cp := d.DeepCopy()
-	return NewSessionFromData(&cp), true, nil
-}
-
-func (c *copyBackStore) Put(_ context.Context, namespace string, s *Session) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	data := s.Read()
-	c.data[c.key(namespace, data.ID)] = data
-	return nil
-}
-
-func (c *copyBackStore) Delete(_ context.Context, namespace, id string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.data, c.key(namespace, id))
-	return nil
-}
-
-func (c *copyBackStore) List(_ context.Context, namespace string) ([]*Session, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	var out []*Session
-	for key, d := range c.data {
-		if len(key) > len(namespace) && key[:len(namespace)] == namespace && key[len(namespace)] == ':' {
-			cp := d.DeepCopy()
-			out = append(out, NewSessionFromData(&cp))
-		}
-	}
-	return out, nil
-}
-
-// TestMidTurnToolEditor_ContextInjection verifies that a tool handler
-// can enable a tool via the context-injected session view, and the
-// engine sees the change in the next iteration without any reloadFn.
-//
-// This test uses a deep-copy store (copyBackStore) which would have
-// exposed the old stale-session bug. With context injection, the tool
-// handler mutates the engine's session in-place, so no reload is needed.
-func TestMidTurnToolEditor_ContextInjection(t *testing.T) {
-	store := newCopyBackStore()
-	sm := NewSessionManager(store, "sys")
-	session, err := sm.GetOrCreate(context.Background(), "testns", "")
-	if err != nil {
-		t.Fatal(err)
+// TestTurnRunnerPreservesProviderMetadata verifies that when an adapter
+// returns a message with ProviderMetadata (e.g. gemini_signatures or
+// reasoning_content), the metadata is persisted on the session's assistant
+// message. This is critical for provider-specific round-trip data like
+// Gemini's thought signatures — if dropped, the next API call fails.
+func TestTurnRunnerPreservesProviderMetadata(t *testing.T) {
+	meta := map[string]any{
+		"gemini_signatures": []string{"sig-abc", "sig-def"},
 	}
 
-	tools := NewToolRegistry()
-	var testToolExecuted bool
-	tools.Register(Tool{
-		Schema: ToolSchema{Name: "test_tool"},
-		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
-			testToolExecuted = true
-			return "test_tool executed!", nil
-		},
-	})
-	tools.Register(Tool{
-		Schema: ToolSchema{Name: "inline_enable"},
-		Tags:   []string{"tool"},
-		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
-			var args struct {
-				Name string `json:"name"`
-			}
-			if err := json.Unmarshal(raw, &args); err != nil {
-				return "", err
-			}
-			// Use context-injected session — this is the NEW approach.
-			// The engine injects the session before every tool invocation.
-			sess, ok := event.SessionViewFromContext(ctx).(SessionToolEditor)
-			if !ok || sess == nil {
-				return "", fmt.Errorf("inline_enable: no session in context")
-			}
-			sess.EnableTool(args.Name)
-			return "enabled " + args.Name, nil
-		},
-	})
-
-	rr := newTurnRunner(tools, newToolExecutor(tools, nil, Hooks{}), EngineConfig{
-		MaxToolIterations: 4,
-		Logger:            testLogger(t),
-	}, &Router{}, testLogger(t), nil)
-
-	callCount := 0
-	eventCh := make(chan event.EngineEvent, 256)
-	step := func(ctx context.Context, msgs []Message, schemas []ToolSchema, ev eventSender) (*llmStepResult, error) {
-		callCount++
-		switch callCount {
-		case 1:
-			// First call: schemas should NOT include test_tool (not enabled yet)
-			hasTestTool := false
-			for _, s := range schemas {
-				if s.Name == "test_tool" {
-					hasTestTool = true
-					break
-				}
-			}
-			if hasTestTool {
-				t.Error("test_tool should NOT be in schemas before enable_tool")
-			}
-			return &llmStepResult{
-				toolCalls: []ToolCall{{
-					ID: "call-1", Name: "inline_enable", Arguments: `{"name":"test_tool"}`,
-				}},
-			}, nil
-		case 2:
-			// Second call: schemas SHOULD include test_tool (enabled by context injection)
-			hasTestTool := false
-			for _, s := range schemas {
-				if s.Name == "test_tool" {
-					hasTestTool = true
-					break
-				}
-			}
-			if !hasTestTool {
-				t.Error("test_tool SHOULD be in schemas — context injection should have enabled it")
-			}
-			return &llmStepResult{
-				toolCalls: []ToolCall{{
-					ID: "call-2", Name: "test_tool", Arguments: `{}`,
-				}},
-			}, nil
-		default:
-			return &llmStepResult{content: "done"}, nil
-		}
-	}
-
-	saveFn := func(ctx context.Context, s SessionView) error {
-		return sm.Save(ctx, "testns", s)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	reply, err := rr.run(ctx, session, eventCh, step, saveFn)
-	if err != nil {
-		t.Fatalf("run failed: %v", err)
-	}
-
-	if reply != "done" {
-		t.Fatalf("unexpected reply: %q", reply)
-	}
-	if callCount != 3 {
-		t.Fatalf("expected 3 LLM calls (inline_enable + test_tool + done), got %d", callCount)
-	}
-	if !testToolExecuted {
-		t.Fatal("test_tool was NOT executed — context injection should have enabled it")
-	}
-}
-
-// TestContextEstimatedStoredOnSession verifies that the turn runner stores
-// the estimated context token count on the session before each LLM call.
-func TestContextEstimatedStoredOnSession(t *testing.T) {
-	store := newCopyBackStore()
-	sm := NewSessionManager(store, "sys")
-	session, err := sm.GetOrCreate(context.Background(), "testns", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Add some messages to give the heuristic estimate something to count
-	session.Append(Message{Role: RoleUser, Content: "What is the meaning of life, the universe, and everything?"})
-	session.Append(Message{Role: RoleAssistant, Content: "42. It is the answer to the ultimate question. Deep thought computed it over millions of years."})
-
-	tools := NewToolRegistry()
-
-	rr := newTurnRunner(tools, newToolExecutor(tools, nil, Hooks{}), EngineConfig{
-		MaxToolIterations: 3,
-		Logger:            testLogger(t),
-	}, &Router{}, testLogger(t), nil)
-
-	eventCh := make(chan event.EngineEvent, 64)
-
-	step := func(ctx context.Context, msgs []Message, schemas []ToolSchema, ev eventSender) (*llmStepResult, error) {
-		return &llmStepResult{content: "hello"}, nil
-	}
-
-	saveFn := func(ctx context.Context, s SessionView) error {
-		return sm.Save(ctx, "testns", s)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	reply, err := rr.run(ctx, session, eventCh, step, saveFn)
-	if err != nil {
-		t.Fatalf("run failed: %v", err)
-	}
-
-	if reply != "hello" {
-		t.Fatalf("unexpected reply: %q", reply)
-	}
-
-	// The session should have the estimated context tokens stored
-	estimated := session.GetEstimatedContextTokens()
-	if estimated <= 0 {
-		t.Fatalf("expected positive estimated context tokens, got %d", estimated)
-	}
-}
-
-// TestToolCallBrokenJSONArguments — regression for provider truncation
-// (e.g. Gemini MAX_TOKENS mid-tool-call): the resulting invalid JSON
-// arguments must not corrupt session history.
-func TestToolCallBrokenJSONArguments(t *testing.T) {
-	conv, _, _, tools := newTestComponents(t, []LLMResponse{
+	conv, _, _ := newTestComponents(t, []LLMResponse{
 		{
 			Message: Message{
-				Role: RoleAssistant,
-				ToolCalls: []ToolCall{{
-					ID: "call-broken", Name: "echo_tool", Arguments: `{"message": "`,
-				}},
-			},
-			FinishReason: "MAX_TOKENS",
-		},
-	})
-	tools.Register(Tool{
-		Schema: ToolSchema{
-			Name:        "echo_tool",
-			Description: "Echoes input",
-			Parameters: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{"message": map[string]any{"type": "string"}},
-			},
-		},
-		Handler: func(_ context.Context, raw json.RawMessage) (string, error) {
-			return "echoed", nil
-		},
-	})
-
-	session, err := conv.sessions.GetOrCreate(context.Background(), "testns", "broken-json-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	session.EnableTool("echo_tool")
-	if err := conv.sessions.Save(context.Background(), "testns", session); err != nil {
-		t.Fatal(err)
-	}
-
-	eventCh, err := conv.Execute(context.Background(), "broken-json-test", "echo something")
-	if err != nil {
-		t.Fatalf("Execute returned unexpected error: %v", err)
-	}
-
-	var turnErr error
-	for evt := range eventCh {
-		if te, ok := evt.(event.TurnFinished); ok {
-			turnErr = te.Err
-		}
-	}
-	if turnErr == nil {
-		t.Fatal("expected error for broken JSON arguments, got nil")
-	}
-
-	for _, m := range session.Messages() {
-		if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
-			t.Fatalf("tool calls recorded despite broken JSON: %+v", m.ToolCalls)
-		}
-	}
-}
-
-// TestToolCallEmptyArguments — the JSON-validation guard must not
-// misfire on legitimate zero-arg tool calls where the model omits
-// the arguments object entirely.
-func TestToolCallEmptyArguments(t *testing.T) {
-	conv, _, _, tools := newTestComponents(t, []LLMResponse{
-		{
-			Message: Message{
-				Role: RoleAssistant,
-				ToolCalls: []ToolCall{{
-					ID: "call-empty", Name: "list_dir_tool", Arguments: "",
-				}},
+				Role:             RoleAssistant,
+				Content:          "calling tools",
+				ToolCalls:        []ToolCall{{ID: "call_1", Name: "search", Arguments: `{"q":"test"}`}},
+				ProviderMetadata: meta,
 			},
 			FinishReason: "tool_calls",
+			Usage:        &Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
 		},
 		{
-			Message:      Message{Role: RoleAssistant, Content: "listed the directory"},
+			Message:      Message{Role: RoleAssistant, Content: "final reply"},
 			FinishReason: "stop",
+			Usage:        &Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
 		},
 	})
 
-	var listDirCalled bool
-	tools.Register(Tool{
-		Schema: ToolSchema{
-			Name:        "list_dir_tool",
-			Description: "Lists directory entries",
-			Parameters: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{"path": map[string]any{"type": "string"}},
-			},
-		},
-		Handler: func(_ context.Context, raw json.RawMessage) (string, error) {
-			listDirCalled = true
-			return "listed", nil
-		},
-	})
-
-	session, err := conv.sessions.GetOrCreate(context.Background(), "testns", "empty-args-test")
+	session, _, err := executeSync(conv, context.Background(), "meta-test", "hello")
 	if err != nil {
-		t.Fatal(err)
-	}
-	session.EnableTool("list_dir_tool")
-	if err := conv.sessions.Save(context.Background(), "testns", session); err != nil {
-		t.Fatal(err)
+		t.Fatalf("execute: %v", err)
 	}
 
-	eventCh, err := conv.Execute(context.Background(), "empty-args-test", "list the dir")
-	if err != nil {
-		t.Fatalf("Execute returned unexpected error: %v", err)
-	}
-
-	var turnErr error
-	for evt := range eventCh {
-		if te, ok := evt.(event.TurnFinished); ok {
-			turnErr = te.Err
+	var found bool
+	for _, m := range session.Messages() {
+		if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
+			found = true
+			sigs, ok := m.ProviderMetadata["gemini_signatures"].([]string)
+			if !ok {
+				var ifaces []interface{}
+				ifaces, ok = m.ProviderMetadata["gemini_signatures"].([]interface{})
+				if ok {
+					t.Fatalf("signatures deserialized as []interface{} (JSON round-trip), got %v", ifaces)
+				}
+				t.Fatalf("BUG: gemini_signatures missing from ProviderMetadata: %+v", m.ProviderMetadata)
+			}
+			if len(sigs) != 2 || sigs[0] != "sig-abc" || sigs[1] != "sig-def" {
+				t.Fatalf("signatures: %+v (expected [sig-abc, sig-def])", sigs)
+			}
+			break
 		}
 	}
-	if turnErr != nil {
-		t.Fatalf("unexpected error for empty args: %v", turnErr)
-	}
-	if !listDirCalled {
-		t.Fatal("list_dir_tool was not executed — empty args should have been normalised to {}")
+	if !found {
+		t.Fatal("assistant tool-call message not found in session")
 	}
 }

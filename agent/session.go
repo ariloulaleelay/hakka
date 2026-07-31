@@ -67,7 +67,6 @@ type SessionData struct {
 	EnabledTools     map[string]bool
 	BlockedTools     map[string]bool
 	CompactSoftLimit int
-	Streaming        bool
 	ActiveSkills     []string // names of loaded skills
 }
 
@@ -83,7 +82,6 @@ func NewSessionData(namespace, systemPrompt string) SessionData {
 		UpdatedAt:        now,
 		ClientCWD:        cwd,
 		CompactSoftLimit: 0,
-		Streaming:        true,
 		// Only show_tool is pre-enabled by default so the LLM can
 		// discover and enable other tools at runtime.
 		// allow_tool and deny_tool are human-only slash commands.
@@ -438,7 +436,6 @@ func (sess *Session) Metadata() map[string]any {
 		"estimated_context_tokens": d.EstimatedContextTokens,
 		"client_cwd":              d.ClientCWD,
 		"compact_soft_limit":      d.CompactSoftLimit,
-		"streaming":               d.Streaming,
 		"created_at":              d.CreatedAt.Format(time.RFC3339),
 		"updated_at":              formatTime(d.UpdatedAt, d.CreatedAt),
 	}

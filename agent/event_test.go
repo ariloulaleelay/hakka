@@ -11,7 +11,7 @@ import (
 )
 
 func TestExecuteEvents_NoTools(t *testing.T) {
-	conv, _, adapter, _ := newTestComponents(t, []LLMResponse{
+	conv, adapter, _ := newTestComponents(t, []LLMResponse{
 		{Message: Message{Role: RoleAssistant, Content: "hello back"}, FinishReason: "stop"},
 	})
 
@@ -25,12 +25,20 @@ func TestExecuteEvents_NoTools(t *testing.T) {
 		events = append(events, e)
 	}
 
-	// Expected: TurnFinished only
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event (TurnFinished), got %d", len(events))
+	// Expected: TextDelta (engine always passes onDelta) + TurnFinished
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events (TextDelta + TurnFinished), got %d: %+v", len(events), events)
 	}
 
-	turnEv, ok := events[0].(event.TurnFinished)
+	deltaEv, ok := events[0].(event.TextDelta)
+	if !ok {
+		t.Fatalf("expected first event to be event.TextDelta, got %T", events[0])
+	}
+	if deltaEv.Delta != "hello back" {
+		t.Fatalf("unexpected delta: %q", deltaEv.Delta)
+	}
+
+	turnEv, ok := events[1].(event.TurnFinished)
 	if !ok {
 		t.Fatalf("expected last event to be event.TurnFinished, got %T", events[0])
 	}
@@ -47,7 +55,7 @@ func TestExecuteEvents_NoTools(t *testing.T) {
 }
 
 func TestExecuteEvents_ToolLoop(t *testing.T) {
-	conv, _, adapter, tools := newTestComponents(t, []LLMResponse{
+	conv, adapter, tools := newTestComponents(t, []LLMResponse{
 		{
 			Message: Message{
 				Role: RoleAssistant,
@@ -98,9 +106,10 @@ func TestExecuteEvents_ToolLoop(t *testing.T) {
 	}
 
 	// Expected: UsageReported (tool call), event.ToolCallStarted,
-	// event.ToolCallFinished, UsageReported (final), event.TurnFinished
-	if len(events) != 5 {
-		t.Fatalf("expected 5 events, got %d: %+v", len(events), events)
+	// event.ToolCallFinished, TextDelta (onDelta from final response),
+	// UsageReported (final), event.TurnFinished
+	if len(events) != 6 {
+		t.Fatalf("expected 6 events, got %d: %+v", len(events), events)
 	}
 
 	// First event: usage report for tool call (iteration 1)
@@ -124,7 +133,7 @@ func TestExecuteEvents_ToolLoop(t *testing.T) {
 	// Third event: tool finished
 	finishEv, ok := events[2].(event.ToolCallFinished)
 	if !ok {
-		t.Fatalf("expected event.ToolCallFinished, got %T", events[3])
+		t.Fatalf("expected event.ToolCallFinished, got %T", events[2])
 	}
 	if finishEv.Result.IsError() {
 		t.Fatalf("unexpected tool error: %v", finishEv.Result.Err)
@@ -133,16 +142,25 @@ func TestExecuteEvents_ToolLoop(t *testing.T) {
 		t.Fatalf("unexpected tool result: %q", finishEv.Result.Output)
 	}
 
-	// Fourth event: usage report for final LLM response
-	_, ok = events[3].(event.UsageReported)
+	// Fourth event: TextDelta from final LLM response (adapter always streams)
+	deltaEv, ok := events[3].(event.TextDelta)
 	if !ok {
-		t.Fatalf("expected UsageReported, got %T", events[3])
+		t.Fatalf("expected event.TextDelta, got %T", events[3])
+	}
+	if deltaEv.Delta != "Hello, world!" {
+		t.Fatalf("expected delta 'Hello, world!', got %q", deltaEv.Delta)
 	}
 
-	// Fifth event: turn finished
-	turnEv, ok := events[4].(event.TurnFinished)
+	// Fifth event: usage report for final LLM response
+	_, ok = events[4].(event.UsageReported)
 	if !ok {
-		t.Fatalf("expected event.TurnFinished, got %T", events[4])
+		t.Fatalf("expected UsageReported, got %T", events[4])
+	}
+
+	// Sixth event: turn finished
+	turnEv, ok := events[5].(event.TurnFinished)
+	if !ok {
+		t.Fatalf("expected event.TurnFinished, got %T", events[5])
 	}
 	if turnEv.Reply != "Hello, world!" {
 		t.Fatalf("expected 'Hello, world!', got %q", turnEv.Reply)
@@ -165,7 +183,7 @@ func TestExecuteEvents_MaxIterations(t *testing.T) {
 			}},
 		},
 	}
-	conv, _, _, tools := newTestComponents(t, []LLMResponse{loop, loop, loop, loop, loop})
+	conv, _, tools := newTestComponents(t, []LLMResponse{loop, loop, loop, loop, loop})
 	tools.Register(Tool{
 		Schema: ToolSchema{Name: "noop2"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
@@ -193,7 +211,7 @@ func TestExecuteEvents_MaxIterations(t *testing.T) {
 }
 
 func TestExecuteEvents_ErrorResult(t *testing.T) {
-	conv, _, _, tools := newTestComponents(t, []LLMResponse{
+	conv, _, tools := newTestComponents(t, []LLMResponse{
 		{
 			Message: Message{
 				Role: RoleAssistant,
@@ -229,12 +247,12 @@ func TestExecuteEvents_ErrorResult(t *testing.T) {
 	_ = events
 }
 
-func TestExecuteEvents_StreamSession(t *testing.T) {
-	_, streamer, _, _ := newTestComponents(t, []LLMResponse{
+func TestExecuteEvents_Stream(t *testing.T) {
+	conv, _, _ := newTestComponents(t, []LLMResponse{
 		{Message: Message{Role: RoleAssistant, Content: "streamed hello"}},
 	})
 
-	eventCh, err := streamer.Execute(context.Background(), "", "hi")
+	eventCh, err := conv.Execute(context.Background(), "", "hi")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -277,7 +295,7 @@ func TestExecuteEvents_StreamSession(t *testing.T) {
 // carry consolidated session statistics (TotalCost, MessageCount,
 // EstimatedContextTokens, Model) for client-side display.
 func TestTurnFinishedCarriesSessionStats(t *testing.T) {
-	conv, _, _, _ := newTestComponents(t, []LLMResponse{
+	conv, _, _ := newTestComponents(t, []LLMResponse{
 		{
 			Message:      Message{Role: RoleAssistant, Content: "stats check"},
 			FinishReason: "stop",

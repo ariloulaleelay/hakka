@@ -38,6 +38,11 @@ func Open(dsn string) (*Store, error) {
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
 
+	// Drop the deprecated streaming column (adapter decides streaming now).
+	if err := store.DropStreamingColumn(ctx); err != nil {
+		return nil, fmt.Errorf("drop streaming column: %w", err)
+	}
+
 	return store, nil
 }
 

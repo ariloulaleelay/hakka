@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ariloulaleelay/hakka/agent/event"
@@ -29,7 +31,7 @@ type fakeAdapter struct {
 // TestUsageDurationIsMeasured verifies that the Duration field on the
 // assistant message's Usage is populated after a non-streaming turn.
 func TestUsageDurationIsMeasured(t *testing.T) {
-	conv, _, _, _ := newTestComponents(t, []LLMResponse{
+	conv, _, _ := newTestComponents(t, []LLMResponse{
 		{
 			Message:      Message{Role: RoleAssistant, Content: "measured reply"},
 			FinishReason: "stop",
@@ -63,7 +65,7 @@ func TestUsageDurationIsMeasured(t *testing.T) {
 // TestUsageDurationTrackedInEvent verifies that the Duration is reported
 // in the UsageReported event emitted during a turn.
 func TestUsageDurationTrackedInEvent(t *testing.T) {
-	conv, _, _, _ := newTestComponents(t, []LLMResponse{
+	conv, _, _ := newTestComponents(t, []LLMResponse{
 		{
 			Message:      Message{Role: RoleAssistant, Content: "event duration"},
 			FinishReason: "stop",
@@ -115,18 +117,18 @@ func TestUsageDurationJSONRoundTrip(t *testing.T) {
 }
 
 // TestUsageDurationViaStream verifies that the Duration field is populated
-// when using the streaming path (StreamSession.Execute).
+// when using the streaming path (conv.Execute with stream=true).
 func TestUsageDurationViaStream(t *testing.T) {
-	_, streamer, _, _ := newTestComponents(t, []LLMResponse{
+	conv, _, _ := newTestComponents(t, []LLMResponse{
 		{
 			Message:      Message{Role: RoleAssistant, Content: "stream duration"},
 			FinishReason: "stop",
 			Usage:        &Usage{PromptTokens: 7, CompletionTokens: 4, TotalTokens: 11},
 		},
 	})
-	eventCh, err := streamer.Execute(context.Background(), "stream-duration", "hi")
+	eventCh, err := conv.Execute(context.Background(), "stream-duration", "hi")
 	if err != nil {
-		t.Fatalf("StreamSession.Execute: %v", err)
+		t.Fatalf("conv.Execute: %v", err)
 	}
 	for evt := range eventCh {
 		if te, ok := evt.(event.TurnFinished); ok {
@@ -137,7 +139,7 @@ func TestUsageDurationViaStream(t *testing.T) {
 	}
 
 	// Retrieve the session and check the assistant message has duration set.
-	sm := streamer.conv.sessions
+	sm := conv.sessions
 	session, err := sm.GetOrCreate(context.Background(), "testns", "stream-duration")
 	if err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
@@ -161,7 +163,7 @@ func TestUsageDurationViaStream(t *testing.T) {
 	}
 }
 
-func (f *fakeAdapter) Complete(_ context.Context, msgs []Message, tools []ToolSchema, _ CompleteOptions) (*LLMResponse, error) {
+func (f *fakeAdapter) Complete(_ context.Context, msgs []Message, tools []ToolSchema, _ CompleteOptions, onDelta func(string)) (*LLMResponse, error) {
 	f.lastMsgs = msgs
 	f.lastTools = tools
 	if f.calls >= len(f.responses) {
@@ -169,36 +171,66 @@ func (f *fakeAdapter) Complete(_ context.Context, msgs []Message, tools []ToolSc
 	}
 	r := f.responses[f.calls]
 	f.calls++
+	if onDelta != nil && r.Message.Content != "" {
+		onDelta(r.Message.Content)
+	}
 	return &r, nil
 }
 
-func (f *fakeAdapter) Stream(_ context.Context, msgs []Message, _ []ToolSchema, _ CompleteOptions) (<-chan StreamResult, error) {
-	f.lastMsgs = msgs
-	if f.calls >= len(f.responses) {
-		return nil, errors.New("fake: ran out of scripted responses")
-	}
-	r := f.responses[f.calls]
-	f.calls++
-	ch := make(chan StreamResult, 4)
-	content := r.Message.Content
-	mid := len(content) / 2
-	if mid > 0 {
-		ch <- StreamResult{Delta: content[:mid]}
-	}
-	if mid < len(content) {
-		ch <- StreamResult{Delta: content[mid:]}
-	}
-	for _, tc := range r.Message.ToolCalls {
-		ch <- StreamResult{ToolCalls: []ToolCall{tc}, Usage: r.Usage, FinishReason: r.FinishReason}
-	}
-	if len(r.Message.ToolCalls) == 0 {
-		ch <- StreamResult{Done: true, Usage: r.Usage, FinishReason: r.FinishReason}
-	}
-	close(ch)
-	return ch, nil
+// copyBackStore returns deep copies on Get and stores deep copies on Put.
+// This simulates SQLiteStore behavior where each Get returns a fresh object.
+type copyBackStore struct {
+	mu   sync.RWMutex
+	data map[string]SessionData
 }
 
-func newTestComponents(t *testing.T, responses []LLMResponse) (*Conversation, *StreamSession, *fakeAdapter, *ToolRegistry) {
+func newCopyBackStore() *copyBackStore {
+	return &copyBackStore{data: make(map[string]SessionData)}
+}
+
+func (c *copyBackStore) key(namespace, id string) string { return namespace + ":" + id }
+
+func (c *copyBackStore) Get(_ context.Context, namespace, id string) (*Session, bool, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	d, ok := c.data[c.key(namespace, id)]
+	if !ok {
+		return nil, false, nil
+	}
+	cp := d.DeepCopy()
+	return NewSessionFromData(&cp), true, nil
+}
+
+func (c *copyBackStore) Put(_ context.Context, namespace string, s *Session) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	data := s.Read()
+	c.data[c.key(namespace, data.ID)] = data
+	return nil
+}
+
+func (c *copyBackStore) Delete(_ context.Context, namespace, id string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.data, c.key(namespace, id))
+	return nil
+}
+
+func (c *copyBackStore) List(_ context.Context, namespace string) ([]*Session, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var out []*Session
+	for key, d := range c.data {
+		if len(key) > len(namespace) && key[:len(namespace)] == namespace && key[len(namespace)] == ':' {
+			cp := d.DeepCopy()
+			out = append(out, NewSessionFromData(&cp))
+		}
+	}
+	return out, nil
+}
+
+
+func newTestComponents(t *testing.T, responses []LLMResponse) (*Conversation, *fakeAdapter, *ToolRegistry) {
 	t.Helper()
 	adapter := &fakeAdapter{responses: responses}
 	sm := NewSessionManager(nil, "sys")
@@ -209,8 +241,7 @@ func newTestComponents(t *testing.T, responses []LLMResponse) (*Conversation, *S
 	cfg := EngineConfig{MaxToolIterations: 4, Logger: testLogger(t)}
 	ns := "testns"
 	conv := NewConversation(sm, router, tools, ns, cfg)
-	streamer := NewStreamSession(conv, ns)
-	return conv, streamer, adapter, tools
+	return conv, adapter, tools
 }
 
 func executeSync(conv *Conversation, ctx context.Context, sessionID, input string) (*Session, string, error) {
@@ -259,7 +290,7 @@ func testLogger(t *testing.T) *slog.Logger {
 }
 
 func TestEngineChatNoTools(t *testing.T) {
-	conv, _, adapter, _ := newTestComponents(t, []LLMResponse{
+	conv, adapter, _ := newTestComponents(t, []LLMResponse{
 		{Message: Message{Role: RoleAssistant, Content: "hello back"}, FinishReason: "stop"},
 	})
 	session, reply, err := executeSync(conv, context.Background(), "", "hi")
@@ -281,7 +312,7 @@ func TestEngineChatNoTools(t *testing.T) {
 }
 
 func TestEngineChatToolLoop(t *testing.T) {
-	conv, _, adapter, tools := newTestComponents(t, []LLMResponse{
+	conv, adapter, tools := newTestComponents(t, []LLMResponse{
 		{
 			Message: Message{
 				Role: RoleAssistant,
@@ -326,13 +357,13 @@ func TestEngineChatToolLoop(t *testing.T) {
 	}
 }
 
-func TestEngineChatWithStreamSessionExecute(t *testing.T) {
-	_, streamer, adapter, _ := newTestComponents(t, []LLMResponse{
+func TestExecute_WithStream(t *testing.T) {
+	conv, adapter, _ := newTestComponents(t, []LLMResponse{
 		{Message: Message{Role: RoleAssistant, Content: "streamed hello"}, FinishReason: "stop"},
 	})
-	eventCh, err := streamer.Execute(context.Background(), "stream-test", "hi")
+	eventCh, err := conv.Execute(context.Background(), "stream-test", "hi")
 	if err != nil {
-		t.Fatalf("StreamSession.Execute: %v", err)
+		t.Fatalf("conv.Execute: %v", err)
 	}
 	var reply string
 	for evt := range eventCh {
@@ -352,7 +383,7 @@ func TestEngineChatWithStreamSessionExecute(t *testing.T) {
 }
 
 func TestEngineChatTokenTracking(t *testing.T) {
-	conv, _, _, _ := newTestComponents(t, []LLMResponse{
+	conv, _, _ := newTestComponents(t, []LLMResponse{
 		{
 			Message:      Message{Role: RoleAssistant, Content: "first"},
 			FinishReason: "stop",
@@ -370,7 +401,7 @@ func TestEngineChatTokenTracking(t *testing.T) {
 }
 
 func TestEngineChatTokensAccumulateAcrossTurns(t *testing.T) {
-	conv, _, _, _ := newTestComponents(t, []LLMResponse{
+	conv, _, _ := newTestComponents(t, []LLMResponse{
 		{
 			Message:      Message{Role: RoleAssistant, Content: "first"},
 			FinishReason: "stop",
@@ -391,7 +422,7 @@ func TestEngineChatTokensAccumulateAcrossTurns(t *testing.T) {
 // provider is stored on the assistant Message, not just accumulated in
 // Session.TotalTokens.
 func TestMessageUsageStored(t *testing.T) {
-	conv, _, _, _ := newTestComponents(t, []LLMResponse{
+	conv, _, _ := newTestComponents(t, []LLMResponse{
 		{
 			Message:      Message{Role: RoleAssistant, Content: "hi there"},
 			FinishReason: "stop",
@@ -462,18 +493,18 @@ func TestMessageUsageJSONRoundTrip(t *testing.T) {
 }
 
 // TestMessageUsageViaStream verifies that per-message token usage is stored
-// even when using the streaming path (StreamSession.Execute).
+// even when using the streaming path (conv.Execute).
 func TestMessageUsageViaStream(t *testing.T) {
-	_, streamer, _, _ := newTestComponents(t, []LLMResponse{
+	conv, _, _ := newTestComponents(t, []LLMResponse{
 		{
 			Message:      Message{Role: RoleAssistant, Content: "streamed reply"},
 			FinishReason: "stop",
 			Usage:        &Usage{PromptTokens: 7, CompletionTokens: 4, TotalTokens: 11},
 		},
 	})
-	eventCh, err := streamer.Execute(context.Background(), "stream-usage", "hi")
+	eventCh, err := conv.Execute(context.Background(), "stream-usage", "hi")
 	if err != nil {
-		t.Fatalf("StreamSession.Execute: %v", err)
+		t.Fatalf("conv.Execute: %v", err)
 	}
 	for evt := range eventCh {
 		if te, ok := evt.(event.TurnFinished); ok {
@@ -484,7 +515,7 @@ func TestMessageUsageViaStream(t *testing.T) {
 	}
 
 	// Retrieve the session and check the assistant message has usage.
-	sm := streamer.conv.sessions
+	sm := conv.sessions
 	session, err := sm.GetOrCreate(context.Background(), "testns", "stream-usage")
 	if err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
@@ -507,11 +538,9 @@ func TestMessageUsageViaStream(t *testing.T) {
 	}
 }
 
-// TestStreamSession_AutoRename verifies that auto-rename fires after a
-// streaming turn with enough user messages. This is a regression test:
-// StreamSession.runStream was not calling autoRenameIfNeeded (only
-// Conversation.runEvents did), so streaming users never saw auto-rename.
-func TestStreamSession_AutoRename(t *testing.T) {
+// TestExecute_AutoRenameViaStream verifies that auto-rename fires after a
+// streaming turn with enough user messages.
+func TestExecute_AutoRenameViaStream(t *testing.T) {
 	adapter := &namingTestAdapter{
 		responses: []response{
 			{msg: Message{Role: RoleAssistant, Content: "hello back"}},
@@ -524,7 +553,6 @@ func TestStreamSession_AutoRename(t *testing.T) {
 	tools := NewToolRegistry()
 	cfg := EngineConfig{MaxToolIterations: 5, Logger: testLogger(t)}
 	conv := NewConversation(sm, router, tools, "testns", cfg)
-	streamer := NewStreamSession(conv, "testns")
 
 	// Seed the session with 2 user messages (so threshold is met).
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "stream-auto")
@@ -535,9 +563,9 @@ func TestStreamSession_AutoRename(t *testing.T) {
 	_ = sm.Save(context.Background(), "testns", session)
 
 	// Run a third turn via streaming — this should trigger auto-rename.
-	eventCh, err := streamer.Execute(context.Background(), "stream-auto", "third message")
+	eventCh, err := conv.Execute(context.Background(), "stream-auto", "third message")
 	if err != nil {
-		t.Fatalf("StreamSession.Execute: %v", err)
+		t.Fatalf("conv.Execute: %v", err)
 	}
 	for evt := range eventCh {
 		if te, ok := evt.(event.TurnFinished); ok {
@@ -682,7 +710,7 @@ func TestEngineChat_SaveFailureBeforeAutoRename(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestConversationExecuteEmptyInput(t *testing.T) {
-	conv, _, adapter, _ := newTestComponents(t, []LLMResponse{
+	conv, adapter, _ := newTestComponents(t, []LLMResponse{
 		{Message: Message{Role: RoleAssistant, Content: "first reply"}, FinishReason: "stop"},
 		{Message: Message{Role: RoleAssistant, Content: "continued"}, FinishReason: "stop"},
 	})
@@ -726,20 +754,274 @@ func TestConversationExecuteEmptyInput(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Execute with empty input — no user message appended (used by /continue)
-// ---------------------------------------------------------------------------
+// TestToolCallBrokenJSONArguments tests that broken JSON in tool call
+// arguments (e.g. truncated by MAX_TOKENS) rejects the response.
+func TestToolCallBrokenJSONArguments(t *testing.T) {
+	conv, _, tools := newTestComponents(t, []LLMResponse{
+		{
+			Message: Message{
+				Role: RoleAssistant,
+				ToolCalls: []ToolCall{{
+					ID: "call-broken", Name: "echo_tool", Arguments: `{"message": "`,
+				}},
+			},
+			FinishReason: "MAX_TOKENS",
+		},
+	})
+	tools.Register(Tool{
+		Schema: ToolSchema{
+			Name:        "echo_tool",
+			Description: "Echoes input",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"message": map[string]any{"type": "string"}},
+			},
+		},
+		Handler: func(_ context.Context, raw json.RawMessage) (string, error) {
+			return "echoed", nil
+		},
+	})
 
-func TestStreamSessionExecuteEmptyInput(t *testing.T) {
-	_, streamer, adapter, _ := newTestComponents(t, []LLMResponse{
+	session, err := conv.sessions.GetOrCreate(context.Background(), "testns", "broken-json-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.EnableTool("echo_tool")
+	if err := conv.sessions.Save(context.Background(), "testns", session); err != nil {
+		t.Fatal(err)
+	}
+
+	eventCh, err := conv.Execute(context.Background(), "broken-json-test", "echo something")
+	if err != nil {
+		t.Fatalf("Execute returned unexpected error: %v", err)
+	}
+
+	var turnErr error
+	for evt := range eventCh {
+		if te, ok := evt.(event.TurnFinished); ok {
+			turnErr = te.Err
+		}
+	}
+	if turnErr == nil {
+		t.Fatal("expected error for broken JSON arguments, got nil")
+	}
+
+	for _, m := range session.Messages() {
+		if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
+			t.Fatalf("tool calls recorded despite broken JSON: %+v", m.ToolCalls)
+		}
+	}
+}
+
+// TestToolCallEmptyArguments tests that empty tool call arguments are
+// normalised to {} rather than rejected.
+func TestToolCallEmptyArguments(t *testing.T) {
+	conv, _, tools := newTestComponents(t, []LLMResponse{
+		{
+			Message: Message{
+				Role: RoleAssistant,
+				ToolCalls: []ToolCall{{
+					ID: "call-empty", Name: "list_dir_tool", Arguments: "",
+				}},
+			},
+			FinishReason: "tool_calls",
+		},
+		{
+			Message:      Message{Role: RoleAssistant, Content: "listed the directory"},
+			FinishReason: "stop",
+		},
+	})
+
+	var listDirCalled bool
+	tools.Register(Tool{
+		Schema: ToolSchema{
+			Name:        "list_dir_tool",
+			Description: "Lists directory entries",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"path": map[string]any{"type": "string"}},
+			},
+		},
+		Handler: func(_ context.Context, raw json.RawMessage) (string, error) {
+			listDirCalled = true
+			return "listed", nil
+		},
+	})
+
+	session, err := conv.sessions.GetOrCreate(context.Background(), "testns", "empty-args-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.EnableTool("list_dir_tool")
+	if err := conv.sessions.Save(context.Background(), "testns", session); err != nil {
+		t.Fatal(err)
+	}
+
+	eventCh, err := conv.Execute(context.Background(), "empty-args-test", "list the dir")
+	if err != nil {
+		t.Fatalf("Execute returned unexpected error: %v", err)
+	}
+
+	var turnErr error
+	for evt := range eventCh {
+		if te, ok := evt.(event.TurnFinished); ok {
+			turnErr = te.Err
+		}
+	}
+	if turnErr != nil {
+		t.Fatalf("unexpected error for empty args: %v", turnErr)
+	}
+	if !listDirCalled {
+		t.Fatal("list_dir_tool was not executed — empty args should have been normalised to {}")
+	}
+}
+
+// TestExecute_MidTurnToolEnable verifies that a tool handler can enable
+// another tool via context injection, and the engine sees it in the next
+// iteration — even with a deep-copy store (SQLite).
+func TestExecute_MidTurnToolEnable(t *testing.T) {
+	store := newCopyBackStore()
+	sm := NewSessionManager(store, "sys")
+	session, err := sm.GetOrCreate(context.Background(), "testns", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tools := NewToolRegistry()
+	var testToolExecuted bool
+	tools.Register(Tool{
+		Schema: ToolSchema{Name: "test_tool"},
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			testToolExecuted = true
+			return "test_tool executed!", nil
+		},
+	})
+	tools.Register(Tool{
+		Schema: ToolSchema{Name: "inline_enable"},
+		Tags:   []string{"tool"},
+		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+			var args struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(raw, &args); err != nil {
+				return "", err
+			}
+			sess, ok := event.SessionViewFromContext(ctx).(SessionToolEditor)
+			if !ok || sess == nil {
+				return "", fmt.Errorf("inline_enable: no session in context")
+			}
+			sess.EnableTool(args.Name)
+			return "enabled " + args.Name, nil
+		},
+	})
+
+	// Enable only inline_enable initially — test_tool must be discovered.
+	session.EnableTool("inline_enable")
+	if err := sm.Save(context.Background(), "testns", session); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &fakeAdapter{
+		responses: []LLMResponse{
+			{
+				Message: Message{
+					Role: RoleAssistant,
+					ToolCalls: []ToolCall{{
+						ID: "call-1", Name: "inline_enable", Arguments: `{"name":"test_tool"}`,
+					}},
+				},
+				FinishReason: "tool_calls",
+			},
+			{
+				Message: Message{
+					Role: RoleAssistant,
+					ToolCalls: []ToolCall{{
+						ID: "call-2", Name: "test_tool", Arguments: `{}`,
+					}},
+				},
+				FinishReason: "tool_calls",
+			},
+			{
+				Message:      Message{Role: RoleAssistant, Content: "done"},
+				FinishReason: "stop",
+			},
+		},
+	}
+
+	reg := NewRegistry()
+	reg.Register("default", adapter)
+	router := NewRouter(reg)
+
+	cfg := EngineConfig{MaxToolIterations: 4, Logger: testLogger(t)}
+	conv := NewConversation(sm, router, tools, "testns", cfg)
+
+	eventCh, err := conv.Execute(context.Background(), session.SessionID(), "enable test_tool and use it")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var reply string
+	for evt := range eventCh {
+		if te, ok := evt.(event.TurnFinished); ok {
+			if te.Err != nil {
+				t.Fatalf("TurnFinished error: %v", te.Err)
+			}
+			reply = te.Reply
+		}
+	}
+
+	if reply != "done" {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if adapter.calls != 3 {
+		t.Fatalf("expected 3 LLM calls, got %d", adapter.calls)
+	}
+	if !testToolExecuted {
+		t.Fatal("test_tool was NOT executed — context injection should have enabled it")
+	}
+}
+
+// TestExecute_EstimatedContextStored verifies that the session carries
+// a positive estimated context token count after a turn.
+func TestExecute_EstimatedContextStored(t *testing.T) {
+	conv, _, _ := newTestComponents(t, []LLMResponse{
+		{Message: Message{Role: RoleAssistant, Content: "hello"}, FinishReason: "stop"},
+	})
+
+	// Pre-seed the session with some messages so there's context to estimate.
+	sm := conv.sessions
+	session, err := sm.GetOrCreate(context.Background(), "testns", "ect-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Append(Message{Role: RoleUser, Content: "What is the meaning of life?"})
+	session.Append(Message{Role: RoleAssistant, Content: "42. It is the answer."})
+	if err := sm.Save(context.Background(), "testns", session); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err2 := executeSync(conv, context.Background(), "ect-test", "elaborate")
+	if err2 != nil {
+		t.Fatalf("Execute: %v", err2)
+	}
+
+	session, _ = sm.GetOrCreate(context.Background(), "testns", "ect-test")
+	estimated := session.GetEstimatedContextTokens()
+	if estimated <= 0 {
+		t.Fatalf("expected positive estimated context tokens, got %d", estimated)
+	}
+}
+
+
+func TestExecute_EmptyInputViaStream(t *testing.T) {
+	conv, adapter, _ := newTestComponents(t, []LLMResponse{
 		{Message: Message{Role: RoleAssistant, Content: "first stream reply"}, FinishReason: "stop"},
 		{Message: Message{Role: RoleAssistant, Content: "stream continued"}, FinishReason: "stop"},
 	})
 
 	// First, execute a normal turn to create the session.
-	eventCh, err := streamer.Execute(context.Background(), "stream-empty-test", "hello")
+	eventCh, err := conv.Execute(context.Background(), "stream-empty-test", "hello")
 	if err != nil {
-		t.Fatalf("first StreamSession.Execute: %v", err)
+		t.Fatalf("first conv.Execute: %v", err)
 	}
 	for evt := range eventCh {
 		if te, ok := evt.(event.TurnFinished); ok {
@@ -750,14 +1032,14 @@ func TestStreamSessionExecuteEmptyInput(t *testing.T) {
 	}
 
 	// Count existing messages.
-	sm := streamer.conv.sessions
+	sm := conv.sessions
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "stream-empty-test")
 	initialMsgCount := len(session.Messages())
 
 	// Now execute with empty input — should NOT add a user message.
-	eventCh2, err := streamer.Execute(context.Background(), "stream-empty-test", "")
+	eventCh2, err := conv.Execute(context.Background(), "stream-empty-test", "")
 	if err != nil {
-		t.Fatalf("StreamSession.Execute with empty input: %v", err)
+		t.Fatalf("conv.Execute with empty input: %v", err)
 	}
 	var reply string
 	for evt := range eventCh2 {

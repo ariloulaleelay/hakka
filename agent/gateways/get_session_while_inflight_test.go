@@ -40,9 +40,8 @@ func TestGetSessionDuringActiveTurn(t *testing.T) {
 	cfg := agent.EngineConfig{MaxToolIterations: 2}
 	ns := "testns_get_session_while_inflight"
 	conv := agent.NewConversation(sm, router, tools, ns, cfg)
-	streamer := agent.NewStreamSession(conv, ns)
 	cmd := commands.New(sm, conv, "", ns)
-	handler := NewTurnHandler(conv, streamer, cmd, ns)
+	handler := NewTurnHandler(conv, cmd, ns)
 
 	// Create a session and send a chat to start a turn that blocks.
 	session, err := sm.GetOrCreate(context.Background(), ns, "")
@@ -60,7 +59,6 @@ func TestGetSessionDuringActiveTurn(t *testing.T) {
 	go handler.HandleRequest(context.Background(), FrameRequest{
 		SessionID: session.SessionID(),
 		Input:     "hello",
-		Stream:    true,
 	}, chatWriter, responseReader)
 
 	// Wait for the turn to actually start and subscribe.
@@ -171,7 +169,7 @@ type blockingAdapter struct {
 	mu      sync.Mutex
 }
 
-func (a *blockingAdapter) Complete(ctx context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (*agent.LLMResponse, error) {
+func (a *blockingAdapter) Complete(ctx context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions, _ func(string)) (*agent.LLMResponse, error) {
 	a.mu.Lock()
 	a.called = true
 	a.mu.Unlock()
@@ -183,21 +181,6 @@ func (a *blockingAdapter) Complete(ctx context.Context, _ []agent.Message, _ []a
 		Message:      agent.Message{Role: agent.RoleAssistant, Content: "done"},
 		FinishReason: "stop",
 	}, nil
-}
-
-func (a *blockingAdapter) Stream(ctx context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	a.mu.Lock()
-	a.called = true
-	a.mu.Unlock()
-	ch := make(chan agent.StreamResult, 2)
-	select {
-	case <-a.blockCh:
-	case <-ctx.Done():
-	}
-	ch <- agent.StreamResult{Delta: "done"}
-	ch <- agent.StreamResult{Done: true}
-	close(ch)
-	return ch, nil
 }
 
 // TestGetSessionDuringActiveTurnViaWebSocket is the same test but through
@@ -216,9 +199,8 @@ func TestGetSessionDuringActiveTurnViaWebSocket(t *testing.T) {
 	cfg := agent.EngineConfig{MaxToolIterations: 2}
 	ns := "test_ws_get_session_inflight"
 	conv := agent.NewConversation(sm, router, tools, ns, cfg)
-	streamer := agent.NewStreamSession(conv, ns)
 	cmd := commands.New(sm, conv, "", ns)
-	gw := NewWebSocketGateway(conv, streamer, cmd, freeAddr(t))
+	gw := NewWebSocketGateway(conv, cmd, freeAddr(t))
 
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
@@ -245,7 +227,6 @@ func TestGetSessionDuringActiveTurnViaWebSocket(t *testing.T) {
 		"type":       "chat",
 		"session_id": session.SessionID(),
 		"input":      "hello that blocks",
-		"stream":     true,
 	})
 
 	// Wait for the turn to actually start running.

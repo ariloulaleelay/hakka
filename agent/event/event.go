@@ -11,7 +11,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Engine events — typed events emitted by Conversation/StreamSession
+// Engine events — typed events emitted by Conversation
 // during a single turn. Transports consume these and convert them to
 // wire frames.
 // ---------------------------------------------------------------------------

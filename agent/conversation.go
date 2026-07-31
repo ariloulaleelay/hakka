@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"time"
 
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
@@ -15,9 +14,8 @@ import (
 // the channel. The channel is closed when the turn finishes.
 type eventSender chan<- event.EngineEvent
 
-// TurnExecutor is the interface that both Conversation and StreamSession
-// implement, allowing gateways to treat streaming and non-streaming turns
-// uniformly.
+// TurnExecutor is the interface that Conversation implements, allowing
+// gateways to run turns uniformly.
 type TurnExecutor interface {
 	Execute(ctx context.Context, sessionID, userInput string) (<-chan event.EngineEvent, error)
 }
@@ -191,16 +189,32 @@ func (conv *Conversation) resolveNamespace(ctx context.Context) string {
 // the LLM picks up from the existing context. This is used by /continue
 // after network crashes.
 //
-// Implements TurnExecutor.
+// The engine always provides an onDelta callback to the adapter; the
+// adapter decides whether to stream progress deltas or ignore it.
 func (conv *Conversation) Execute(ctx context.Context, sessionID, userInput string) (<-chan event.EngineEvent, error) {
 	if event.NamespaceFromContext(ctx) == "" {
 		ctx = event.ContextWithNamespace(ctx, conv.namespace)
+	}
+	saveFn := func(ctx context.Context, session SessionView) error {
+		return conv.sessions.Save(ctx, conv.resolveNamespace(ctx), session)
+	}
+	renameFn := func(ctx context.Context, s SessionView, events eventSender) {
+		oldName := s.SessionName()
+		conv.autoRenameIfNeeded(ctx, s)
+		newName := s.SessionName()
+		if newName != "" && newName != oldName {
+			events <- event.SessionRenamed{
+				SessionID: s.SessionID(),
+				OldName:   oldName,
+				NewName:   newName,
+			}
+		}
 	}
 	session, err := conv.prepareWithInput(ctx, sessionID, userInput)
 	if err != nil {
 		return nil, err
 	}
-	return conv.runTurnWithStep(ctx, session, conv.turnRunner.defaultStep(session)), nil
+	return conv.turnRunner.executeTurn(ctx, session, saveFn, renameFn), nil
 }
 
 // prepareWithInput gets or creates a session. If userInput is non-empty,
@@ -213,67 +227,12 @@ func (conv *Conversation) prepareWithInput(ctx context.Context, sessionID, userI
 	}
 	conv.EnsureDefaultModel(ctx, session)
 	if userInput != "" {
-		session.Update(func(d *SessionData) { d.Streaming = false; d.UpdatedAt = time.Now() })
 		session.Append(Message{Role: RoleUser, Content: userInput, Timestamp: nowMillis()})
 		if err := conv.sessions.Save(ctx, ns, session); err != nil {
 			return nil, err
 		}
 	}
 	return session, nil
-}
-
-// runTurnWithStep runs the tool loop in a background goroutine and returns
-// an event channel. It is the shared core used by both Conversation.Execute
-// and StreamSession.Execute, eliminating the duplication between the two.
-//
-// The step function defines how the LLM response is obtained (streaming or
-// non-streaming); everything else (session persistence, auto-rename, event
-// emission) is handled here once.
-func (conv *Conversation) runTurnWithStep(ctx context.Context, session SessionView, step stepFunc) <-chan event.EngineEvent {
-	eventCh := make(chan event.EngineEvent, 256)
-	go func() {
-		defer close(eventCh)
-
-		// saveFn is the persistence callback that turnRunner calls after
-		// every iteration round. We provide it here so turnRunner does
-		// not need to know about session persistence.
-		saveFn := func(ctx context.Context, session SessionView) error {
-			return conv.finishTurn(ctx, session)
-		}
-
-		reply, err := conv.turnRunner.run(ctx, session, eventCh, step, saveFn)
-
-		if err == nil {
-			if saveErr := saveFn(ctx, session); saveErr != nil {
-				conv.config.Logger.Error("failed to save session after turn",
-					"session", session.SessionID(), "error", saveErr)
-				err = fmt.Errorf("save session: %w", saveErr)
-			} else {
-				oldName := session.SessionName()
-				conv.autoRenameIfNeeded(ctx, session)
-				newName := session.SessionName()
-				if newName != "" && newName != oldName {
-					eventCh <- event.SessionRenamed{
-						SessionID: session.SessionID(),
-						OldName:   oldName,
-						NewName:   newName,
-					}
-				}
-			}
-		}
-
-		eventCh <- event.TurnFinished{
-			SessionID:              session.SessionID(),
-			Reply:                  reply,
-			Err:                    err,
-			TotalTokens:            session.TotalTokenUsage(),
-			TotalCost:              session.TotalCost(),
-			MessageCount:           len(session.Messages()),
-			EstimatedContextTokens: session.GetEstimatedContextTokens(),
-			Model:                  session.GetModel(),
-		}
-	}()
-	return eventCh
 }
 
 // SessionModel returns the model name, the registry default if none is set,
@@ -326,10 +285,6 @@ func (e *errMsg) Is(target error) bool {
 	return e.msg == t.msg
 }
 
-// finishTurn persists the session.
-func (conv *Conversation) finishTurn(ctx context.Context, session SessionView) error {
-	return conv.sessions.Save(ctx, conv.resolveNamespace(ctx), session)
-}
 
 // ---------------------------------------------------------------------------
 // Auto-rename — uses the LLM to generate a short session name after

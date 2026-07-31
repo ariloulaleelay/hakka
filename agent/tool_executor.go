@@ -39,9 +39,10 @@ func newToolExecutor(tools *ToolRegistry, toolContext ToolContextDecorator, hook
 // ExecuteToolCalls hooks MUST be the serialised hooks created by
 // SerialisedHooks, not the bare base hooks — tool goroutines run
 // concurrently and would race on the shared hook writer otherwise.
-func (ex *toolExecutor) ExecuteToolCalls(ctx context.Context, session SessionView, calls []ToolCall, events eventSender, hooks Hooks) {
+func (ex *toolExecutor) ExecuteToolCalls(ctx context.Context, session SessionView, calls []ToolCall, events eventSender, hooks Hooks) []Message {
 	results := ex.runToolsConcurrently(ctx, session, calls, events, hooks)
-	ex.appendToolResults(session, calls, results)
+	result := ex.appendToolResults(session, calls, results)
+	return result
 }
 
 // SerialisedHooks invokes every callback under the provided mutex,
@@ -152,16 +153,19 @@ func (ex *toolExecutor) runSingleTool(ctx context.Context, session SessionView, 
 
 // appendToolResults adds tool-role messages to the session, one per call,
 // preserving the order of the original calls slice.
-func (ex *toolExecutor) appendToolResults(session SessionView, calls []ToolCall, results []string) {
+func (ex *toolExecutor) appendToolResults(session SessionView, calls []ToolCall, results []string) []Message {
+	result := make([]Message, len(calls))
+	now := nowMillis()
 	for i, call := range calls {
-		session.Append(Message{
+		result[i] = Message{
 			Role:       RoleTool,
 			Content:    results[i],
 			ToolCallID: call.ID,
 			Name:       call.Name,
-			Timestamp:  nowMillis(),
-		})
+			Timestamp:  now,
+		}
 	}
+	return result
 }
 
 // fireToolCall invokes the OnToolCall callback if set.

@@ -4,30 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
 	"github.com/ariloulaleelay/hakka/agent"
 )
 
-// AnthropicAdapter speaks the Anthropic Messages API but is exposed via
-// hakka's OpenAI-shaped internal protocol.
 type AnthropicAdapter struct {
-	HTTPClient  *http.Client
-	BaseURL     string
-	Model       string
-	Version     string // anthropic-version header; default "2023-06-01"
-	MaxTokens   int    // required by Anthropic; default 1024
-	Pricing     agent.Pricing
-	LLMDebugDir string // when non-empty, request/response payloads are logged here
-
-	// RetryConfig controls the retry policy for HTTP 429 rate-limit errors.
-	// Zero values use sensible defaults.
-	RetryConfig agent.RetryConfig
+	HTTPClient *http.Client
+	BaseURL    string
+	Model      string
+	Config     AnthropicConfig
 }
 
-func NewAnthropicAdapter(client *http.Client, baseURL, model string) *AnthropicAdapter {
+func NewAnthropicAdapter(client *http.Client, baseURL, model string, cfg AnthropicConfig) *AnthropicAdapter {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -35,12 +25,11 @@ func NewAnthropicAdapter(client *http.Client, baseURL, model string) *AnthropicA
 		HTTPClient: client,
 		BaseURL:    strings.TrimRight(baseURL, "/"),
 		Model:      model,
-		Version:    "2023-06-01",
-		MaxTokens:  1024,
+		Config:     cfg,
 	}
 }
 
-// --- protocol structs -------------------------------------------------------
+// ===== Protocol types =====
 
 type anthMessage struct {
 	Role    string      `json:"role"`
@@ -54,7 +43,7 @@ type anthBlock struct {
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"` // tool_result text
+	Content   string          `json:"content,omitempty"`
 }
 
 type anthTool struct {
@@ -83,10 +72,9 @@ type anthResponse struct {
 	} `json:"usage"`
 }
 
-// --- conversion -------------------------------------------------------------
+// ===== Encode (hakka → Anthropic) =====
 
-// toAnthropicSystem collects system-prompt messages into one string.
-func toAnthropicSystem(system string, content string) string {
+func toAnthropicSystem(system, content string) string {
 	if system == "" {
 		return content
 	}
@@ -119,15 +107,15 @@ func textAndToolBlocks(content string, toolCalls []agent.ToolCall) []anthBlock {
 	if content != "" {
 		blocks = append(blocks, anthBlock{Type: "text", Text: content})
 	}
-	for _, toolCall := range toolCalls {
-		args := toolCall.Arguments
+	for _, tc := range toolCalls {
+		args := tc.Arguments
 		if args == "" {
 			args = "{}"
 		}
 		blocks = append(blocks, anthBlock{
 			Type:  "tool_use",
-			ID:    toolCall.ID,
-			Name:  toolCall.Name,
+			ID:    tc.ID,
+			Name:  tc.Name,
 			Input: json.RawMessage(args),
 		})
 	}
@@ -144,10 +132,7 @@ func appendToolResultBlock(messages []anthMessage, toolCallID, content string) [
 		messages[len(messages)-1].Content = append(messages[len(messages)-1].Content, block)
 		return messages
 	}
-	return append(messages, anthMessage{
-		Role:    "user",
-		Content: []anthBlock{block},
-	})
+	return append(messages, anthMessage{Role: "user", Content: []anthBlock{block}})
 }
 
 func toAnthropic(history []agent.Message) (system string, messages []anthMessage) {
@@ -171,21 +156,19 @@ func toAnthropicTools(tools []agent.ToolSchema) []anthTool {
 		return nil
 	}
 	out := make([]anthTool, 0, len(tools))
-	for _, toolDef := range tools {
-		schema := toolDef.Parameters
+	for _, td := range tools {
+		schema := td.Parameters
 		if schema == nil {
 			schema = map[string]any{"type": "object", "properties": map[string]any{}}
 		}
 		out = append(out, anthTool{
-			Name:        toolDef.Name,
-			Description: toolDef.Description,
+			Name:        td.Name,
+			Description: td.Description,
 			InputSchema: schema,
 		})
 	}
 	return out
 }
-
-// --- request building -------------------------------------------------------
 
 func (ad *AnthropicAdapter) buildRequest(history []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) anthRequest {
 	system, msgs := toAnthropic(history)
@@ -194,7 +177,7 @@ func (ad *AnthropicAdapter) buildRequest(history []agent.Message, tools []agent.
 		System:    system,
 		Messages:  msgs,
 		Tools:     toAnthropicTools(tools),
-		MaxTokens: ad.MaxTokens,
+		MaxTokens: ad.Config.MaxTokens,
 	}
 	if opts.MaxTokens != nil {
 		req.MaxTokens = *opts.MaxTokens
@@ -202,68 +185,30 @@ func (ad *AnthropicAdapter) buildRequest(history []agent.Message, tools []agent.
 	return req
 }
 
-func (ad *AnthropicAdapter) buildStreamRequest(history []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) anthRequest {
-	req := ad.buildRequest(history, tools, opts)
-	req.Stream = true
-	return req
-}
+// ===== Decode (Anthropic → hakka) =====
 
-func (ad *AnthropicAdapter) messagesURL() string {
-	return ad.BaseURL + "/messages"
-}
-
-func (ad *AnthropicAdapter) extraHeaders() map[string]string {
-	h := map[string]string{}
-	if ad.Version != "" {
-		h["anthropic-version"] = ad.Version
-	}
-	return h
-}
-
-// --- Complete ---------------------------------------------------------------
-
-func (ad *AnthropicAdapter) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (*agent.LLMResponse, error) {
-	// First decode into raw JSON to extract cost
-	var rawBody json.RawMessage
-	if ad.RetryConfig.IsZero() {
-		if err := doJSONPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildRequest(msgs, tools, opts), &rawBody, "anthropic", ad.extraHeaders(), ad.LLMDebugDir); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := retryOnRateLimit(ctx, ad.RetryConfig, func() error {
-			return doJSONPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildRequest(msgs, tools, opts), &rawBody, "anthropic", ad.extraHeaders(), ad.LLMDebugDir)
-		}); err != nil {
-			return nil, err
-		}
-	}
-
+func (ad *AnthropicAdapter) parseResponse(rawBody []byte) (*agent.LLMResponse, error) {
 	raw := extractRawUsage(rawBody)
 
-	var anthResp anthResponse
-	if err := json.Unmarshal(rawBody, &anthResp); err != nil {
+	var resp anthResponse
+	if err := json.Unmarshal(rawBody, &resp); err != nil {
 		return nil, fmt.Errorf("anthropic: decode response: %w", err)
-	}
-
-	// Determine cost: use provider's cost if available, otherwise calculate from pricing
-	cost := raw.cost
-	if cost == 0 && (ad.Pricing.Input != 0 || ad.Pricing.Output != 0) {
-		cost = calculateCostFromPricing(ad.Pricing, raw)
 	}
 
 	out := &agent.LLMResponse{
 		Message:      agent.Message{Role: agent.RoleAssistant},
-		FinishReason: anthResp.StopReason,
+		FinishReason: resp.StopReason,
 		Usage: &agent.Usage{
-			PromptTokens:          anthResp.Usage.InputTokens,
-			CompletionTokens:      anthResp.Usage.OutputTokens,
-			TotalTokens:           anthResp.Usage.InputTokens + anthResp.Usage.OutputTokens,
+			PromptTokens:          resp.Usage.InputTokens,
+			CompletionTokens:      resp.Usage.OutputTokens,
+			TotalTokens:           resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			PromptCacheHitTokens:  raw.promptCacheHit,
 			PromptCacheMissTokens: raw.promptCacheMiss,
-			Cost:                  cost,
+			Cost:                  ad.Config.ResolveCost(raw),
 		},
 	}
 	var text strings.Builder
-	for _, block := range anthResp.Content {
+	for _, block := range resp.Content {
 		switch block.Type {
 		case "text":
 			text.WriteString(block.Text)
@@ -283,105 +228,166 @@ func (ad *AnthropicAdapter) Complete(ctx context.Context, msgs []agent.Message, 
 	return out, nil
 }
 
-// --- Stream -----------------------------------------------------------------
+// ===== LLMAdapter =====
 
-func (ad *AnthropicAdapter) Stream(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	var body io.ReadCloser
-	if ad.RetryConfig.IsZero() {
-		var err error
-		body, err = doStreamPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildStreamRequest(msgs, tools, opts), "anthropic", ad.extraHeaders(), ad.LLMDebugDir)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		if err := retryOnRateLimit(ctx, ad.RetryConfig, func() error {
-			var err error
-			body, err = doStreamPost(ctx, ad.HTTPClient, ad.messagesURL(), ad.buildStreamRequest(msgs, tools, opts), "anthropic", ad.extraHeaders(), ad.LLMDebugDir)
-			return err
-		}); err != nil {
-			return nil, err
-		}
+func (ad *AnthropicAdapter) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions, onDelta func(string)) (*agent.LLMResponse, error) {
+	if onDelta != nil {
+		return ad.completeStream(ctx, msgs, tools, opts, onDelta)
 	}
-
-	resultCh := make(chan agent.StreamResult, 16)
-
-	go func() {
-		defer close(resultCh)
-		defer body.Close()
-
-		accum := newIndexAccumulator()
-		var pendingUsage *agent.Usage
-		var pendingFinishReason string
-
-		scanErr := scanSSELines(ctx, body, func(payload string) error {
-			result, parseErr := ad.parseSSEPayload(payload)
-			if parseErr != nil {
-				return parseErr
-			}
-			if result == nil {
-				return nil
-			}
-
-			if result.Delta != "" {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case resultCh <- agent.StreamResult{Delta: result.Delta}:
-				}
-			}
-
-			if result.ToolCall != nil {
-				accum.add(result.BlockIndex, result.ToolCall.ID, result.ToolCall.Name, "")
-			}
-
-			if result.PartialJSON != "" {
-				accum.add(result.BlockIndex, "", "", result.PartialJSON)
-			}
-
-			pendingFinishReason = result.FinishReason
-
-			if result.Done {
-				sendStreamFinal(resultCh, accum.flush(), pendingUsage, pendingFinishReason)
-				return io.EOF
-			}
-
-			if result.Usage != nil {
-				pendingUsage = result.Usage
-			}
-			return nil
-		})
-		if scanErr != nil && scanErr != io.EOF {
-			resultCh <- agent.StreamResult{Err: scanErr}
-			return
-		}
-	}()
-
-	return resultCh, nil
+	return ad.completeNonStream(ctx, msgs, tools, opts)
 }
 
-// parsedAnthEvent holds the parsed result of a single SSE payload.
+func (ad *AnthropicAdapter) completeNonStream(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (*agent.LLMResponse, error) {
+	rawBody, err := doJSONPostWithRetry(ctx, ad.HTTPClient, ad.messagesURL(),
+		ad.buildRequest(msgs, tools, opts), ad.Config.RetryPolicy(),
+		"anthropic", ad.headers(), ad.Config.DebugDir())
+	if err != nil {
+		return nil, err
+	}
+	return ad.parseResponse(rawBody)
+}
+
+func (ad *AnthropicAdapter) messagesURL() string {
+	return ad.BaseURL + "/messages"
+}
+
+func (ad *AnthropicAdapter) headers() map[string]string {
+	h := map[string]string{}
+	if ad.Config.Version != "" {
+		h["anthropic-version"] = ad.Config.Version
+	}
+	return h
+}
+
+// ===== Stream =====
+
+func (ad *AnthropicAdapter) completeStream(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions, onDelta func(string)) (*agent.LLMResponse, error) {
+	req := ad.buildRequest(msgs, tools, opts)
+	req.Stream = true
+
+	body, err := doStreamPostWithRetry(ctx, ad.HTTPClient, ad.messagesURL(), req,
+		ad.Config.RetryPolicy(), "anthropic", ad.headers(), ad.Config.DebugDir())
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+
+	accum := newIndexAccumulator()
+	var textBuf strings.Builder
+	var pendingUsage *agent.Usage
+	var finishReason string
+
+	// input tokens arrive in message_start; output tokens in message_delta.
+	var inputTokens int
+
+	scanErr := scanSSE(body, func(payload string) error {
+		evt, err := ad.parseSSEPayload(payload)
+		if err != nil {
+			return err
+		}
+		if evt == nil {
+			return nil
+		}
+		// A single event may carry several fields (e.g. message_delta has
+		// both usage and finish_reason), so handle each independently.
+		if evt.InputTokens != nil {
+			inputTokens = *evt.InputTokens
+		}
+		if evt.Delta != "" {
+			textBuf.WriteString(evt.Delta)
+			onDelta(evt.Delta)
+		}
+		if evt.ToolCall != nil {
+			accum.add(evt.BlockIndex, evt.ToolCall.ID, evt.ToolCall.Name, "")
+		}
+		if evt.PartialJSON != "" {
+			accum.add(evt.BlockIndex, "", "", evt.PartialJSON)
+		}
+		if evt.Usage != nil {
+			pendingUsage = evt.Usage
+		}
+		if evt.FinishReason != "" {
+			finishReason = evt.FinishReason
+		}
+		if evt.Done {
+			return nil
+		}
+		return nil
+	})
+	if scanErr != nil {
+		return nil, scanErr
+	}
+
+	if pendingUsage == nil {
+		pendingUsage = &agent.Usage{}
+	}
+	if inputTokens > 0 && pendingUsage.PromptTokens == 0 {
+		pendingUsage.PromptTokens = inputTokens
+	}
+	// Total is always the sum of input + output for Anthropic; recompute it
+	// since prompt tokens arrive in message_start and output in message_delta.
+	if pendingUsage.CompletionTokens > 0 || pendingUsage.PromptTokens > 0 {
+		pendingUsage.TotalTokens = pendingUsage.PromptTokens + pendingUsage.CompletionTokens
+	}
+	// Recompute cost from the final token counts: message_delta only carried
+	// output_tokens, so pricing computed there would miss the input tokens.
+	pendingUsage.Cost = ad.Config.ResolveCost(RawUsage{
+		promptTokens:     pendingUsage.PromptTokens,
+		completionTokens: pendingUsage.CompletionTokens,
+		promptCacheHit:   pendingUsage.PromptCacheHitTokens,
+		promptCacheMiss:  pendingUsage.PromptCacheMissTokens,
+	})
+
+	return &agent.LLMResponse{
+		Message: agent.Message{
+			Role:      agent.RoleAssistant,
+			Content:   textBuf.String(),
+			ToolCalls: accum.flush(),
+		},
+		FinishReason: finishReason,
+		Usage:        pendingUsage,
+	}, nil
+}
+
 type parsedAnthEvent struct {
 	Delta        string
-	PartialJSON  string          // incremental JSON from input_json_delta events
-	BlockIndex   int             // content block index (for tool calls and partial JSON)
+	PartialJSON  string
+	BlockIndex   int
 	ToolCall     *agent.ToolCall
 	Done         bool
 	Usage        *agent.Usage
 	FinishReason string
+	InputTokens  *int
 }
 
 func (ad *AnthropicAdapter) parseSSEPayload(payload string) (*parsedAnthEvent, error) {
 	var base struct {
-		Type string `json:"type"`
+		Type    string `json:"type"`
+		Message struct {
+			Usage struct {
+				InputTokens int `json:"input_tokens"`
+			} `json:"usage"`
+		} `json:"message"`
+		Error *struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal([]byte(payload), &base); err != nil {
-		return nil, nil // skip unparseable events
+		return nil, nil
 	}
 
 	switch base.Type {
+	case "message_start":
+		if base.Message.Usage.InputTokens > 0 {
+			tokens := base.Message.Usage.InputTokens
+			return &parsedAnthEvent{InputTokens: &tokens}, nil
+		}
+		return nil, nil
+
 	case "content_block_start":
 		var evt struct {
-			Index int `json:"index"`
+			Index        int `json:"index"`
 			ContentBlock struct {
 				Type  string          `json:"type"`
 				ID    string          `json:"id"`
@@ -396,9 +402,8 @@ func (ad *AnthropicAdapter) parseSSEPayload(payload string) (*parsedAnthEvent, e
 			return &parsedAnthEvent{
 				BlockIndex: evt.Index,
 				ToolCall: &agent.ToolCall{
-					ID:        evt.ContentBlock.ID,
-					Name:      evt.ContentBlock.Name,
-					Arguments: "", // arguments arrive via input_json_delta events
+					ID:   evt.ContentBlock.ID,
+					Name: evt.ContentBlock.Name,
 				},
 			}, nil
 		}
@@ -422,10 +427,7 @@ func (ad *AnthropicAdapter) parseSSEPayload(payload string) (*parsedAnthEvent, e
 			}
 		case "input_json_delta":
 			if evt.Delta.PartialJSON != "" {
-				return &parsedAnthEvent{
-					PartialJSON: evt.Delta.PartialJSON,
-					BlockIndex:  evt.Index,
-				}, nil
+				return &parsedAnthEvent{PartialJSON: evt.Delta.PartialJSON, BlockIndex: evt.Index}, nil
 			}
 		}
 
@@ -436,7 +438,6 @@ func (ad *AnthropicAdapter) parseSSEPayload(payload string) (*parsedAnthEvent, e
 				StopSequence string `json:"stop_sequence"`
 			} `json:"delta"`
 			Usage struct {
-				InputTokens  int `json:"input_tokens"`
 				OutputTokens int `json:"output_tokens"`
 			} `json:"usage"`
 		}
@@ -444,24 +445,25 @@ func (ad *AnthropicAdapter) parseSSEPayload(payload string) (*parsedAnthEvent, e
 			return nil, nil
 		}
 		raw := extractRawUsage([]byte(payload))
-		cost := raw.cost
-		if cost == 0 && (ad.Pricing.Input != 0 || ad.Pricing.Output != 0) {
-			cost = calculateCostFromPricing(ad.Pricing, raw)
-		}
 		return &parsedAnthEvent{
 			FinishReason: evt.Delta.StopReason,
 			Usage: &agent.Usage{
-				PromptTokens:          evt.Usage.InputTokens,
+				PromptTokens:          0, // filled from message_start
 				CompletionTokens:      evt.Usage.OutputTokens,
-				TotalTokens:           evt.Usage.InputTokens + evt.Usage.OutputTokens,
+				TotalTokens:           evt.Usage.OutputTokens,
 				PromptCacheHitTokens:  raw.promptCacheHit,
 				PromptCacheMissTokens: raw.promptCacheMiss,
-				Cost:                  cost,
+				Cost:                  ad.Config.ResolveCost(raw),
 			},
 		}, nil
 
 	case "message_stop":
 		return &parsedAnthEvent{Done: true}, nil
+
+	case "error":
+		if base.Error != nil {
+			return nil, fmt.Errorf("anthropic: %s: %s", base.Error.Type, base.Error.Message)
+		}
 	}
 
 	return nil, nil

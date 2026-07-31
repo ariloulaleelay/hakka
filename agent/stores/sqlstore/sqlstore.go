@@ -123,6 +123,27 @@ func (s *Store) MigrateFromOldSchema(ctx context.Context) error {
 	return nil
 }
 
+// DropStreamingColumn removes the deprecated streaming column from the
+// sessions table. The streaming decision is now made by adapters, not
+// stored per-session. This is safe to call on databases that never had
+// the column (the "no such column" error is silently ignored).
+func (s *Store) DropStreamingColumn(ctx context.Context) error {
+	var err error
+	switch s.dialect {
+	case Postgres:
+		_, err = s.db.ExecContext(ctx, `ALTER TABLE sessions DROP COLUMN IF EXISTS streaming`)
+	case SQLite:
+		_, err = s.db.ExecContext(ctx, `ALTER TABLE sessions DROP COLUMN streaming`)
+		if err != nil && strings.Contains(err.Error(), "no such column") {
+			err = nil
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("drop streaming column: %w", err)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // SessionStore implementation
 // ---------------------------------------------------------------------------
@@ -171,16 +192,12 @@ func (s *Store) Put(ctx context.Context, namespace string, session *agent.Sessio
 	if err != nil {
 		return err
 	}
-	streamingInt := 0
-	if data.Streaming {
-		streamingInt = 1
-	}
 
 	_, err = s.db.ExecContext(ctx, s.upsertSession(),
 		namespace, data.ID, data.SystemPrompt, string(createdText), string(updatedText),
 		data.ClientCWD, data.Model, data.TotalTokens,
 		data.Name, enabledJSON, blockedJSON, data.CompactSoftLimit,
-		data.EstimatedContextTokens, data.TotalCost, activeSkillsJSON, streamingInt,
+		data.EstimatedContextTokens, data.TotalCost, activeSkillsJSON,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert session: %w", err)
@@ -253,7 +270,6 @@ func (s *Store) sessionsDDL() string {
 	estimated_context_tokens INTEGER NOT NULL DEFAULT 0,
 	total_cost     DOUBLE PRECISION NOT NULL DEFAULT 0,
 	active_skills  TEXT NOT NULL DEFAULT '[]',
-	streaming      INTEGER NOT NULL DEFAULT 1,
 	PRIMARY KEY (namespace, id)
 )`
 	default:
@@ -273,7 +289,6 @@ func (s *Store) sessionsDDL() string {
 	estimated_context_tokens INTEGER NOT NULL DEFAULT 0,
 	total_cost     REAL NOT NULL DEFAULT 0,
 	active_skills  TEXT NOT NULL DEFAULT '[]',
-	streaming      INTEGER NOT NULL DEFAULT 1,
 	PRIMARY KEY (namespace, id)
 )`
 	}
@@ -332,13 +347,13 @@ func (s *Store) selectSession() string {
 		return `SELECT namespace, id, system_prompt, created_at, updated_at, client_cwd,
 			model, total_tokens, name, enabled_tools, blocked_tools,
 			compact_soft_limit, estimated_context_tokens, total_cost,
-			active_skills, streaming
+			active_skills
 		FROM sessions WHERE namespace = $1 AND id = $2`
 	default:
 		return `SELECT namespace, id, system_prompt, created_at, updated_at, client_cwd,
 			model, total_tokens, name, enabled_tools, blocked_tools,
 			compact_soft_limit, estimated_context_tokens, total_cost,
-			active_skills, streaming
+			active_skills
 		FROM sessions WHERE namespace = ? AND id = ?`
 	}
 }
@@ -349,13 +364,13 @@ func (s *Store) selectSessionsByNamespace() string {
 		return `SELECT namespace, id, system_prompt, created_at, updated_at, client_cwd,
 			model, total_tokens, name, enabled_tools, blocked_tools,
 			compact_soft_limit, estimated_context_tokens, total_cost,
-			active_skills, streaming
+			active_skills
 		FROM sessions WHERE namespace = $1 ORDER BY updated_at DESC`
 	default:
 		return `SELECT namespace, id, system_prompt, created_at, updated_at, client_cwd,
 			model, total_tokens, name, enabled_tools, blocked_tools,
 			compact_soft_limit, estimated_context_tokens, total_cost,
-			active_skills, streaming
+			active_skills
 		FROM sessions WHERE namespace = ? ORDER BY updated_at DESC`
 	}
 }
@@ -363,8 +378,8 @@ func (s *Store) selectSessionsByNamespace() string {
 func (s *Store) upsertSession() string {
 	switch s.dialect {
 	case Postgres:
-		return `INSERT INTO sessions (namespace, id, system_prompt, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills, streaming)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		return `INSERT INTO sessions (namespace, id, system_prompt, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		ON CONFLICT(namespace, id) DO UPDATE SET
 			system_prompt = EXCLUDED.system_prompt,
 			updated_at    = EXCLUDED.updated_at,
@@ -377,11 +392,10 @@ func (s *Store) upsertSession() string {
 			compact_soft_limit = EXCLUDED.compact_soft_limit,
 			estimated_context_tokens = EXCLUDED.estimated_context_tokens,
 			total_cost    = EXCLUDED.total_cost,
-			active_skills = EXCLUDED.active_skills,
-			streaming     = EXCLUDED.streaming`
+			active_skills = EXCLUDED.active_skills`
 	default:
-		return `INSERT INTO sessions (namespace, id, system_prompt, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills, streaming)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		return `INSERT INTO sessions (namespace, id, system_prompt, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(namespace, id) DO UPDATE SET
 			system_prompt = excluded.system_prompt,
 			updated_at    = excluded.updated_at,
@@ -394,8 +408,7 @@ func (s *Store) upsertSession() string {
 			compact_soft_limit = excluded.compact_soft_limit,
 			estimated_context_tokens = excluded.estimated_context_tokens,
 			total_cost    = excluded.total_cost,
-			active_skills = excluded.active_skills,
-			streaming     = excluded.streaming`
+			active_skills = excluded.active_skills`
 	}
 }
 
@@ -458,7 +471,6 @@ func (s *Store) scanSession(scanner interface{ Scan(dest ...any) error }) (*agen
 		compactSoftLim         int
 		estimatedContextTokens int
 		activeSkillsStr        string
-		streamingInt           int
 	)
 	err := scanner.Scan(
 		&data.Namespace, &data.ID, &data.SystemPrompt,
@@ -466,12 +478,10 @@ func (s *Store) scanSession(scanner interface{ Scan(dest ...any) error }) (*agen
 		&data.ClientCWD, &modelStr, &totalTokens,
 		&data.Name, &enabledStr, &blockedStr, &compactSoftLim,
 		&estimatedContextTokens, &totalCost, &activeSkillsStr,
-		&streamingInt,
 	)
 	if err != nil {
 		return nil, err
 	}
-	data.Streaming = streamingInt != 0
 	data.Model = modelStr
 	data.TotalTokens = totalTokens
 	data.TotalCost = totalCost

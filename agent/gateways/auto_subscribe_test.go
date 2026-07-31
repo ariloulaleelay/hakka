@@ -14,9 +14,9 @@ import (
 // TestConnectPushFrames verifies what frames the server sends immediately
 // on connect (welcome + potentially auto-subscribe frames).
 func TestConnectPushFrames(t *testing.T) {
-	conv, streamer, cmd := newGatewayComponents("pong")
+	conv, cmd := newGatewayComponents("pong")
 	addr := freeAddr(t)
-	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	gw := NewWebSocketGateway(conv, cmd, addr)
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -79,9 +79,9 @@ func TestConnectPushFrames(t *testing.T) {
 // result (e.g. session_create → type="session" event="session_create"),
 // not the auto-subscription frame.
 func TestAutoSubscribeDoesNotInterfereWithCommands(t *testing.T) {
-	conv, streamer, cmd := newGatewayComponents("pong")
+	conv, cmd := newGatewayComponents("pong")
 	addr := freeAddr(t)
-	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	gw := NewWebSocketGateway(conv, cmd, addr)
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -183,9 +183,9 @@ func TestAutoSubscribeDoesNotInterfereWithCommands(t *testing.T) {
 // consumed) correctly creates a new session instead of returning the
 // old session's data.
 func TestAutoSubscribeSessionCreate(t *testing.T) {
-	conv, streamer, cmd := newGatewayComponents("pong")
+	conv, cmd := newGatewayComponents("pong")
 	addr := freeAddr(t)
-	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	gw := NewWebSocketGateway(conv, cmd, addr)
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}

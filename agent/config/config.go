@@ -28,22 +28,22 @@ type RetryConfigRaw struct {
 
 // ModelConfig describes a single named LLM endpoint.
 type ModelConfig struct {
-	Dialect          string            `json:"dialect"`                     // openai | anthropic | gemini
-	BaseURL          string            `json:"base_url"`                    // provider base URL
-	Model            string            `json:"model"`                       // provider model id
-	Headers          map[string]string `json:"headers,omitempty"`           // extra HTTP headers
-	Extra            map[string]any    `json:"extra,omitempty"`             // provider-specific knobs (anthropic_version, max_tokens, ...)
-	Pricing          *agent.Pricing    `json:"pricing,omitempty"`           // per-token pricing for cost calculation when provider doesn't return cost
+	Dialect          string            `json:"dialect"`                      // openai | anthropic | gemini | deepseek | openai-responses
+	BaseURL          string            `json:"base_url"`                     // provider base URL
+	Model            string            `json:"model"`                        // provider model id
+	Headers          map[string]string `json:"headers,omitempty"`            // extra HTTP headers
+	Extra            map[string]any    `json:"extra,omitempty"`              // provider-specific knobs (anthropic_version, max_tokens, ...)
+	Pricing          *agent.Pricing    `json:"pricing,omitempty"`            // per-token pricing for cost calculation when provider doesn't return cost
 	CompactSoftLimit int               `json:"compact_soft_limit,omitempty"` // per-provider compact soft limit (0 = use engine default)
-	Hacks            agent.Hacks       `json:"hacks,omitempty"`             // per-provider workarounds
-	RetryConfig      *RetryConfigRaw   `json:"retry_config,omitempty"`      // per-provider retry policy
+	Hacks            agent.Hacks       `json:"hacks,omitempty"`              // per-provider workarounds
+	RetryConfig      *RetryConfigRaw   `json:"retry_config,omitempty"`       // per-provider retry policy
 }
 
 type File struct {
-	Default     string                          `json:"default"`
-	Models      map[string]ModelConfig          `json:"models"`
-	MCPServers  map[string]MCPServerConfig      `json:"mcp_servers,omitempty"`
-	FeedbackURL string                          `json:"feedback_url,omitempty"`
+	Default     string                     `json:"default"`
+	Models      map[string]ModelConfig     `json:"models"`
+	MCPServers  map[string]MCPServerConfig `json:"mcp_servers,omitempty"`
+	FeedbackURL string                     `json:"feedback_url,omitempty"`
 }
 
 type MCPServerConfig struct {
@@ -276,42 +276,45 @@ func BuildRegistry(cfgFile *File, llmDebugDir string) (*agent.Registry, error) {
 }
 
 func buildAdapter(name string, modelCfg ModelConfig, client *http.Client, llmDebugDir string) (agent.LLMAdapter, error) {
+	retryCfg := modelCfg.RetryConfig.toAgent()
+	var pricing agent.Pricing
+	if modelCfg.Pricing != nil {
+		pricing = *modelCfg.Pricing
+	}
+
 	switch strings.ToLower(modelCfg.Dialect) {
 	case "openai":
 		cfg := openai.DefaultConfig("dummy-key")
 		cfg.BaseURL = modelCfg.BaseURL
-		// Wrap transport to inject extra body fields (e.g. session_id for OpenRouter).
 		client.Transport = adapters.WrapTransport(client.Transport, modelCfg.Extra, llmDebugDir)
 		cfg.HTTPClient = client
-		adapter := adapters.NewOpenAIAdapter(openai.NewClientWithConfig(cfg), modelCfg.Model)
-		adapter.LLMDebugDir = llmDebugDir
-		adapter.Extra = modelCfg.Extra
-		if modelCfg.Pricing != nil {
-			adapter.Pricing = *modelCfg.Pricing
-		}
-		adapter.RetryConfig = modelCfg.RetryConfig.toAgent()
+		adCfg := adapters.NewOpenAIConfig(llmDebugDir, retryCfg, pricing, modelCfg.Extra)
+		adapter := adapters.NewOpenAIAdapter(openai.NewClientWithConfig(cfg), modelCfg.Model, adCfg)
 		return adapter, nil
 	case "anthropic":
-		adapter := adapters.NewAnthropicAdapter(client, modelCfg.BaseURL, modelCfg.Model)
-		adapter.LLMDebugDir = llmDebugDir
-		if version, ok := modelCfg.Extra["anthropic_version"].(string); ok && version != "" {
-			adapter.Version = version
+		version := ""
+		if v, ok := modelCfg.Extra["anthropic_version"].(string); ok {
+			version = v
 		}
-		if maxTokens, ok := modelCfg.Extra["max_tokens"].(float64); ok {
-			adapter.MaxTokens = int(maxTokens)
+		maxTokens := 0
+		if v, ok := modelCfg.Extra["max_tokens"].(float64); ok {
+			maxTokens = int(v)
 		}
-		if modelCfg.Pricing != nil {
-			adapter.Pricing = *modelCfg.Pricing
-		}
-		adapter.RetryConfig = modelCfg.RetryConfig.toAgent()
+		adCfg := adapters.NewAnthropicConfig(llmDebugDir, retryCfg, pricing, version, maxTokens)
+		adapter := adapters.NewAnthropicAdapter(client, modelCfg.BaseURL, modelCfg.Model, adCfg)
 		return adapter, nil
 	case "gemini", "google":
-		adapter := adapters.NewGeminiAdapter(client, modelCfg.BaseURL, modelCfg.Model)
-		adapter.LLMDebugDir = llmDebugDir
-		if modelCfg.Pricing != nil {
-			adapter.Pricing = *modelCfg.Pricing
-		}
-		adapter.RetryConfig = modelCfg.RetryConfig.toAgent()
+		adCfg := adapters.NewGeminiConfig(llmDebugDir, retryCfg, pricing)
+		adapter := adapters.NewGeminiAdapter(client, modelCfg.BaseURL, modelCfg.Model, adCfg)
+		return adapter, nil
+	case "deepseek":
+		client.Transport = adapters.WrapTransport(client.Transport, modelCfg.Extra, llmDebugDir)
+		adCfg := adapters.NewDeepSeekConfig(llmDebugDir, retryCfg, pricing, modelCfg.Extra)
+		adapter := adapters.NewDeepSeekAdapter(client, modelCfg.BaseURL, modelCfg.Model, adCfg)
+		return adapter, nil
+	case "openai-responses":
+		adCfg := adapters.NewOpenAIResponsesConfig(llmDebugDir, retryCfg, pricing)
+		adapter := adapters.NewOpenAIResponsesAdapter(client, modelCfg.BaseURL, modelCfg.Model, adCfg)
 		return adapter, nil
 	default:
 		return nil, fmt.Errorf("config: model %q: unknown dialect %q", name, modelCfg.Dialect)

@@ -12,15 +12,10 @@ import (
 // fakeAdapter is a minimal adapter for command tests.
 type fakeAdapter struct{}
 
-func (f *fakeAdapter) Complete(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (*agent.LLMResponse, error) {
+func (f *fakeAdapter) Complete(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions, _ func(string)) (*agent.LLMResponse, error) {
 	return &agent.LLMResponse{Message: agent.Message{Role: agent.RoleAssistant, Content: "ok"}}, nil
 }
 
-func (f *fakeAdapter) Stream(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	ch := make(chan agent.StreamResult)
-	close(ch)
-	return ch, nil
-}
 
 // newCommandComponents builds the trio directly, bypassing Engine.
 func newCommandComponents(t *testing.T) (*agent.Conversation, *CommandProcessor, *agent.SessionManager) {

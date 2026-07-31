@@ -24,7 +24,7 @@ type scriptedAdapter struct {
 	calls     int
 }
 
-func (a *scriptedAdapter) Complete(_ context.Context, msgs []agent.Message, tools []agent.ToolSchema, _ agent.CompleteOptions) (*agent.LLMResponse, error) {
+func (a *scriptedAdapter) Complete(_ context.Context, msgs []agent.Message, tools []agent.ToolSchema, _ agent.CompleteOptions, _ func(string)) (*agent.LLMResponse, error) {
 	if a.calls >= len(a.responses) {
 		return nil, errors.New("scripted: out of responses")
 	}
@@ -33,9 +33,6 @@ func (a *scriptedAdapter) Complete(_ context.Context, msgs []agent.Message, tool
 	return &r, nil
 }
 
-func (a *scriptedAdapter) Stream(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	return nil, errors.New("scripted: stream not implemented")
-}
 
 // ---------------------------------------------------------------------------
 // A tool that echoes its arguments back.

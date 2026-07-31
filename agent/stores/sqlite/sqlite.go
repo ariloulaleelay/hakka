@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -70,6 +71,11 @@ func Open(path string) (*Store, error) {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate old schema: %w", err)
 		}
+	}
+
+	// Drop the deprecated streaming column (adapter decides streaming now).
+	if err := store.DropStreamingColumn(ctx); err != nil {
+		slog.Warn("sqlite: failed to drop streaming column", "error", err)
 	}
 
 	return store, nil

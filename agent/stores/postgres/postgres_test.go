@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/ariloulaleelay/hakka/agent"
 )
@@ -230,32 +229,6 @@ func TestMessages_with_tool_calls_round_trip(t *testing.T) {
 	}
 	if msgs[1].ToolCallID != "call_1" {
 		t.Fatalf("tool_call_id not preserved: %q", msgs[1].ToolCallID)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Streaming flag persistence
-// ---------------------------------------------------------------------------
-
-func TestStreaming_is_preserved_across_Put_and_Get(t *testing.T) {
-	ctx := context.Background()
-	s := newStore(t)
-	ns := "streaming-ns"
-
-	sess := agent.NewSession(ns, "test")
-	sess.Update(func(d *agent.SessionData) { d.Streaming = true; d.UpdatedAt = time.Now() })
-	if err := s.Put(ctx, ns, sess); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	got, ok, err := s.Get(ctx, ns, sess.SessionID())
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if !ok {
-		t.Fatal("session not found")
-	}
-	if !got.Read().Streaming {
-		t.Fatal("expected Streaming=true after round-trip")
 	}
 }
 

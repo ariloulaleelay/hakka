@@ -6,6 +6,8 @@
   - [x] Remove "hidden" keywords
   - [ ] Add more logs (I want to see what happens during session and at what state we are)
   - [x] Better readme
+  - [x] Dedicated deepseek adapter
+  - [ ] Dedicated openai gpt adapter
 - [ ] Stability
   - [ ] If user reports problem, fix states, to maybe detect error.
 - [ ] Telegram gateway

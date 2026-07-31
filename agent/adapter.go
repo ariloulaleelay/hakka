@@ -87,50 +87,18 @@ type LLMResponse struct {
 	Usage        *Usage
 }
 
-// StreamResult is a single event from a streaming LLM response.
-// Exactly one of Delta, ToolCalls, Done, or Err is non-zero.
-type StreamResult struct {
-	// Delta is a text content chunk.
-	Delta string
-
-	// ToolCalls contains all tool calls the model made in this round.
-	// If non-nil, the stream has ended for this assistant turn and the
-	// caller should execute the tools, append results, and start a new
-	// stream if it wants to continue.
-	ToolCalls []ToolCall
-
-	// Done is true when the stream finished successfully with no more
-	// content.
-	Done bool
-
-	// Err is set when the stream encountered a terminal error.
-	Err error
-
-	// Usage may be set on the Done event or earlier if the provider
-	// reports it mid-stream.
-	Usage *Usage
-
-	// FinishReason is the provider's stop reason (e.g. "stop",
-	// "tool_calls", "end_turn", "length"). Only meaningful on the
-	// final event of the stream (Done or ToolCalls).
-	FinishReason string
-}
-
 // LLMAdapter abstracts an LLM provider (OpenAI, Anthropic, Ollama, ...).
 // Implementations should be safe for concurrent use.
+//
+// The engine always passes a non-nil onDelta callback. Adapters that
+// support streaming may call onDelta for each text token as it arrives,
+// giving the client incremental progress feedback. Adapters that do not
+// support streaming simply ignore onDelta and return the full response in
+// LLMResponse.Message.Content — that content is the source of truth
+// regardless of whether onDelta was used.
+//
+// The returned LLMResponse always contains the full accumulated text and
+// any tool calls.
 type LLMAdapter interface {
-	Complete(ctx context.Context, msgs []Message, tools []ToolSchema, opts CompleteOptions) (*LLMResponse, error)
-
-	// Stream returns a channel of StreamResult events for a single
-	// assistant turn. The caller receives text deltas (Delta) and,
-	// if the model requests tools, a single event with ToolCalls set.
-	// When ToolCalls is non-nil, the caller should execute the tools,
-	// append results to the session, and may call Stream again to
-	// continue. A final event with Done=true (or Err) terminates the
-	// channel.
-	//
-	// On initialisation failure (bad URL, auth), Stream returns the
-	// error immediately. On mid-stream errors, the error is delivered
-	// through the channel.
-	Stream(ctx context.Context, msgs []Message, tools []ToolSchema, opts CompleteOptions) (<-chan StreamResult, error)
+	Complete(ctx context.Context, msgs []Message, tools []ToolSchema, opts CompleteOptions, onDelta func(string)) (*LLMResponse, error)
 }

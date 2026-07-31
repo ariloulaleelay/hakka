@@ -518,7 +518,7 @@ type askAdapter struct {
 	response     string
 }
 
-func (a *askAdapter) Complete(_ context.Context, msgs []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (*agent.LLMResponse, error) {
+func (a *askAdapter) Complete(_ context.Context, msgs []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions, _ func(string)) (*agent.LLMResponse, error) {
 	if a.wantToolCalls {
 		// Verify that no assistant message contains tool calls
 		for _, m := range msgs {
@@ -533,11 +533,6 @@ func (a *askAdapter) Complete(_ context.Context, msgs []agent.Message, _ []agent
 	return &agent.LLMResponse{Message: agent.Message{Role: agent.RoleAssistant, Content: a.response}}, nil
 }
 
-func (a *askAdapter) Stream(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	ch := make(chan agent.StreamResult)
-	close(ch)
-	return ch, nil
-}
 
 func TestSessionAskQuestion_Basic(t *testing.T) {
 	ns := "testns"

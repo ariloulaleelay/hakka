@@ -10,7 +10,7 @@ package agent
 //   - ToolRegistry.SchemasForSession depends on SessionToolAuth
 //   - ToolRegistry.ExecuteForSession depends on SessionToolAuth + SessionIdentity
 //   - SessionHistory used by context builders
-//   - Conversation / StreamSession use the full SessionView composite
+//   - Conversation uses the full SessionView composite
 // ---------------------------------------------------------------------------
 
 type SessionIdentity interface {
@@ -81,7 +81,7 @@ type SessionSkills interface {
 }
 
 // SessionView is the full composite interface that the orchestration
-// layer (Conversation, StreamSession, SessionManager) depends on.
+// layer (Conversation, SessionManager) depends on.
 //
 // New code should depend on one of the narrower role interfaces above
 // instead of this composite, unless it genuinely needs all capabilities.

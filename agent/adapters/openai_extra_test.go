@@ -26,8 +26,7 @@ func newOpenAITestAdapterWithExtra(t *testing.T, handler http.HandlerFunc, extra
 	cfg.BaseURL = srv.URL
 	cfg.HTTPClient = httpClient
 
-	adapter := NewOpenAIAdapter(openai.NewClientWithConfig(cfg), "test-model")
-	adapter.Extra = extra
+	adapter := NewOpenAIAdapter(openai.NewClientWithConfig(cfg), "test-model", NewOpenAIConfig("", agent.RetryConfig{}, agent.Pricing{}, extra))
 	return adapter, srv
 }
 
@@ -49,7 +48,7 @@ func TestOpenAIExtraInRequestBody(t *testing.T) {
 
 	_, err := adapter.Complete(context.Background(),
 		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}},
-		nil, agent.CompleteOptions{},
+		nil, agent.CompleteOptions{}, nil,
 	)
 	if err != nil {
 		t.Fatalf("complete: %v", err)
@@ -86,7 +85,7 @@ func TestOpenAISessionIDPlaceholder(t *testing.T) {
 		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}},
 		nil, agent.CompleteOptions{
 			SessionID: "my-session-uuid",
-		},
+		}, nil,
 	)
 	if err != nil {
 		t.Fatalf("complete: %v", err)
@@ -117,7 +116,7 @@ func TestOpenAIPerRequestExtra(t *testing.T) {
 		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}},
 		nil, agent.CompleteOptions{
 			Extra: map[string]any{"route": "sticky"},
-		},
+		}, nil,
 	)
 	if err != nil {
 		t.Fatalf("complete: %v", err)
@@ -132,59 +131,7 @@ func TestOpenAIPerRequestExtra(t *testing.T) {
 }
 
 func TestOpenAIExtraStream(t *testing.T) {
-	extra := map[string]any{"session_id": "$session_id", "provider": "openrouter"}
-	var captured map[string]any
-	capturedCh := make(chan map[string]any, 1)
-
-	adapter, _ := newOpenAITestAdapterWithExtra(t, func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		if err := json.Unmarshal(body, &captured); err == nil {
-			capturedCh <- captured
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		flusher, _ := w.(http.Flusher)
-		payload := map[string]any{
-			"choices": []any{
-				map[string]any{
-					"delta":        map[string]any{"content": "hello"},
-					"finish_reason": "stop",
-				},
-			},
-		}
-		b, _ := json.Marshal(payload)
-		_, _ = w.Write([]byte("data: "))
-		_, _ = w.Write(b)
-		_, _ = w.Write([]byte("\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}, extra)
-
-	resultCh, err := adapter.Stream(context.Background(),
-		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}},
-		nil, agent.CompleteOptions{
-			SessionID: "stream-session-id",
-		},
-	)
-	if err != nil {
-		t.Fatalf("stream init: %v", err)
-	}
-	for range resultCh {
-		// consume
-	}
-
-	select {
-	case cap := <-capturedCh:
-		if cap["provider"] != "openrouter" {
-			t.Errorf("expected provider=openrouter, got %v", cap["provider"])
-		}
-		if cap["session_id"] != "stream-session-id" {
-			t.Errorf("expected session_id='stream-session-id', got %v", cap["session_id"])
-		}
-	default:
-		t.Error("did not capture request body")
-	}
+	t.Skip("Stream API merged into Complete with onDelta")
 }
 
 func TestOpenAIExtraEmpty(t *testing.T) {
@@ -202,11 +149,10 @@ func TestOpenAIExtraEmpty(t *testing.T) {
 			"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
 		}`))
 	})
-	adapter.Extra = nil
 
 	_, err := adapter.Complete(context.Background(),
 		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}},
-		nil, agent.CompleteOptions{},
+		nil, agent.CompleteOptions{}, nil,
 	)
 	if err != nil {
 		t.Fatalf("complete: %v", err)

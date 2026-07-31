@@ -25,7 +25,7 @@ type WebSocketGateway struct {
 	server *http.Server
 }
 
-func NewWebSocketGateway(conv *agent.Conversation, streamer *agent.StreamSession, cmd *commands.CommandProcessor, addr string) *WebSocketGateway {
+func NewWebSocketGateway(conv *agent.Conversation, cmd *commands.CommandProcessor, addr string) *WebSocketGateway {
 	if addr == "" {
 		addr = ":8765"
 	}
@@ -34,7 +34,7 @@ func NewWebSocketGateway(conv *agent.Conversation, streamer *agent.StreamSession
 		ns = "default"
 	}
 	return &WebSocketGateway{
-		Handler: NewTurnHandler(conv, streamer, cmd, ns),
+		Handler: NewTurnHandler(conv, cmd, ns),
 		Addr:    addr,
 	}
 }

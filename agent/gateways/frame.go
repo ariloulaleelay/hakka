@@ -29,7 +29,6 @@ type FrameRequest struct {
 	Type      string          `json:"type"`                   // "chat", "cmd", "resp", "cancel"
 	SessionID string          `json:"session_id,omitempty"`
 	Input     string          `json:"input,omitempty"`        // for "chat"
-	Stream    bool            `json:"stream,omitempty"`       // for "chat"
 	Command   *CommandRequest `json:"command,omitempty"`      // for "cmd"
 	RequestID string          `json:"request_id,omitempty"`   // for "resp"
 	Result    json.RawMessage `json:"result,omitempty"`       // for "resp"

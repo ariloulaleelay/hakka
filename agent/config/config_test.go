@@ -291,14 +291,14 @@ func TestBuildRegistryOpenAIExtra(t *testing.T) {
 		t.Fatalf("expected *adapters.OpenAIAdapter, got %T", ad)
 	}
 
-	if oa.Extra == nil {
+	if oa.Config.Extra == nil {
 		t.Fatal("expected Extra to be set")
 	}
-	if oa.Extra["session_id"] != "$session_id" {
-		t.Errorf("extra.session_id: got %v, want $session_id", oa.Extra["session_id"])
+	if oa.Config.Extra["session_id"] != "$session_id" {
+		t.Errorf("extra.session_id: got %v, want $session_id", oa.Config.Extra["session_id"])
 	}
-	if oa.Extra["provider"] != "openrouter" {
-		t.Errorf("extra.provider: got %v, want openrouter", oa.Extra["provider"])
+	if oa.Config.Extra["provider"] != "openrouter" {
+		t.Errorf("extra.provider: got %v, want openrouter", oa.Config.Extra["provider"])
 	}
 }
 
@@ -384,17 +384,18 @@ func TestBuildRegistry_RetryConfig(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *adapters.OpenAIAdapter, got %T", ad)
 	}
-	if oa.RetryConfig.MaxAttempts != 60 {
-		t.Errorf("MaxAttempts: got %d, want 60", oa.RetryConfig.MaxAttempts)
+	rc := oa.Config.RetryPolicy()
+	if rc.MaxAttempts != 60 {
+		t.Errorf("MaxAttempts: got %d, want 60", rc.MaxAttempts)
 	}
-	if oa.RetryConfig.BaseDelay != 10_000_000_000 {
-		t.Errorf("BaseDelay: got %v, want 10s", oa.RetryConfig.BaseDelay)
+	if rc.BaseDelay != 10_000_000_000 {
+		t.Errorf("BaseDelay: got %v, want 10s", rc.BaseDelay)
 	}
-	if oa.RetryConfig.MaxDelay != 60_000_000_000 {
-		t.Errorf("MaxDelay: got %v, want 60s", oa.RetryConfig.MaxDelay)
+	if rc.MaxDelay != 60_000_000_000 {
+		t.Errorf("MaxDelay: got %v, want 60s", rc.MaxDelay)
 	}
-	if oa.RetryConfig.BackoffFactor != 1.5 {
-		t.Errorf("BackoffFactor: got %f, want 1.5", oa.RetryConfig.BackoffFactor)
+	if rc.BackoffFactor != 1.5 {
+		t.Errorf("BackoffFactor: got %f, want 1.5", rc.BackoffFactor)
 	}
 
 	// Model without retry_config should get defaults (zero values → defaults on use)
@@ -406,8 +407,75 @@ func TestBuildRegistry_RetryConfig(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *adapters.AnthropicAdapter, got %T", ad2)
 	}
-	if aa.RetryConfig.MaxAttempts != 0 || aa.RetryConfig.BaseDelay != 0 || aa.RetryConfig.BackoffFactor != 0 {
-		t.Errorf("expected zero-value RetryConfig for model without retry_config, got %+v", aa.RetryConfig)
+	arc := aa.Config.RetryPolicy()
+	if arc.MaxAttempts != 0 || arc.BaseDelay != 0 || arc.BackoffFactor != 0 {
+		t.Errorf("expected zero-value RetryConfig for model without retry_config, got %+v", arc)
+	}
+}
+
+func TestBuildRegistryDeepSeekDialect(t *testing.T) {
+	os.Setenv("HAKKA_TOKEN", "test-token")
+	defer os.Unsetenv("HAKKA_TOKEN")
+
+	const cfg = `{
+	  "default": "ds",
+	  "models": {
+		"ds": {
+		  "dialect": "deepseek",
+		  "base_url": "https://deepseek.example.com",
+		  "model": "deepseek-v4-flash",
+		  "headers": {"Authorization": "Bearer ${env: HAKKA_TOKEN}"},
+		  "extra": {"thinking": {"type": "enabled"}}
+		},
+		"ds-default": {
+		  "dialect": "deepseek",
+		  "model": "deepseek-v4-pro",
+		  "headers": {"Authorization": "Bearer ${env: HAKKA_TOKEN}"}
+		}
+	  }
+	}`
+
+	p := filepath.Join(t.TempDir(), "config_deepseek.json")
+	if err := os.WriteFile(p, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := Load(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	reg, err := BuildRegistry(f, "")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	ad, ok := reg.Get("ds")
+	if !ok {
+		t.Fatal("adapter 'ds' not found")
+	}
+	da, ok := ad.(*adapters.DeepSeekAdapter)
+	if !ok {
+		t.Fatalf("expected *adapters.DeepSeekAdapter, got %T", ad)
+	}
+	if da.BaseURL != "https://deepseek.example.com" {
+		t.Errorf("BaseURL: got %q, want https://deepseek.example.com", da.BaseURL)
+	}
+	if da.Model != "deepseek-v4-flash" {
+		t.Errorf("Model: got %q, want deepseek-v4-flash", da.Model)
+	}
+
+	// Model without base_url should fall back to the DeepSeek default.
+	ad2, ok := reg.Get("ds-default")
+	if !ok {
+		t.Fatal("adapter 'ds-default' not found")
+	}
+	da2, ok := ad2.(*adapters.DeepSeekAdapter)
+	if !ok {
+		t.Fatalf("expected *adapters.DeepSeekAdapter, got %T", ad2)
+	}
+	if da2.BaseURL != "https://api.deepseek.com" {
+		t.Errorf("default BaseURL: got %q, want https://api.deepseek.com", da2.BaseURL)
 	}
 }
 

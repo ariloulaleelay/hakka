@@ -11,7 +11,7 @@ import (
 // stop response finishes the turn normally (returns empty string).
 func TestAutoContinue_DisabledByDefault(t *testing.T) {
 	// The adapter returns an empty stop response — no content, no tool calls.
-	conv, _, _, _ := newTestComponents(t, []LLMResponse{
+	conv, _, _ := newTestComponents(t, []LLMResponse{
 		{
 			Message:      Message{Role: RoleAssistant, Content: ""},
 			FinishReason: "stop",
@@ -57,7 +57,6 @@ func TestAutoContinue_EnabledRestartsWithContent(t *testing.T) {
 	cfg := EngineConfig{MaxToolIterations: 10, Logger: testLogger(t)}
 	ns := "testns"
 	conv := NewConversation(sm, router, tools, ns, cfg)
-	streamer := NewStreamSession(conv, ns)
 
 	// Test via non-streaming (Conversation.Execute).
 	eventCh, err := conv.Execute(context.Background(), "auto-test-2", "hello")
@@ -79,7 +78,6 @@ func TestAutoContinue_EnabledRestartsWithContent(t *testing.T) {
 	if mock.calls != 2 {
 		t.Fatalf("expected 2 LLM calls (empty stop + re-prompt), got %d", mock.calls)
 	}
-	_ = streamer // silence unused
 }
 
 // TestAutoContinue_ExhaustedRounds proves that after 3 autocontinues,

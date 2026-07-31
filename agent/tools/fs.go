@@ -127,7 +127,7 @@ func ReadFile() agent.Tool {
 		"If truncated, use a larger limit or offset to continue reading.").
 		StringParam("path", "Absolute or relative path", true).
 		IntParam("offset", "Line number to start reading from (0-based, default 0). Use with limit to read a window.", false).
-		IntParam("limit", "Max lines to read (default 200). Use with offset to read a window.", false).
+		IntParam("limit", "Max lines to read (default 500). Use with offset to read a window.", false).
 		Tags("filesystem", "read", "developer", "all").
 		ExecSnippetField("path").
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
@@ -139,14 +139,14 @@ func ReadFile() agent.Tool {
 				&args, []paramInfo{
 					{Name: "path", Type: "string", Description: "Absolute or relative path", Required: true},
 					{Name: "offset", Type: "integer", Description: "Line number to start reading from (0-based, default 0). Use with limit to read a window."},
-					{Name: "limit", Type: "integer", Description: "Max lines to read (default 200). Use with offset to read a window."},
+					{Name: "limit", Type: "integer", Description: "Max lines to read (default 500). Use with offset to read a window."},
 					{Name: "max_bytes", Type: "integer", Description: "(internal) Max output bytes before byte-level truncation (default 200000)."},
 				}); err != nil {
 				return "", err
 			}
 			limit := args.Limit
 			if limit <= 0 {
-				limit = 200
+				limit = 500
 			}
 			offset := args.Offset
 			if offset < 0 {

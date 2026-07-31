@@ -18,28 +18,22 @@ type fakeAdapter struct {
 	reply string
 }
 
-func (f *fakeAdapter) Complete(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (*agent.LLMResponse, error) {
+func (f *fakeAdapter) Complete(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions, onDelta func(string)) (*agent.LLMResponse, error) {
+	if onDelta != nil {
+		onDelta(f.reply)
+	}
 	return &agent.LLMResponse{
 		Message:      agent.Message{Role: agent.RoleAssistant, Content: f.reply},
 		FinishReason: "stop",
 	}, nil
 }
 
-func (f *fakeAdapter) Stream(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	ch := make(chan agent.StreamResult, 2)
-	ch <- agent.StreamResult{Delta: f.reply}
-	ch <- agent.StreamResult{Done: true}
-	close(ch)
-	return ch, nil
-}
-
-func newGatewayComponents(reply string) (*agent.Conversation, *agent.StreamSession, *commands.CommandProcessor) {
+func newGatewayComponents(reply string) (*agent.Conversation, *commands.CommandProcessor) {
 	return newNamedGatewayComponents(reply, "tcp")
 }
 
 // newNamedGatewayComponents creates components with a specific namespace.
-// Used by tests that need to match gateway namespaces (e.g. "tcp" vs "ws").
-func newNamedGatewayComponents(reply, ns string) (*agent.Conversation, *agent.StreamSession, *commands.CommandProcessor) {
+func newNamedGatewayComponents(reply, ns string) (*agent.Conversation, *commands.CommandProcessor) {
 	sm := agent.NewSessionManager(nil, "")
 	reg := agent.NewRegistry()
 	reg.Register("default", &fakeAdapter{reply: reply})
@@ -47,37 +41,35 @@ func newNamedGatewayComponents(reply, ns string) (*agent.Conversation, *agent.St
 	tools := agent.NewToolRegistry()
 	cfg := agent.EngineConfig{MaxToolIterations: 2}
 	conv := agent.NewConversation(sm, router, tools, ns, cfg)
-	streamer := agent.NewStreamSession(conv, ns)
 	cmd := commands.New(sm, conv, "", ns)
-	return conv, streamer, cmd
+	return conv, cmd
 }
 
-// twoStageAdapter returns tool calls on the first Stream call and text on
-// the second, simulating a realistic streaming tool round-trip.
+// twoStageAdapter returns tool calls on the first call and text on the second.
 type twoStageAdapter struct {
 	callCount int
 }
 
-func (a *twoStageAdapter) Complete(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (*agent.LLMResponse, error) {
+func (a *twoStageAdapter) Complete(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions, onDelta func(string)) (*agent.LLMResponse, error) {
+	a.callCount++
+	if a.callCount == 1 {
+		return &agent.LLMResponse{
+			Message: agent.Message{
+				Role: agent.RoleAssistant,
+				ToolCalls: []agent.ToolCall{
+					{ID: "tc1", Name: "example_tool", Arguments: `{}`},
+				},
+			},
+			FinishReason: "tool_calls",
+		}, nil
+	}
+	if onDelta != nil {
+		onDelta("final answer")
+	}
 	return &agent.LLMResponse{
-		Message:      agent.Message{Role: agent.RoleAssistant, Content: "done"},
+		Message:      agent.Message{Role: agent.RoleAssistant, Content: "final answer"},
 		FinishReason: "stop",
 	}, nil
-}
-
-func (a *twoStageAdapter) Stream(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	a.callCount++
-	ch := make(chan agent.StreamResult, 4)
-	if a.callCount == 1 {
-		ch <- agent.StreamResult{ToolCalls: []agent.ToolCall{
-			{ID: "tc1", Name: "example_tool", Arguments: `{}`},
-		}}
-	} else {
-		ch <- agent.StreamResult{Delta: "final answer"}
-		ch <- agent.StreamResult{Done: true}
-	}
-	close(ch)
-	return ch, nil
 }
 
 func freeAddr(t *testing.T) string {
@@ -136,9 +128,9 @@ func readUntilDone(t *testing.T, conn *websocket.Conn) []byte {
 // --- WebSocket test cases ---------------------------------------------------
 
 func TestWebSocketGatewayRoundTrip(t *testing.T) {
-	conv, streamer, cmd := newGatewayComponents("ws-pong")
+	conv, cmd := newGatewayComponents("ws-pong")
 	addr := freeAddr(t)
-	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	gw := NewWebSocketGateway(conv, cmd, addr)
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -175,9 +167,9 @@ func TestWebSocketGatewayRoundTrip(t *testing.T) {
 }
 
 func TestWebSocketGatewayStream(t *testing.T) {
-	conv, streamer, cmd := newGatewayComponents("streamed-payload")
+	conv, cmd := newGatewayComponents("streamed-payload")
 	addr := freeAddr(t)
-	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	gw := NewWebSocketGateway(conv, cmd, addr)
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -240,7 +232,6 @@ func TestWebSocketGatewayStreamToolFallbackUsesStreamNotComplete(t *testing.T) {
 	cfg := agent.EngineConfig{MaxToolIterations: 3}
 	ns := "tcp"
 	conv := agent.NewConversation(sm, router, tools, ns, cfg)
-	streamer := agent.NewStreamSession(conv, ns)
 	cmd := commands.New(sm, conv, "", ns)
 
 	session, _ := sm.GetOrCreate(context.Background(), ns, "")
@@ -248,7 +239,7 @@ func TestWebSocketGatewayStreamToolFallbackUsesStreamNotComplete(t *testing.T) {
 	sm.Save(context.Background(), ns, session)
 
 	addr := freeAddr(t)
-	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	gw := NewWebSocketGateway(conv, cmd, addr)
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -265,7 +256,6 @@ func TestWebSocketGatewayStreamToolFallbackUsesStreamNotComplete(t *testing.T) {
 		"type":       "chat",
 		"session_id": session.SessionID(),
 		"input":      "hello",
-		"stream":     true,
 	})
 
 	var (
@@ -311,9 +301,9 @@ func TestWebSocketGatewayStreamToolFallbackUsesStreamNotComplete(t *testing.T) {
 }
 
 func TestWebSocketGatewayJSONCommandReturnsData(t *testing.T) {
-	conv, streamer, cmd := newGatewayComponents("unused")
+	conv, cmd := newGatewayComponents("unused")
 	addr := freeAddr(t)
-	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	gw := NewWebSocketGateway(conv, cmd, addr)
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -367,9 +357,9 @@ func TestWebSocketGatewayJSONCommandReturnsData(t *testing.T) {
 
 func TestWebSocketGatewayStreamingLLMErrorSendsErrorFrame(t *testing.T) {
 	adapter := &streamErrorAdapter{err: context.DeadlineExceeded}
-	conv, streamer, cmd := newGatewayComponentsWithAdapter(adapter)
+	conv, cmd := newGatewayComponentsWithAdapter(adapter)
 	addr := freeAddr(t)
-	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	gw := NewWebSocketGateway(conv, cmd, addr)
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -385,7 +375,6 @@ func TestWebSocketGatewayStreamingLLMErrorSendsErrorFrame(t *testing.T) {
 	writeWSFrame(t, c, map[string]any{
 		"type":  "chat",
 		"input": "trigger timeout",
-		"stream": true,
 	})
 
 	var foundError string
@@ -426,7 +415,7 @@ type fakeAdapterWithToolCalls struct {
 	callCount int
 }
 
-func (a *fakeAdapterWithToolCalls) Complete(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (*agent.LLMResponse, error) {
+func (a *fakeAdapterWithToolCalls) Complete(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions, _ func(string)) (*agent.LLMResponse, error) {
 	if a.callCount >= len(a.responses) {
 		return &agent.LLMResponse{Message: agent.Message{Role: agent.RoleAssistant, Content: "fallback"}}, nil
 	}
@@ -435,25 +424,15 @@ func (a *fakeAdapterWithToolCalls) Complete(_ context.Context, _ []agent.Message
 	return &r, nil
 }
 
-func (a *fakeAdapterWithToolCalls) Stream(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	ch := make(chan agent.StreamResult)
-	close(ch)
-	return ch, nil
-}
-
 type streamErrorAdapter struct {
 	err error
 }
 
-func (a *streamErrorAdapter) Complete(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (*agent.LLMResponse, error) {
+func (a *streamErrorAdapter) Complete(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions, _ func(string)) (*agent.LLMResponse, error) {
 	return nil, a.err
 }
 
-func (a *streamErrorAdapter) Stream(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	return nil, a.err
-}
-
-func newGatewayComponentsWithAdapter(adapter agent.LLMAdapter) (*agent.Conversation, *agent.StreamSession, *commands.CommandProcessor) {
+func newGatewayComponentsWithAdapter(adapter agent.LLMAdapter) (*agent.Conversation, *commands.CommandProcessor) {
 	sm := agent.NewSessionManager(nil, "")
 	reg := agent.NewRegistry()
 	reg.Register("default", adapter)
@@ -461,18 +440,17 @@ func newGatewayComponentsWithAdapter(adapter agent.LLMAdapter) (*agent.Conversat
 	tools := agent.NewToolRegistry()
 	cfg := agent.EngineConfig{MaxToolIterations: 2}
 	conv := agent.NewConversation(sm, router, tools, "tcp", cfg)
-	streamer := agent.NewStreamSession(conv, "tcp")
 	cmd := commands.New(sm, conv, "", "tcp")
-	return conv, streamer, cmd
+	return conv, cmd
 }
 
 // TestWebSocketGatewayDoneFrameHasStats verifies that the done frame
 // carries embedded stats (total_tokens, total_cost, etc.) instead of
 // a separate meta event.
 func TestWebSocketGatewayDoneFrameHasStats(t *testing.T) {
-	conv, streamer, cmd := newGatewayComponents("stats-check")
+	conv, cmd := newGatewayComponents("stats-check")
 	addr := freeAddr(t)
-	gw := NewWebSocketGateway(conv, streamer, cmd, addr)
+	gw := NewWebSocketGateway(conv, cmd, addr)
 	if err := gw.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}

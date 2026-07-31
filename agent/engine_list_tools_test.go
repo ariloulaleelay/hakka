@@ -162,7 +162,7 @@ type recordingAdapter struct {
 	calls     int
 }
 
-func (a *recordingAdapter) Complete(_ context.Context, msgs []Message, tools []ToolSchema, _ CompleteOptions) (*LLMResponse, error) {
+func (a *recordingAdapter) Complete(_ context.Context, msgs []Message, tools []ToolSchema, _ CompleteOptions, _ func(string)) (*LLMResponse, error) {
 	a.mu.Lock()
 	a.lastMsgs = msgs
 	a.lastTools = tools
@@ -171,11 +171,6 @@ func (a *recordingAdapter) Complete(_ context.Context, msgs []Message, tools []T
 	return &LLMResponse{Message: Message{Role: RoleAssistant, Content: "I have tools."}, FinishReason: "stop"}, nil
 }
 
-func (a *recordingAdapter) Stream(_ context.Context, msgs []Message, _ []ToolSchema, _ CompleteOptions) (<-chan StreamResult, error) {
-	ch := make(chan StreamResult)
-	close(ch)
-	return ch, nil
-}
 
 func toolNames(schemas []ToolSchema) []string {
 	names := make([]string, len(schemas))

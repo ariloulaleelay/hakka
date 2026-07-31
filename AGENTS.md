@@ -30,7 +30,6 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
                          │    ├─ TurnRunner (iteration)        │
                          │    ├─ ToolExecutor (concurrent)     │
                          │    └─ AutoRenamer (naming)          │
-                         │    StreamSession (stream+fallback)  │
                          │    commands/ (slash-commands)       │
                          └──────────┬──────────────────────────┘
                                     │
@@ -41,6 +40,7 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
    │  OpenAI          │   │ STORE        │   │  read_file               │
    │  Anthropic       │   │  Memory      │   │  write_file              │
    │  Gemini          │   │  SQLite      │   │  edit_file               │
+   │  DeepSeek        │   │  PostgreSQL  │   │  list_dir                │
    └──────────────────┘   │  PostgreSQL  │   │  list_dir                │
                           └──────────────┘   │  shell                   │
                                              │  http_get                │
@@ -61,7 +61,7 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | **SessionStore** | `agent/store.go` | Pluggable persistence — `MemoryStore` (in-process), SQLite (disk-backed via `modernc.org/sqlite`, CGO-free), or PostgreSQL (via `lib/pq`) |
 | **SessionManager** | `agent/manager.go` | Wraps a store with `GetOrCreate`/`Save`/`Drop` helpers |
 | **SessionView** | `agent/session_view.go` | Role-specific session interfaces (ISP) — `SessionHistory`, `SessionToolAuth`, `SessionModelBinding`, `SessionIdentity` |
-| **LLMAdapter** | `agent/adapter.go` | Interface: `Complete()` + `Stream()`. Implementations in `agent/adapters/` for OpenAI, Anthropic, Gemini |
+| **LLMAdapter** | `agent/adapter.go` | Interface: `Complete()` + `Stream()`. Implementations in `agent/adapters/` for OpenAI, Anthropic, Gemini, DeepSeek |
 | **Registry** | `agent/registry.go` | Named collection of adapters with a default selection |
 | **Router** | `agent/router.go` | Decides which adapter serves a given session based on the session's model binding. Single owner of the `Model` field |
 | **Tool / ToolRegistry** | `agent/tool.go` | Tool schema + handler + optional timeout + exec snippet. Concurrent-safe registry |
@@ -69,7 +69,6 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | **TurnRunner** | `agent/turn_runner.go` | Drives the LLM ↔ tool iteration loop (extracted from Conversation per SRP). Owns the step function, compaction limit resolution, and compactify schema augmentation |
 | **ToolExecutor** | `agent/tool_executor.go` | Concurrent tool execution with fan-out, event hooks, and result appending |
 | **Compact** | `agent/compact.go` | LLM-driven context compaction — when estimated context exceeds the soft limit, [N] message indices and a warning prompt the LLM to call `context_compactify` |
-| **StreamSession** | `agent/stream_session.go` | Cooperative streaming — streams text tokens, transparently falls back to tool loop when model requests tools |
 | **CommandProcessor** | `agent/commands/` | Structured JSON-only command handler (`ExecuteJSON`) — no text slash-command parsing. Delegates to ModelCommands, SessionCommands, ToolCommands. Clients map slash-commands to JSON commands locally. |
 | **AutoRenamer** | `agent/auto_renamer.go` | LLM-driven session naming logic |
 | **ProcessManager** | `agent/tools/process.go` | Goroutine-safe subprocess registry with ring-buffered stdout+stderr |
@@ -190,7 +189,7 @@ A typical client follows this sequence:
    different session, send `{"type":"cmd","command":{"cmd":"get_session","params":{"id":"..."}}}`.
 4. **Set working directory** — `{"type":"cmd","command":{"cmd":"cwd_set","params":{"cwd":"/path"}}}`.
 5. **Enable tools** — `{"type":"cmd","command":{"cmd":"tool_allow","params":{"name":"#all"}}}`.
-6. **Send input** — `{"type":"chat","session_id":"...","input":"Hello!","stream":true}`.
+6. **Send input** — `{"type":"chat","session_id":"...","input":"Hello!"}`.
 7. **Receive responses** — `delta` (text chunks), `tool` (tool lifecycle),
    `usage` (token counts), and finally `type:"done"`.
 8. **Fetch a session** — `{"type":"cmd","command":{"cmd":"get_session","params":{"id":"..."}}}`.
@@ -198,8 +197,9 @@ A typical client follows this sequence:
 **Key rules for client authors:**
 
 - Always include `session_id` on every request once you have one.
-- `stream: true` gives incremental `type:"delta"` frames with `text` field;
-  `stream: false` gives a single `type:"done"` frame with `text` field.
+- Streaming is adapter-controlled: the server emits `type:"delta"` frames
+  when the adapter supports streaming, or just a `type:"done"` frame with
+  the full text. Clients must handle both paths.
 - The `type:"done"` frame **always** arrives — even on errors, even after
   cancel. It is your signal that the turn is complete.
 - Tool events (`type:"tool"`) and usage events (`type:"usage"`) may arrive

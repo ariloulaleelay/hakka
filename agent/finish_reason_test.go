@@ -11,7 +11,7 @@ import (
 // TestFinishReason_StoredOnMessage proves that the LLM's FinishReason is
 // recorded on the assistant Message in session history after a turn.
 func TestFinishReason_StoredOnMessage(t *testing.T) {
-	conv, _, _, _ := newTestComponents(t, []LLMResponse{
+	conv, _, _ := newTestComponents(t, []LLMResponse{
 		{
 			Message:      Message{Role: RoleAssistant, Content: "hello back"},
 			FinishReason: "stop",
@@ -40,7 +40,7 @@ func TestFinishReason_StoredOnMessage(t *testing.T) {
 // the tool-call assistant message carries a FinishReason (e.g. "tool_calls"),
 // and the follow-up text response carries another (e.g. "stop").
 func TestFinishReason_ToolCallRound(t *testing.T) {
-	conv, _, _, tools := newTestComponents(t, []LLMResponse{
+	conv, _, tools := newTestComponents(t, []LLMResponse{
 		{
 			Message: Message{
 				Role: RoleAssistant,
@@ -106,17 +106,17 @@ func TestFinishReason_ToolCallRound(t *testing.T) {
 }
 
 // TestFinishReason_StreamPath proves that FinishReason is also stored
-// when using the streaming path (StreamSession.Execute).
+// when using the streaming path (now conv.Execute with stream=true).
 func TestFinishReason_StreamPath(t *testing.T) {
-	_, streamer, _, _ := newTestComponents(t, []LLMResponse{
+	conv, _, _ := newTestComponents(t, []LLMResponse{
 		{
 			Message:      Message{Role: RoleAssistant, Content: "stream hello"},
 			FinishReason: "stop",
 		},
 	})
-	eventCh, err := streamer.Execute(context.Background(), "fr-stream-test", "hi")
+	eventCh, err := conv.Execute(context.Background(), "fr-stream-test", "hi")
 	if err != nil {
-		t.Fatalf("StreamSession.Execute: %v", err)
+		t.Fatalf("conv.Execute: %v", err)
 	}
 	for evt := range eventCh {
 		if te, ok := evt.(event.TurnFinished); ok {
@@ -126,7 +126,7 @@ func TestFinishReason_StreamPath(t *testing.T) {
 		}
 	}
 
-	session, err := streamer.conv.sessions.GetOrCreate(context.Background(), "testns", "fr-stream-test")
+	session, err := conv.sessions.GetOrCreate(context.Background(), "testns", "fr-stream-test")
 	if err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
 	}

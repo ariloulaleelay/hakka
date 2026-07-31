@@ -32,20 +32,15 @@ import (
 // gateways.
 type TurnHandler struct {
 	Conv      *agent.Conversation
-	Streamer  *agent.StreamSession
 	Cmd       *commands.CommandProcessor
 	Namespace string
 
-	// turns manages active turn lifecycles per session. It replaces the
-	// old cancelFuncs sync.Map — the fan-out goroutine in each activeTurn
-	// distributes events to all connected clients for that session.
+	// turns manages active turn lifecycles per session.
 	turns *turnTracker
 }
 
 // NewTurnHandler builds a TurnHandler from the standard engine components.
-// It also wires the session active checker on the command processor so that
-// session_list can report in-flight sessions via the turn tracker.
-func NewTurnHandler(conv *agent.Conversation, streamer *agent.StreamSession, cmd *commands.CommandProcessor, namespace string) *TurnHandler {
+func NewTurnHandler(conv *agent.Conversation, cmd *commands.CommandProcessor, namespace string) *TurnHandler {
 	tt := &turnTracker{}
 	if cmd != nil {
 		cmd.SetSessionActiveChecker(func(sessionID string) bool {
@@ -54,7 +49,6 @@ func NewTurnHandler(conv *agent.Conversation, streamer *agent.StreamSession, cmd
 	}
 	return &TurnHandler{
 		Conv:      conv,
-		Streamer:  streamer,
 		Cmd:       cmd,
 		Namespace: namespace,
 		turns:     tt,
@@ -70,15 +64,6 @@ func (h *TurnHandler) Turns() *turnTracker { return h.turns }
 // there was no active request for that session.
 func (h *TurnHandler) CancelSession(sessionID string) bool {
 	return h.turns.Cancel(sessionID)
-}
-
-// executor returns the TurnExecutor to use for the given request.
-// Streaming requests use StreamSession; non-streaming use Conversation.
-func (h *TurnHandler) executor(stream bool) agent.TurnExecutor {
-	if stream {
-		return h.Streamer
-	}
-	return h.Conv
 }
 
 // HandleRequest processes a single user request.
@@ -139,7 +124,7 @@ func (h *TurnHandler) startNewTurn(ctx context.Context, w frameWriter, responseR
 	turnCtx = clientCtx(turnCtx, w, responseReader, sessionID)
 	turnCtx = enrichCtxWithCWD(turnCtx, h.Conv, sessionID)
 
-	h.handleWithEngine(turnCtx, w, sessionID, input, h.executor(req.Stream), turnCancel)
+	h.handleWithEngine(turnCtx, w, sessionID, input, turnCancel)
 }
 
 // handleJSONCommand processes a structured JSON command request.
@@ -183,26 +168,20 @@ func (h *TurnHandler) handleJSONCommand(ctx context.Context, req FrameRequest, w
 	// The command processor returns ActionContinue but doesn't invoke
 	// the LLM — that's the handler's responsibility.
 	// Only start a turn if we have a session to continue.
-	//
-	// For /continue, use the session's streaming preference rather than
-	// the request's (command frames have no stream field, always false).
 	if cmdRes.Action == commands.ActionContinue && sessionID != "" {
-		if session, _, err := h.Conv.Sessions().Get(context.Background(), h.Namespace, sessionID); err == nil {
-			req.Stream = session.Read().Streaming
-		}
 		h.startNewTurn(ctx, w, responseReader, req, sessionID, "")
 	}
 }
 
-// handleWithEngine runs a turn using the given executor, registers it
+// handleWithEngine runs a turn using the Conversation, registers it
 // with the turn tracker, and subscribes the calling writer.
 //
 // Unlike the old behaviour (which cancelled the turn on write failure),
 // this method uses the turnTracker's fan-out. On write failure the
 // subscriber is silently removed, but the turn continues for any
 // remaining subscribers. Reconnecting clients can subscribe later.
-func (h *TurnHandler) handleWithEngine(ctx context.Context, w frameWriter, sessionID, input string, exec agent.TurnExecutor, cancel context.CancelFunc) {
-	eventCh, err := exec.Execute(ctx, sessionID, input)
+func (h *TurnHandler) handleWithEngine(ctx context.Context, w frameWriter, sessionID, input string, cancel context.CancelFunc) {
+	eventCh, err := h.Conv.Execute(ctx, sessionID, input)
 	if err != nil {
 		_ = w.Write(FrameResponse{Type: "error", SessionID: sessionID, Error: err.Error()})
 		return

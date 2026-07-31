@@ -72,19 +72,11 @@ type callTrackingAdapter struct {
 	calls int
 }
 
-func (a *callTrackingAdapter) Complete(_ context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (*agent.LLMResponse, error) {
+func (a *callTrackingAdapter) Complete(_ context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions, _ func(string)) (*agent.LLMResponse, error) {
 	a.mu.Lock()
 	a.calls++
 	a.mu.Unlock()
 	return &agent.LLMResponse{Message: agent.Message{Role: agent.RoleAssistant, Content: "response from LLM"}, FinishReason: "stop"}, nil
-}
-
-func (a *callTrackingAdapter) Stream(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	ch := make(chan agent.StreamResult, 2)
-	ch <- agent.StreamResult{Delta: "response from LLM"}
-	ch <- agent.StreamResult{Done: true}
-	close(ch)
-	return ch, nil
 }
 
 func (a *callTrackingAdapter) CallCount() int {
@@ -111,9 +103,8 @@ func TestContinueCommand_TriggersLLM(t *testing.T) {
 	}
 	ns := "testns"
 	conv := agent.NewConversation(sm, router, tools, ns, cfg)
-	streamer := agent.NewStreamSession(conv, ns)
 	cmd := commands.New(sm, conv, "", ns)
-	handler := NewTurnHandler(conv, streamer, cmd, ns)
+	handler := NewTurnHandler(conv, cmd, ns)
 
 	writer := &spyWriter{}
 	responseReader := NewInProcessResponseReader()
@@ -202,9 +193,8 @@ func TestContinueCommand_SurvivesClientDisconnect(t *testing.T) {
 	}
 	ns := "testns"
 	conv := agent.NewConversation(sm, router, tools, ns, cfg)
-	streamer := agent.NewStreamSession(conv, ns)
 	cmd := commands.New(sm, conv, "", ns)
-	handler := NewTurnHandler(conv, streamer, cmd, ns)
+	handler := NewTurnHandler(conv, cmd, ns)
 
 	writer := &spyWriter{}
 	responseReader := NewInProcessResponseReader()
@@ -263,9 +253,8 @@ func TestContinueCommand_NoSessionID(t *testing.T) {
 	}
 	ns := "testns"
 	conv := agent.NewConversation(sm, router, tools, ns, cfg)
-	streamer := agent.NewStreamSession(conv, ns)
 	cmd := commands.New(sm, conv, "", ns)
-	handler := NewTurnHandler(conv, streamer, cmd, ns)
+	handler := NewTurnHandler(conv, cmd, ns)
 
 	writer := &spyWriter{}
 	responseReader := NewInProcessResponseReader()
@@ -303,7 +292,7 @@ func TestContinueCommand_NoSessionID(t *testing.T) {
 // user sends input → LLM responds → user sends continue → LLM responds
 // again — all through the TurnHandler.
 func TestContinueCommand_Integration(t *testing.T) {
-	// Use streaming adapter to test the StreamSession path too
+	// Also test the streaming path.
 	adapter := &callTrackingAdapter{}
 
 	reg := agent.NewRegistry()
@@ -318,9 +307,8 @@ func TestContinueCommand_Integration(t *testing.T) {
 	}
 	ns := "testns"
 	conv := agent.NewConversation(sm, router, tools, ns, cfg)
-	streamer := agent.NewStreamSession(conv, ns)
 	cmd := commands.New(sm, conv, "", ns)
-	handler := NewTurnHandler(conv, streamer, cmd, ns)
+	handler := NewTurnHandler(conv, cmd, ns)
 
 	writer := &spyWriter{}
 	responseReader := NewInProcessResponseReader()
@@ -330,7 +318,6 @@ func TestContinueCommand_Integration(t *testing.T) {
 	handler.HandleRequest(context.Background(), FrameRequest{
 		SessionID: "integration-session",
 		Input:     "tell me a story",
-		Stream:    false,
 	}, writer, responseReader)
 	writer.WaitForDone(t, 5*time.Second)
 

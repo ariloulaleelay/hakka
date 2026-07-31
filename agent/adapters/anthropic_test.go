@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,7 +19,7 @@ func newAnthropicTestAdapter(t *testing.T, handler http.HandlerFunc) *AnthropicA
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return NewAnthropicAdapter(srv.Client(), srv.URL, "test-model")
+	return NewAnthropicAdapter(srv.Client(), srv.URL, "test-model", NewAnthropicConfig("", agent.RetryConfig{}, agent.Pricing{}, "2023-06-01", 0))
 }
 
 func TestAnthropicCompleteText(t *testing.T) {
@@ -41,7 +42,7 @@ func TestAnthropicCompleteText(t *testing.T) {
 		[]agent.Message{
 			{Role: agent.RoleSystem, Content: "be brief"},
 			{Role: agent.RoleUser, Content: "hi"},
-		}, nil, agent.CompleteOptions{})
+		}, nil, agent.CompleteOptions{}, nil)
 	if err != nil {
 		t.Fatalf("complete: %v", err)
 	}
@@ -78,7 +79,7 @@ func TestAnthropicToolRoundTrip(t *testing.T) {
 			{Role: agent.RoleUser, Content: "compute 1+2"},
 			{Role: agent.RoleAssistant, ToolCalls: []agent.ToolCall{{ID: "toolu_prev", Name: "add", Arguments: `{"a":1,"b":2}`}}},
 			{Role: agent.RoleTool, ToolCallID: "toolu_prev", Content: `{"sum":3}`},
-		}, []agent.ToolSchema{{Name: "add", Parameters: map[string]any{"type": "object"}}}, agent.CompleteOptions{})
+		}, []agent.ToolSchema{{Name: "add", Parameters: map[string]any{"type": "object"}}}, agent.CompleteOptions{}, nil)
 	if err != nil {
 		t.Fatalf("complete: %v", err)
 	}
@@ -108,61 +109,77 @@ func TestAnthropicToolRoundTrip(t *testing.T) {
 }
 
 func TestAnthropicStream(t *testing.T) {
+	var reqBody map[string]any
+	var deltas []string
 	adapter := newAnthropicTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
 		w.Header().Set("Content-Type", "text/event-stream")
-		f, _ := w.(http.Flusher)
-		emit := func(s string) {
-			_, _ = w.Write([]byte("data: " + s + "\n\n"))
-			if f != nil {
-				f.Flush()
-			}
-		}
-		emit(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
-		emit(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hel"}}`)
-		emit(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}`)
-		emit(`{"type":"message_stop"}`)
+		writeSSE := func(payload string) { _, _ = w.Write([]byte("data: " + payload + "\n\n")) }
+		writeSSE(`{"type":"message_start","message":{"id":"msg_1","role":"assistant","usage":{"input_tokens":10,"output_tokens":0}}}`)
+		writeSSE(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
+		writeSSE(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`)
+		writeSSE(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}`)
+		writeSSE(`{"type":"content_block_stop","index":0}`)
+		writeSSE(`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}`)
+		writeSSE(`{"type":"message_stop"}`)
 	})
-	resultCh, err := adapter.Stream(context.Background(),
-		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}}, nil, agent.CompleteOptions{})
+
+	resp, err := adapter.Complete(context.Background(),
+		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}},
+		nil, agent.CompleteOptions{},
+		func(d string) { deltas = append(deltas, d) })
 	if err != nil {
-		t.Fatalf("stream init: %v", err)
+		t.Fatalf("stream: %v", err)
 	}
-	var buf strings.Builder
-	for s := range resultCh {
-		buf.WriteString(s.Delta)
-		if s.Err != nil {
-			t.Fatalf("stream err: %v", s.Err)
-		}
+	if reqBody["stream"] != true {
+		t.Fatalf("stream not set in request: %v", reqBody["stream"])
 	}
-	if buf.String() != "hello" {
-		t.Fatalf("buf: %q", buf.String())
+	if resp.Message.Content != "Hello world" {
+		t.Fatalf("content: %q", resp.Message.Content)
+	}
+	if got := strings.Join(deltas, ""); got != "Hello world" {
+		t.Fatalf("deltas: %q", got)
+	}
+	if resp.FinishReason != "end_turn" {
+		t.Fatalf("finish_reason: %q", resp.FinishReason)
+	}
+	if resp.Usage.PromptTokens != 10 || resp.Usage.CompletionTokens != 5 || resp.Usage.TotalTokens != 15 {
+		t.Fatalf("usage: %+v", resp.Usage)
 	}
 }
 
 func TestAnthropicStreamToolCall(t *testing.T) {
+	var toolCalls []agent.ToolCall
 	adapter := newAnthropicTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t","name":"add","input":{}}}` + "\n\n"))
-		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+		writeSSE := func(payload string) { _, _ = w.Write([]byte("data: " + payload + "\n\n")) }
+		writeSSE(`{"type":"message_start","message":{"usage":{"input_tokens":8,"output_tokens":0}}}`)
+		writeSSE(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"add","input":{}}}`)
+		writeSSE(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"a\":1,\"b\":2}"}}`)
+		writeSSE(`{"type":"content_block_stop","index":0}`)
+		writeSSE(`{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":12}}`)
+		writeSSE(`{"type":"message_stop"}`)
 	})
-	resultCh, err := adapter.Stream(context.Background(), nil, nil, agent.CompleteOptions{})
+
+	resp, err := adapter.Complete(context.Background(),
+		[]agent.Message{{Role: agent.RoleUser, Content: "add"}},
+		[]agent.ToolSchema{{Name: "add"}}, agent.CompleteOptions{},
+		func(string) {})
 	if err != nil {
-		t.Fatalf("stream init: %v", err)
+		t.Fatalf("stream: %v", err)
 	}
-	var toolCalls []agent.ToolCall
-	for s := range resultCh {
-		if len(s.ToolCalls) > 0 {
-			toolCalls = s.ToolCalls
-		}
-		if s.Err != nil {
-			t.Fatalf("stream err: %v", s.Err)
-		}
+	toolCalls = resp.Message.ToolCalls
+	if len(toolCalls) != 1 {
+		t.Fatalf("tool calls: %+v", toolCalls)
 	}
-	if len(toolCalls) == 0 {
-		t.Fatal("expected tool calls in stream result")
+	tc := toolCalls[0]
+	if tc.Name != "add" || tc.ID != "toolu_1" {
+		t.Fatalf("tool call: %+v", tc)
 	}
-	if toolCalls[0].Name != "add" {
-		t.Fatalf("expected tool 'add', got %q", toolCalls[0].Name)
+	var args map[string]float64
+	_ = json.Unmarshal([]byte(tc.Arguments), &args)
+	if args["a"] != 1 || args["b"] != 2 {
+		t.Fatalf("args: %+v", args)
 	}
 }
 
@@ -170,12 +187,12 @@ func TestAnthropicStreamToolCall(t *testing.T) {
 // incremental input_json_delta events carrying tool arguments are silently
 // dropped. The Anthropic API sends:
 //
-//   content_block_start  → {type:"tool_use", id:"toolu_1", name:"read_file", input:{}}
-//   content_block_delta  → {type:"input_json_delta", partial_json:"{\"path\": \""}
-//   content_block_delta  → {type:"input_json_delta", partial_json:"agent/file.go\"}"}
-//   content_block_stop
-//   message_delta        → {stop_reason:"tool_use"}
-//   message_stop
+//	content_block_start  → {type:"tool_use", id:"toolu_1", name:"read_file", input:{}}
+//	content_block_delta  → {type:"input_json_delta", partial_json:"{\"path\": \""}
+//	content_block_delta  → {type:"input_json_delta", partial_json:"agent/file.go\"}"}
+//	content_block_stop
+//	message_delta        → {stop_reason:"tool_use"}
+//	message_stop
 //
 // The bug: only content_block_start is captured (input:{}), the
 // input_json_delta fragments are dropped, so the tool call ends up with
@@ -183,70 +200,29 @@ func TestAnthropicStreamToolCall(t *testing.T) {
 func TestAnthropicStreamToolCallWithInputJSONDelta(t *testing.T) {
 	adapter := newAnthropicTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		f, _ := w.(http.Flusher)
-		emit := func(s string) {
-			_, _ = w.Write([]byte("data: " + s + "\n\n"))
-			if f != nil {
-				f.Flush()
-			}
-		}
-
-		// 1. content_block_start: tool_use with empty input stub
-		emit(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}`)
-
-		// 2. First input_json_delta: partial JSON fragment
-		emit(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\": \""}}`)
-
-		// 3. Second input_json_delta: more JSON
-		emit(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"agent/file.go\"}"}}`)
-
-		// 4. message_delta with stop_reason
-		emit(`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":10,"output_tokens":5}}`)
-
-		// 5. message_stop
-		emit(`{"type":"message_stop"}`)
+		writeSSE := func(payload string) { _, _ = w.Write([]byte("data: " + payload + "\n\n")) }
+		writeSSE(`{"type":"message_start","message":{"usage":{"input_tokens":5,"output_tokens":0}}}`)
+		writeSSE(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}`)
+		writeSSE(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\": \""}}`)
+		writeSSE(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"agent/file.go\"}"}}`)
+		writeSSE(`{"type":"content_block_stop","index":0}`)
+		writeSSE(`{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":7}}`)
+		writeSSE(`{"type":"message_stop"}`)
 	})
 
-	resultCh, err := adapter.Stream(context.Background(),
-		[]agent.Message{{Role: agent.RoleUser, Content: "read the file"}},
-		[]agent.ToolSchema{{Name: "read_file", Parameters: map[string]any{"type": "object"}}},
-		agent.CompleteOptions{})
+	resp, err := adapter.Complete(context.Background(),
+		[]agent.Message{{Role: agent.RoleUser, Content: "read file"}},
+		[]agent.ToolSchema{{Name: "read_file"}}, agent.CompleteOptions{},
+		func(string) {})
 	if err != nil {
-		t.Fatalf("stream init: %v", err)
+		t.Fatalf("stream: %v", err)
 	}
-
-	var toolCalls []agent.ToolCall
-	for s := range resultCh {
-		if len(s.ToolCalls) > 0 {
-			toolCalls = s.ToolCalls
-		}
-		if s.Err != nil {
-			t.Fatalf("stream err: %v", s.Err)
-		}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("tool calls: %+v", resp.Message.ToolCalls)
 	}
-
-	if len(toolCalls) != 1 {
-		t.Fatalf("expected exactly 1 tool call, got %d", len(toolCalls))
-	}
-
-	tc := toolCalls[0]
-	if tc.ID != "toolu_1" {
-		t.Errorf("expected ID 'toolu_1', got %q", tc.ID)
-	}
-	if tc.Name != "read_file" {
-		t.Errorf("expected Name 'read_file', got %q", tc.Name)
-	}
+	tc := resp.Message.ToolCalls[0]
 	if tc.Arguments != `{"path": "agent/file.go"}` {
-		t.Errorf("expected Arguments '{\"path\": \"agent/file.go\"}', got %q", tc.Arguments)
-	}
-
-	// Verify it's valid JSON with the expected value
-	var args map[string]string
-	if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
-		t.Fatalf("arguments not valid JSON: %v", err)
-	}
-	if args["path"] != "agent/file.go" {
-		t.Fatalf("expected path=agent/file.go, got %v", args)
+		t.Fatalf("args: %q, want {\"path\": \"agent/file.go\"}", tc.Arguments)
 	}
 }
 
@@ -256,63 +232,37 @@ func TestAnthropicStreamToolCallWithInputJSONDelta(t *testing.T) {
 func TestAnthropicStreamToolCallMultipleInputJSONDeltas(t *testing.T) {
 	adapter := newAnthropicTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		f, _ := w.(http.Flusher)
-		emit := func(s string) {
-			_, _ = w.Write([]byte("data: " + s + "\n\n"))
-			if f != nil {
-				f.Flush()
-			}
-		}
-
-		// Two tool calls start at the same time (index 0 and 1)
-		emit(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_a","name":"get_weather","input":{}}}`)
-		emit(`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_b","name":"get_time","input":{}}}`)
-
-		// Arguments for both, interleaved
-		emit(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\": \""}}`)
-		emit(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"tz\": \""}}`)
-		emit(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"Paris\"}"}}`)
-		emit(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"UTC\"}"}}`)
-
-		emit(`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":20,"output_tokens":10}}`)
-		emit(`{"type":"message_stop"}`)
+		writeSSE := func(payload string) { _, _ = w.Write([]byte("data: " + payload + "\n\n")) }
+		writeSSE(`{"type":"message_start","message":{"usage":{"input_tokens":5,"output_tokens":0}}}`)
+		// tool_use 0
+		writeSSE(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_0","name":"get_weather","input":{}}}`)
+		writeSSE(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\":\"Paris\"}"}}`)
+		writeSSE(`{"type":"content_block_stop","index":0}`)
+		// tool_use 1
+		writeSSE(`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_time","input":{}}}`)
+		writeSSE(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"tz\":\"UTC\"}"}}`)
+		writeSSE(`{"type":"content_block_stop","index":1}`)
+		writeSSE(`{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":12}}`)
+		writeSSE(`{"type":"message_stop"}`)
 	})
 
-	resultCh, err := adapter.Stream(context.Background(), nil, nil, agent.CompleteOptions{})
+	resp, err := adapter.Complete(context.Background(),
+		[]agent.Message{{Role: agent.RoleUser, Content: "weather and time"}},
+		[]agent.ToolSchema{{Name: "get_weather"}, {Name: "get_time"}}, agent.CompleteOptions{},
+		func(string) {})
 	if err != nil {
-		t.Fatalf("stream init: %v", err)
+		t.Fatalf("stream: %v", err)
 	}
-
-	var toolCalls []agent.ToolCall
-	for s := range resultCh {
-		if len(s.ToolCalls) > 0 {
-			toolCalls = s.ToolCalls
-		}
-		if s.Err != nil {
-			t.Fatalf("stream err: %v", s.Err)
-		}
+	if len(resp.Message.ToolCalls) != 2 {
+		t.Fatalf("tool calls: %+v", resp.Message.ToolCalls)
 	}
-
-	if len(toolCalls) != 2 {
-		t.Fatalf("expected exactly 2 tool calls, got %d", len(toolCalls))
+	first := resp.Message.ToolCalls[0]
+	if first.Name != "get_weather" || first.Arguments != `{"city":"Paris"}` {
+		t.Fatalf("first: %+v", first)
 	}
-
-	// First tool call: get_weather (index 0, should come first)
-	tc0 := toolCalls[0]
-	if tc0.ID != "toolu_a" || tc0.Name != "get_weather" {
-		t.Errorf("tool call 0: ID=%q Name=%q", tc0.ID, tc0.Name)
-	}
-	if tc0.Arguments != `{"city": "Paris"}` {
-		t.Errorf("tool call 0 args: got %q", tc0.Arguments)
-	}
-
-	// Second tool call: get_time (index 1)
-	tc1 := toolCalls[1]
-	if tc1.ID != "toolu_b" || tc1.Name != "get_time" {
-		t.Errorf("tool call 1: ID=%q Name=%q", tc1.ID, tc1.Name)
-	}
-	if tc1.Arguments != `{"tz": "UTC"}` {
-		t.Errorf("tool call 1 args: got %q", tc1.Arguments)
+	second := resp.Message.ToolCalls[1]
+	if second.Name != "get_time" || second.Arguments != `{"tz":"UTC"}` {
+		t.Fatalf("second: %+v", second)
 	}
 }
 
@@ -334,15 +284,21 @@ func TestAnthropicCompleteRetries429(t *testing.T) {
 		}`))
 	})
 
-	adapter.RetryConfig = agent.RetryConfig{
-		MaxAttempts:   3,
-		BaseDelay:     5 * time.Millisecond,
-		MaxDelay:      50 * time.Millisecond,
-		BackoffFactor: 1.0,
-	}
+	adapter.Config = NewAnthropicConfig(
+		adapter.Config.DebugDir(),
+		agent.RetryConfig{
+			MaxAttempts:   3,
+			BaseDelay:     5 * time.Millisecond,
+			MaxDelay:      50 * time.Millisecond,
+			BackoffFactor: 1.0,
+		},
+		agent.Pricing{},
+		adapter.Config.Version,
+		adapter.Config.MaxTokens,
+	)
 
 	resp, err := adapter.Complete(context.Background(),
-		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}}, nil, agent.CompleteOptions{})
+		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}}, nil, agent.CompleteOptions{}, nil)
 	if err != nil {
 		t.Fatalf("complete after retry: %v", err)
 	}
@@ -364,23 +320,89 @@ func TestAnthropicStreamRetries429(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+		writeSSE := func(payload string) { _, _ = w.Write([]byte("data: " + payload + "\n\n")) }
+		writeSSE(`{"type":"message_start","message":{"usage":{"input_tokens":1,"output_tokens":0}}}`)
+		writeSSE(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
+		writeSSE(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"recovered"}}`)
+		writeSSE(`{"type":"content_block_stop","index":0}`)
+		writeSSE(`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}`)
+		writeSSE(`{"type":"message_stop"}`)
 	})
 
-	adapter.RetryConfig = agent.RetryConfig{
-		MaxAttempts:   3,
-		BaseDelay:     5 * time.Millisecond,
-		MaxDelay:      50 * time.Millisecond,
-		BackoffFactor: 1.0,
-	}
+	adapter.Config = NewAnthropicConfig(
+		adapter.Config.DebugDir(),
+		agent.RetryConfig{
+			MaxAttempts:   3,
+			BaseDelay:     5 * time.Millisecond,
+			MaxDelay:      50 * time.Millisecond,
+			BackoffFactor: 1.0,
+		},
+		agent.Pricing{},
+		adapter.Config.Version,
+		adapter.Config.MaxTokens,
+	)
 
-	_, err := adapter.Stream(context.Background(),
-		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}}, nil, agent.CompleteOptions{})
+	resp, err := adapter.Complete(context.Background(),
+		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}}, nil, agent.CompleteOptions{},
+		func(string) {})
 	if err != nil {
-		t.Fatalf("stream init after retry: %v", err)
+		t.Fatalf("stream after retry: %v", err)
+	}
+	if resp.Message.Content != "recovered" {
+		t.Fatalf("content: %q", resp.Message.Content)
 	}
 	if got := atomic.LoadInt32(&requests); got != 3 {
 		t.Fatalf("expected 3 requests, got %d", got)
+	}
+}
+
+func TestAnthropicStreamErrorEvent(t *testing.T) {
+	adapter := newAnthropicTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n"))
+	})
+	_, err := adapter.Complete(context.Background(),
+		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}}, nil, agent.CompleteOptions{},
+		func(string) {})
+	if err == nil || !strings.Contains(err.Error(), "overloaded") {
+		t.Fatalf("expected overloaded error, got %v", err)
+	}
+}
+
+// TestAnthropicStreamCostUsesFullUsage verifies that streamed cost is
+// computed from BOTH input (message_start) and output (message_delta)
+// tokens — the message_delta event only carries output_tokens, so pricing
+// computed there alone would undercount.
+func TestAnthropicStreamCostUsesFullUsage(t *testing.T) {
+	adapter := newAnthropicTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE := func(payload string) { _, _ = w.Write([]byte("data: " + payload + "\n\n")) }
+		writeSSE(`{"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":0}}}`)
+		writeSSE(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
+		writeSSE(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`)
+		writeSSE(`{"type":"content_block_stop","index":0}`)
+		writeSSE(`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":50}}`)
+		writeSSE(`{"type":"message_stop"}`)
+	})
+
+	adapter.Config = NewAnthropicConfig(
+		adapter.Config.DebugDir(),
+		adapter.Config.RetryPolicy(),
+		agent.Pricing{Input: 1e-6, Output: 2e-6},
+		adapter.Config.Version,
+		adapter.Config.MaxTokens,
+	)
+
+	resp, err := adapter.Complete(context.Background(),
+		[]agent.Message{{Role: agent.RoleUser, Content: "hi"}}, nil, agent.CompleteOptions{},
+		func(string) {})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	// 100 input * 1e-6 + 50 output * 2e-6 = 1e-4 + 1e-4 = 2e-4
+	want := 100*1e-6 + 50*2e-6
+	if math.Abs(resp.Usage.Cost-want) > 1e-12 {
+		t.Fatalf("cost: got %v, want %v (usage %+v)", resp.Usage.Cost, want, resp.Usage)
 	}
 }
 
@@ -389,7 +411,7 @@ func TestAnthropicHTTPError(t *testing.T) {
 		w.WriteHeader(400)
 		_, _ = w.Write([]byte(`{"error":"bad"}`))
 	})
-	_, err := adapter.Complete(context.Background(), nil, nil, agent.CompleteOptions{})
+	_, err := adapter.Complete(context.Background(), nil, nil, agent.CompleteOptions{}, nil)
 	if err == nil || !strings.Contains(err.Error(), "400") {
 		t.Fatalf("expected 400 error, got %v", err)
 	}

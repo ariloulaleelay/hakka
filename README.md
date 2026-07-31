@@ -53,7 +53,7 @@ Create a `hakka.json`:
   "default": "deepseek",
   "models": {
     "deepseek": {
-      "dialect": "openai",
+      "dialect": "deepseek",
       "base_url": "https://api.deepseek.com",
       "model": "deepseek-chat",
       "headers": {
@@ -225,7 +225,7 @@ See AGENT.md for the full list of JSON commands and protocol details.
   "default": "deepseek",
   "models": {
     "deepseek": {
-      "dialect": "openai",
+      "dialect": "deepseek",
       "base_url": "https://api.deepseek.com",
       "model": "deepseek-chat",
       "headers": {
@@ -270,7 +270,7 @@ configure per-token pricing and Hakka will calculate the monetary cost automatic
   "default": "deepseek",
   "models": {
     "deepseek": {
-      "dialect": "openai",
+      "dialect": "deepseek",
       "base_url": "https://api.deepseek.com",
       "model": "deepseek-chat",
       "headers": {
@@ -367,7 +367,6 @@ See `protocol.md` or `AGENT.md` for the full protocol specification.
                          ┌──────────▼──────────────────────────┐
                          │          ENGINE LAYER               │
                          │    Conversation (tool loop)         │
-                         │    StreamSession (stream+fallback)  │
                          │    CommandProcessor (/commands)     │
                          └──────────┬──────────────────────────┘
                                     │

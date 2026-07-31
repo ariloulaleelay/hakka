@@ -1,11 +1,9 @@
 package adapters
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -14,25 +12,14 @@ import (
 	"github.com/ariloulaleelay/hakka/agent"
 )
 
-// GeminiAdapter speaks the Google Generative Language v1beta API.
-//
-//
-// Model example:
-//
-//	gemini-3.1-pro-preview
 type GeminiAdapter struct {
-	HTTPClient  *http.Client
-	BaseURL     string
-	Model       string
-	Pricing     agent.Pricing
-	LLMDebugDir string // when non-empty, request/response payloads are logged here
-
-	// RetryConfig controls the retry policy for HTTP 429 rate-limit errors.
-	// Zero values use sensible defaults.
-	RetryConfig agent.RetryConfig
+	HTTPClient *http.Client
+	BaseURL    string
+	Model      string
+	Config     GeminiConfig
 }
 
-func NewGeminiAdapter(client *http.Client, baseURL, model string) *GeminiAdapter {
+func NewGeminiAdapter(client *http.Client, baseURL, model string, cfg GeminiConfig) *GeminiAdapter {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -40,10 +27,11 @@ func NewGeminiAdapter(client *http.Client, baseURL, model string) *GeminiAdapter
 		HTTPClient: client,
 		BaseURL:    strings.TrimRight(baseURL, "/"),
 		Model:      model,
+		Config:     cfg,
 	}
 }
 
-// --- protocol structs -------------------------------------------------------
+// ===== Protocol types =====
 
 type geminiPart struct {
 	Text             string            `json:"text,omitempty"`
@@ -63,7 +51,7 @@ type geminiFnResponse struct {
 }
 
 type geminiContent struct {
-	Role  string       `json:"role"` // user|model
+	Role  string       `json:"role"`
 	Parts []geminiPart `json:"parts"`
 }
 
@@ -105,7 +93,7 @@ type geminiResponse struct {
 	} `json:"usageMetadata"`
 }
 
-// --- conversion -------------------------------------------------------------
+// ===== Encode (hakka → Gemini) =====
 
 func appendGeminiSystem(sys *geminiSystemInstruction, content string) *geminiSystemInstruction {
 	if sys == nil {
@@ -121,10 +109,7 @@ func appendGeminiUserPart(contents []geminiContent, content string) []geminiCont
 		contents[len(contents)-1].Parts = append(contents[len(contents)-1].Parts, part)
 		return contents
 	}
-	return append(contents, geminiContent{
-		Role:  "user",
-		Parts: []geminiPart{part},
-	})
+	return append(contents, geminiContent{Role: "user", Parts: []geminiPart{part}})
 }
 
 func appendGeminiModelParts(contents []geminiContent, content string, toolCalls []agent.ToolCall, signatures []string) []geminiContent {
@@ -144,16 +129,19 @@ func geminiTextAndToolParts(content string, toolCalls []agent.ToolCall, signatur
 	if content != "" {
 		parts = append(parts, geminiPart{Text: content})
 	}
-	for idx, toolCall := range toolCalls {
+	for idx, tc := range toolCalls {
 		var args map[string]any
-		if toolCall.Arguments != "" {
-			_ = json.Unmarshal([]byte(toolCall.Arguments), &args)
+		if tc.Arguments != "" {
+			_ = json.Unmarshal([]byte(tc.Arguments), &args)
 		}
-		part := geminiPart{
-			FunctionCall: &geminiFnCall{Name: toolCall.Name, Args: args},
-		}
-		if idx < len(signatures) {
+		part := geminiPart{FunctionCall: &geminiFnCall{Name: tc.Name, Args: args}}
+		if idx < len(signatures) && signatures[idx] != "" {
 			part.ThoughtSignature = signatures[idx]
+		} else {
+			// Gemini 3 enforces thought_signature on every functionCall
+			// part. When history was created by another provider (no
+			// stored signatures), use the sanctioned synthetic fallback.
+			part.ThoughtSignature = "skip_thought_signature_validator"
 		}
 		parts = append(parts, part)
 	}
@@ -165,17 +153,12 @@ func appendGeminiToolResult(contents []geminiContent, name, content string) []ge
 	if err := json.Unmarshal([]byte(content), &result); err != nil || result == nil {
 		result = map[string]any{"result": content}
 	}
-	part := geminiPart{
-		FunctionResponse: &geminiFnResponse{Name: name, Response: result},
-	}
+	part := geminiPart{FunctionResponse: &geminiFnResponse{Name: name, Response: result}}
 	if len(contents) > 0 && contents[len(contents)-1].Role == "user" {
 		contents[len(contents)-1].Parts = append(contents[len(contents)-1].Parts, part)
 		return contents
 	}
-	return append(contents, geminiContent{
-		Role:  "user",
-		Parts: []geminiPart{part},
-	})
+	return append(contents, geminiContent{Role: "user", Parts: []geminiPart{part}})
 }
 
 func toGemini(history []agent.Message) (sys *geminiSystemInstruction, contents []geminiContent) {
@@ -203,17 +186,15 @@ func toGeminiTools(tools []agent.ToolSchema) []geminiTool {
 		return nil
 	}
 	decls := make([]geminiFnDecl, 0, len(tools))
-	for _, toolDef := range tools {
+	for _, td := range tools {
 		decls = append(decls, geminiFnDecl{
-			Name:        toolDef.Name,
-			Description: toolDef.Description,
-			Parameters:  toolDef.Parameters,
+			Name:        td.Name,
+			Description: td.Description,
+			Parameters:  td.Parameters,
 		})
 	}
 	return []geminiTool{{FunctionDeclarations: decls}}
 }
-
-// --- request building -------------------------------------------------------
 
 func (ad *GeminiAdapter) buildRequest(history []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) geminiRequest {
 	sys, contents := toGemini(history)
@@ -231,66 +212,22 @@ func (ad *GeminiAdapter) buildRequest(history []agent.Message, tools []agent.Too
 	return req
 }
 
-// --- endpoint URLs ----------------------------------------------------------
+// ===== Decode (Gemini → hakka) =====
 
-func (ad *GeminiAdapter) endpoint() string {
-	return fmt.Sprintf("%s/models/%s:generateContent", ad.BaseURL, ad.Model)
-}
-
-func (ad *GeminiAdapter) streamEndpoint() string {
-	return fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", ad.BaseURL, ad.Model)
-}
-
-// --- Complete ---------------------------------------------------------------
-
-func (ad *GeminiAdapter) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (*agent.LLMResponse, error) {
-	// First decode into raw JSON to extract cost
-	var rawBody json.RawMessage
-	if ad.RetryConfig.IsZero() {
-		if err := doJSONPost(ctx, ad.HTTPClient, ad.endpoint(), ad.buildRequest(msgs, tools, opts), &rawBody, "gemini", nil, ad.LLMDebugDir); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := retryOnRateLimit(ctx, ad.RetryConfig, func() error {
-			return doJSONPost(ctx, ad.HTTPClient, ad.endpoint(), ad.buildRequest(msgs, tools, opts), &rawBody, "gemini", nil, ad.LLMDebugDir)
-		}); err != nil {
-			return nil, err
-		}
+// appendGeminiResponse merges one GenerateContentResponse chunk (non-stream
+// or a single SSE chunk) into the accumulating LLMResponse. rawChunk is the
+// raw JSON bytes of the chunk, used for cache/cost extraction.
+func (ad *GeminiAdapter) appendGeminiResponse(out *agent.LLMResponse, resp geminiResponse, rawChunk []byte) {
+	if len(resp.Candidates) == 0 {
+		return
 	}
-
-	raw := extractRawUsage(rawBody)
-
-	var geminiResp geminiResponse
-	if err := json.Unmarshal(rawBody, &geminiResp); err != nil {
-		return nil, fmt.Errorf("gemini: decode response: %w", err)
+	candidate := resp.Candidates[0]
+	if candidate.FinishReason != "" {
+		out.FinishReason = candidate.FinishReason
 	}
-	if len(geminiResp.Candidates) == 0 {
-		return nil, fmt.Errorf("gemini: no candidates")
-	}
-
-	// Determine cost: use provider's cost if available, otherwise calculate from pricing
-	cost := raw.cost
-	if cost == 0 && (ad.Pricing.Input != 0 || ad.Pricing.Output != 0) {
-		cost = calculateCostFromPricing(ad.Pricing, raw)
-	}
-
-	out := &agent.LLMResponse{
-		Message:      agent.Message{Role: agent.RoleAssistant},
-		FinishReason: geminiResp.Candidates[0].FinishReason,
-		Usage: &agent.Usage{
-			PromptTokens:          geminiResp.UsageMetadata.PromptTokenCount,
-			CompletionTokens:      geminiResp.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:           geminiResp.UsageMetadata.TotalTokenCount,
-			PromptCacheHitTokens:  raw.promptCacheHit,
-			PromptCacheMissTokens: raw.promptCacheMiss,
-			Cost:                  cost,
-		},
-	}
-	var text strings.Builder
-	var sigs []string
-	for _, part := range geminiResp.Candidates[0].Content.Parts {
+	for _, part := range candidate.Content.Parts {
 		if part.Text != "" {
-			text.WriteString(part.Text)
+			out.Message.Content += part.Text
 		}
 		if part.FunctionCall != nil {
 			args, _ := json.Marshal(part.FunctionCall.Args)
@@ -302,116 +239,104 @@ func (ad *GeminiAdapter) Complete(ctx context.Context, msgs []agent.Message, too
 				Name:      part.FunctionCall.Name,
 				Arguments: string(args),
 			})
-			sigs = append(sigs, part.ThoughtSignature)
+			if out.Message.ProviderMetadata == nil {
+				out.Message.ProviderMetadata = map[string]any{}
+			}
+			sigs, _ := out.Message.ProviderMetadata["gemini_signatures"].([]string)
+			out.Message.ProviderMetadata["gemini_signatures"] = append(sigs, part.ThoughtSignature)
 		}
 	}
-	out.Message.Content = text.String()
-	if len(sigs) > 0 {
-		out.Message.ProviderMetadata = map[string]any{"gemini_signatures": sigs}
+	if resp.UsageMetadata.TotalTokenCount > 0 {
+		raw := extractRawUsage(rawChunk)
+		out.Usage = &agent.Usage{
+			PromptTokens:          resp.UsageMetadata.PromptTokenCount,
+			CompletionTokens:      resp.UsageMetadata.CandidatesTokenCount,
+			TotalTokens:           resp.UsageMetadata.TotalTokenCount,
+			PromptCacheHitTokens:  raw.promptCacheHit,
+			PromptCacheMissTokens: raw.promptCacheMiss,
+			Cost:                  ad.Config.ResolveCost(raw),
+		}
+	}
+}
+
+func (ad *GeminiAdapter) parseResponse(rawBody []byte) (*agent.LLMResponse, error) {
+	var resp geminiResponse
+	if err := json.Unmarshal(rawBody, &resp); err != nil {
+		return nil, fmt.Errorf("gemini: decode response: %w", err)
+	}
+	if len(resp.Candidates) == 0 {
+		return nil, fmt.Errorf("gemini: no candidates")
+	}
+
+	out := &agent.LLMResponse{
+		Message:      agent.Message{Role: agent.RoleAssistant},
+		FinishReason: resp.Candidates[0].FinishReason,
+	}
+	ad.appendGeminiResponse(out, resp, rawBody)
+	return out, nil
+}
+
+// ===== LLMAdapter =====
+
+func (ad *GeminiAdapter) Complete(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions, onDelta func(string)) (*agent.LLMResponse, error) {
+	if onDelta != nil {
+		return ad.completeStream(ctx, msgs, tools, opts, onDelta)
+	}
+	return ad.completeNonStream(ctx, msgs, tools, opts)
+}
+
+func (ad *GeminiAdapter) completeNonStream(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (*agent.LLMResponse, error) {
+	rawBody, err := doJSONPostWithRetry(ctx, ad.HTTPClient, ad.endpoint(),
+		ad.buildRequest(msgs, tools, opts), ad.Config.RetryPolicy(),
+		"gemini", nil, ad.Config.DebugDir())
+	if err != nil {
+		return nil, err
+	}
+	return ad.parseResponse(rawBody)
+}
+
+func (ad *GeminiAdapter) completeStream(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions, onDelta func(string)) (*agent.LLMResponse, error) {
+	body, err := doStreamPostWithRetry(ctx, ad.HTTPClient, ad.streamEndpoint(),
+		ad.buildRequest(msgs, tools, opts), ad.Config.RetryPolicy(),
+		"gemini", nil, ad.Config.DebugDir())
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+
+	out := &agent.LLMResponse{
+		Message: agent.Message{Role: agent.RoleAssistant},
+	}
+
+	scanErr := scanSSE(body, func(payload string) error {
+		var chunk geminiResponse
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			// Tolerate non-JSON payloads (keepalives, etc).
+			return nil
+		}
+		if len(chunk.Candidates) == 0 {
+			return nil
+		}
+		for _, part := range chunk.Candidates[0].Content.Parts {
+			if part.Text != "" {
+				onDelta(part.Text)
+			}
+		}
+		ad.appendGeminiResponse(out, chunk, []byte(payload))
+		return nil
+	})
+	if scanErr != nil {
+		return nil, scanErr
 	}
 	return out, nil
 }
 
-// --- Stream -----------------------------------------------------------------
+func (ad *GeminiAdapter) endpoint() string {
+	return fmt.Sprintf("%s/models/%s:generateContent", ad.BaseURL, ad.Model)
+}
 
-func (ad *GeminiAdapter) Stream(ctx context.Context, msgs []agent.Message, tools []agent.ToolSchema, opts agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	var body io.ReadCloser
-	if ad.RetryConfig.IsZero() {
-		var err error
-		body, err = doStreamPost(ctx, ad.HTTPClient, ad.streamEndpoint(), ad.buildRequest(msgs, tools, opts), "gemini", nil, ad.LLMDebugDir)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		if err := retryOnRateLimit(ctx, ad.RetryConfig, func() error {
-			var err error
-			body, err = doStreamPost(ctx, ad.HTTPClient, ad.streamEndpoint(), ad.buildRequest(msgs, tools, opts), "gemini", nil, ad.LLMDebugDir)
-			return err
-		}); err != nil {
-			return nil, err
-		}
-	}
-
-	resultCh := make(chan agent.StreamResult, 16)
-
-	go func() {
-		defer close(resultCh)
-		defer body.Close()
-
-		accum := newAppendAccumulator()
-		var pendingUsage *agent.Usage
-
-		scanner := bufio.NewScanner(body)
-		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data:") {
-				continue
-			}
-			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if payload == "" || payload == "[DONE]" {
-				continue
-			}
-
-			var geminiResp geminiResponse
-			if err := json.Unmarshal([]byte(payload), &geminiResp); err != nil {
-				continue
-			}
-			for _, candidate := range geminiResp.Candidates {
-				for _, part := range candidate.Content.Parts {
-					if part.FunctionCall != nil {
-						args, _ := json.Marshal(part.FunctionCall.Args)
-						if len(args) == 0 {
-							args = []byte("{}")
-						}
-						accum.add(agent.ToolCall{
-							ID:        uuid.NewString(),
-							Name:      part.FunctionCall.Name,
-							Arguments: string(args),
-						})
-						continue
-					}
-					if part.Text != "" {
-						select {
-						case <-ctx.Done():
-							resultCh <- agent.StreamResult{Err: ctx.Err()}
-							return
-						case resultCh <- agent.StreamResult{Delta: part.Text}:
-						}
-					}
-				}
-
-				// Check finish reason
-				if candidate.FinishReason != "" {
-					if geminiResp.UsageMetadata.TotalTokenCount > 0 {
-						raw := extractRawUsage([]byte(payload))
-						cost := raw.cost
-						if cost == 0 && (ad.Pricing.Input != 0 || ad.Pricing.Output != 0) {
-							cost = calculateCostFromPricing(ad.Pricing, raw)
-						}
-						pendingUsage = &agent.Usage{
-							PromptTokens:          geminiResp.UsageMetadata.PromptTokenCount,
-							CompletionTokens:      geminiResp.UsageMetadata.CandidatesTokenCount,
-							TotalTokens:           geminiResp.UsageMetadata.TotalTokenCount,
-							PromptCacheHitTokens:  raw.promptCacheHit,
-							PromptCacheMissTokens: raw.promptCacheMiss,
-							Cost:                  cost,
-						}
-					}
-					sendStreamFinal(resultCh, accum.flush(), pendingUsage, candidate.FinishReason)
-					return
-				}
-			}
-		}
-		if err := scanner.Err(); err != nil && err != io.EOF {
-			resultCh <- agent.StreamResult{Err: err}
-			return
-		}
-		// Stream ended without finish reason — normal completion
-		sendStreamFinal(resultCh, accum.flush(), pendingUsage, "")
-	}()
-
-	return resultCh, nil
+func (ad *GeminiAdapter) streamEndpoint() string {
+	return fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", ad.BaseURL, ad.Model)
 }
 
 var _ agent.LLMAdapter = (*GeminiAdapter)(nil)

@@ -11,10 +11,7 @@ import (
 // Registry entry but never call the adapter.
 type stubLLM struct{}
 
-func (stubLLM) Complete(_ context.Context, _ []Message, _ []ToolSchema, _ CompleteOptions) (*LLMResponse, error) {
-	return nil, nil
-}
-func (stubLLM) Stream(_ context.Context, _ []Message, _ []ToolSchema, _ CompleteOptions) (<-chan StreamResult, error) {
+func (stubLLM) Complete(_ context.Context, _ []Message, _ []ToolSchema, _ CompleteOptions, _ func(string)) (*LLMResponse, error) {
 	return nil, nil
 }
 
@@ -87,9 +84,6 @@ func TestPlatformForNamespace(t *testing.T) {
 
 	if ns.Conversation == nil {
 		t.Error("NamespaceComponents.Conversation is nil")
-	}
-	if ns.Streamer == nil {
-		t.Error("NamespaceComponents.Streamer is nil")
 	}
 	if ns.Tools == nil {
 		t.Error("NamespaceComponents.Tools is nil")

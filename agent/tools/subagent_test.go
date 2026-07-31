@@ -428,7 +428,7 @@ type spyAdapter struct {
 	fn func(msgs []agent.Message) string
 }
 
-func (s *spyAdapter) Complete(_ context.Context, msgs []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (*agent.LLMResponse, error) {
+func (s *spyAdapter) Complete(_ context.Context, msgs []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions, _ func(string)) (*agent.LLMResponse, error) {
 	reply := s.fn(msgs)
 	return &agent.LLMResponse{
 		Message:      agent.Message{Role: agent.RoleAssistant, Content: reply},
@@ -437,8 +437,3 @@ func (s *spyAdapter) Complete(_ context.Context, msgs []agent.Message, _ []agent
 	}, nil
 }
 
-func (s *spyAdapter) Stream(_ context.Context, _ []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions) (<-chan agent.StreamResult, error) {
-	ch := make(chan agent.StreamResult)
-	close(ch)
-	return ch, nil
-}

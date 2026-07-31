@@ -2,7 +2,7 @@
   "default": "deepseek",
   "models": {
     "deepseek": {
-      "dialect": "openai",
+      "dialect": "deepseek",
       "base_url": "https://api.deepseek.com",
       "model": "deepseek-chat",
       "headers": {
@@ -58,6 +58,19 @@
         "base_delay": "10s",
         "max_delay": "60s",
         "backoff_factor": 1.5
+      }
+    },
+    "gpt5-responses": {
+      "dialect": "openai-responses",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-5.4",
+      "headers": {
+        "Authorization": "Bearer ${env: OPENAI_API_KEY}"
+      },
+      "pricing": {
+        "input": 0.00000125,
+        "output": 0.000010,
+        "cache_hit_input": 0.000000625
       }
     }
   }
