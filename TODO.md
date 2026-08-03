@@ -53,6 +53,16 @@
     - [ ] Session tags
   - [x] Better session persistence (dedicated table for messages, not a single json blob)
   - [x] Support PostgreSQL in addition to SQLite (URL-based DB: `sqlite:path`, `postgres://...`)
+  - [x] Unique message IDs (base62, DB-backed sequence when available)
+  - [ ] Session child sessions / fork
+      - [x] Message UUIDs with DB-backed sequence (base62)
+      - [x] IDGenerator interface (RandomIDGenerator + SQLIDGenerator)
+      - [x] SessionData.ParentID + ForkPoint for lineage
+      - [x] ForkData() method on SessionData
+      - [x] session_fork JSON command
+      - [x] parent_id / fork_point in wire protocol (session metadata)
+      - [x] Refactor subagent_run to create persistent child sessions (not ephemeral)
+      - [ ] Atomic tool-call + results storage (to prevent orphaned tool_calls on crash)
   - [ ] Advanced session manipulation — on the fly context compression, guided context compression, stashes, forks
       - [ ] Configurable session compression strategies
       - [x] Guided session compression

@@ -576,25 +576,37 @@ func TestE2E_CancelMidTurn(t *testing.T) {
 	})
 
 	// Read until we get a done frame (with or without cancelled).
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	var doneFrame struct {
 		Type      string `json:"type"`
 		Cancelled bool   `json:"cancelled"`
 		Error     string `json:"error"`
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
+	found := false
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
+		// Reset struct to avoid stale fields from previous frames
+		// (e.g. error from a tool frame bleeding into done).
+		doneFrame = struct {
+			Type      string `json:"type"`
+			Cancelled bool   `json:"cancelled"`
+			Error     string `json:"error"`
+		}{}
 		if err := json.Unmarshal(data, &doneFrame); err != nil {
 			continue
 		}
 		if doneFrame.Type == "done" {
+			found = true
 			break
 		}
+	}
+	if !found {
+		t.Fatal("never received done frame")
 	}
 
 	if doneFrame.Error != "" {
@@ -635,6 +647,28 @@ func TestE2E_GetSessionEvents(t *testing.T) {
 
 	// Wait for done.
 	readUntilFrame(t, conn, "done", 5*time.Second)
+
+	// With the hub, a turn_finished broadcast arrives after the turn
+	// completes. Consume it before sending get_session.
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		for {
+			_, data, err := conn.Read(ctx)
+			if err != nil {
+				break
+			}
+			var base struct {
+				Type  string `json:"type"`
+				Event string `json:"event"`
+			}
+			json.Unmarshal(data, &base)
+			if base.Type == "session" && base.Event == "turn_finished" {
+				t.Log("consumed turn_finished broadcast")
+				break
+			}
+		}
+	}
 
 	// Now send get_session command.
 	writeWSFrame(t, conn, map[string]any{

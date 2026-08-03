@@ -45,6 +45,8 @@ func EngineChannelClientDecorator() ToolContextDecorator {
 	return ToolContextDecoratorFunc(func(ctx context.Context, sessionID string, events chan<- event.EngineEvent) context.Context {
 		rr := event.ResponseReaderFromContext(ctx)
 		cw := &event.EngineChannelWriter{SessionID: sessionID, Events: events}
-		return event.ContextWithClient(ctx, cw, rr)
+		ctx = event.ContextWithClient(ctx, cw, rr)
+		ctx = event.ContextWithEventSender(ctx, events)
+		return ctx
 	})
 }

@@ -158,6 +158,7 @@ func (ex *toolExecutor) appendToolResults(session SessionView, calls []ToolCall,
 	now := nowMillis()
 	for i, call := range calls {
 		result[i] = Message{
+			ID:         MakeUniqueID(),
 			Role:       RoleTool,
 			Content:    results[i],
 			ToolCallID: call.ID,

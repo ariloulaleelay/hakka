@@ -15,16 +15,12 @@ import (
 // TurnHandler for all shared logic: command handling, session/CWD
 // resolution, chat/stream turns, and event-to-frame conversion.
 //
-// Turn lifecycles are managed by turnTracker, which decouples the turn
-// from any single client connection:
-//   - When a client disconnects mid-turn, the turn continues running in
-//     the background. The subscriber is silently removed from the fan-out.
-//   - A reconnecting client (or a client that fetches an in-flight session
-//     via get_session) can subscribe to the running turn and receive all
-//     subsequent events.
-//   - Explicit cancellation via CancelSession still works.
+// Turn lifecycles are managed by the namespace hub's shared turnTracker.
+// The hub broadcasts all engine events (delta, tool, usage, done, req,
+// renamed) to every connected client in the namespace. Clients filter by
+// session_id on the receiving side.
 //
-// Note: all text-based slash command handling is performed by clients.
+// All text-based slash command handling is performed by clients.
 // The server only accepts structured JSON commands via the "command" field.
 // ---------------------------------------------------------------------------
 
@@ -35,35 +31,50 @@ type TurnHandler struct {
 	Cmd       *commands.CommandProcessor
 	Namespace string
 
-	// turns manages active turn lifecycles per session.
-	turns *turnTracker
+	hub *NamespaceHub
 }
 
 // NewTurnHandler builds a TurnHandler from the standard engine components.
 func NewTurnHandler(conv *agent.Conversation, cmd *commands.CommandProcessor, namespace string) *TurnHandler {
-	tt := &turnTracker{}
-	if cmd != nil {
-		cmd.SetSessionActiveChecker(func(sessionID string) bool {
-			return tt.Get(sessionID) != nil
-		})
-	}
-	return &TurnHandler{
+	h := &TurnHandler{
 		Conv:      conv,
 		Cmd:       cmd,
 		Namespace: namespace,
-		turns:     tt,
+		hub:       NewNamespaceHub(namespace),
+	}
+	if cmd != nil {
+		cmd.SetSessionActiveChecker(func(sessionID string) bool {
+			return h.Turns().Get(sessionID) != nil
+		})
+	}
+	return h
+}
+
+// Hub returns the namespace hub. Used by gateways to register/unregister
+// transport connections.
+func (h *TurnHandler) Hub() *NamespaceHub { return h.hub }
+
+// SetHub replaces the namespace hub with a shared instance. This must be
+// called before any turns are started. Used at wiring time to share a
+// single hub across multiple gateway transports for the same namespace
+// (e.g. standalone WS + webfront).
+func (h *TurnHandler) SetHub(hub *NamespaceHub) {
+	h.hub = hub
+	if h.Cmd != nil {
+		h.Cmd.SetSessionActiveChecker(func(sessionID string) bool {
+			return hub.Turns().Get(sessionID) != nil
+		})
 	}
 }
 
-// Turns returns the underlying turnTracker, used by gateways for
-// session discovery (in_flight status) and subscription management.
-func (h *TurnHandler) Turns() *turnTracker { return h.turns }
+// Turns returns the hub's shared turn tracker.
+func (h *TurnHandler) Turns() *turnTracker { return h.hub.Turns() }
 
 // CancelSession cancels an in-flight request for the given session.
 // Returns true if a running request was found and cancelled, false if
 // there was no active request for that session.
 func (h *TurnHandler) CancelSession(sessionID string) bool {
-	return h.turns.Cancel(sessionID)
+	return h.hub.Turns().Cancel(sessionID)
 }
 
 // HandleRequest processes a single user request.
@@ -73,10 +84,12 @@ func (h *TurnHandler) CancelSession(sessionID string) bool {
 //   - "chat": chat/stream turn (LLM invocation)
 //   - "": legacy fallback: if Command is set, treat as cmd; otherwise chat
 //
-// If there is already an active turn for this session (e.g. from a
-// previous client that disconnected), the new writer is subscribed to
-// the existing turn instead of starting a new one.
+// The writer is automatically subscribed to the namespace hub so it
+// receives all broadcast events.
 func (h *TurnHandler) HandleRequest(ctx context.Context, req FrameRequest, w frameWriter, responseReader *InProcessResponseReader) {
+	// Ensure the writer is registered with the hub.
+	h.hub.Subscribe(w)
+
 	// Determine if this is a command or chat request.
 	isCmd := req.Type == "cmd"
 	if req.Type == "" {
@@ -94,19 +107,16 @@ func (h *TurnHandler) HandleRequest(ctx context.Context, req FrameRequest, w fra
 	sessionID := req.SessionID
 
 	// Check for an active turn for this session.
-	if active := h.turns.Get(sessionID); active != nil {
+	if active := h.Turns().Get(sessionID); active != nil {
 		if req.Input == "" {
-			// Empty input means reconnection subscription.
-			active.ReplaceSubscriber(ctx, w)
-		} else {
-			// Non-empty input while turn is active: cancel old, start new.
-			h.turns.Cancel(sessionID)
-			h.startNewTurn(ctx, w, responseReader, req, sessionID, req.Input)
+			// Empty input on active turn — nothing to do.
+			return
 		}
-		return
+		// Non-empty input while turn is active: cancel old, start new.
+		h.hub.Turns().Cancel(sessionID)
 	}
 
-	// No active turn — start a new one.
+	// Start a new turn.
 	h.startNewTurn(ctx, w, responseReader, req, sessionID, req.Input)
 }
 
@@ -128,12 +138,6 @@ func (h *TurnHandler) startNewTurn(ctx context.Context, w frameWriter, responseR
 }
 
 // handleJSONCommand processes a structured JSON command request.
-//
-// Special case: when the command is "get_session" and the target
-// session has an active turn, the new writer is subscribed to the
-// running turn after the command response is sent. This allows a
-// reconnecting web client to send get_session and immediately
-// start receiving streaming events.
 func (h *TurnHandler) handleJSONCommand(ctx context.Context, req FrameRequest, w frameWriter, responseReader *InProcessResponseReader) {
 	cmdReq := req.Command
 
@@ -150,36 +154,34 @@ func (h *TurnHandler) handleJSONCommand(ctx context.Context, req FrameRequest, w
 	// Check in_flight status for get_session so writeCommandResult can
 	// decide whether to append a "done" event to the events replay.
 	if cmdReq.Cmd == "get_session" && cmdRes.Session != nil {
-		cmdRes.InFlight = h.turns.Get(cmdRes.Session.SessionID()) != nil
+		cmdRes.InFlight = h.Turns().Get(cmdRes.Session.SessionID()) != nil
+	}
+
+	// Continue command: trigger the LLM without adding a user message.
+	// Skip writeCommandResult — the turn's own done frame arrives via
+	// hub broadcast and serves as the response.
+	if cmdRes.Action == commands.ActionContinue {
+		if sessionID != "" {
+			h.startNewTurn(ctx, w, responseReader, req, sessionID, "")
+			return
+		}
+		// No session: fall through to writeCommandResult which will
+		// emit a done frame (ack / error indicator).
 	}
 
 	writeCommandResult(w, cmdRes)
 
-	// After get_session, subscribe the new writer to the target
-	// session's active turn if one exists.
-	if cmdReq.Cmd == "get_session" && cmdRes.Session != nil {
-		targetID := cmdRes.Session.SessionID()
-		if active := h.turns.Get(targetID); active != nil {
-			active.ReplaceSubscriber(ctx, w)
-		}
-	}
-
-	// Continue command: trigger the LLM without adding a user message.
-	// The command processor returns ActionContinue but doesn't invoke
-	// the LLM — that's the handler's responsibility.
-	// Only start a turn if we have a session to continue.
-	if cmdRes.Action == commands.ActionContinue && sessionID != "" {
-		h.startNewTurn(ctx, w, responseReader, req, sessionID, "")
+	// Broadcast session lifecycle events to all clients.
+	if cmdRes.SessionEvent != nil {
+		fr := sessionEventFrame(*cmdRes.SessionEvent)
+		h.hub.BroadcastExcept(fr, w) // requester already got direct response
 	}
 }
 
 // handleWithEngine runs a turn using the Conversation, registers it
-// with the turn tracker, and subscribes the calling writer.
-//
-// Unlike the old behaviour (which cancelled the turn on write failure),
-// this method uses the turnTracker's fan-out. On write failure the
-// subscriber is silently removed, but the turn continues for any
-// remaining subscribers. Reconnecting clients can subscribe later.
+// with the hub's turn tracker, and returns immediately. The turn's
+// events are broadcast to all hub subscribers by the tracker's
+// fan-out goroutine.
 func (h *TurnHandler) handleWithEngine(ctx context.Context, w frameWriter, sessionID, input string, cancel context.CancelFunc) {
 	eventCh, err := h.Conv.Execute(ctx, sessionID, input)
 	if err != nil {
@@ -187,13 +189,8 @@ func (h *TurnHandler) handleWithEngine(ctx context.Context, w frameWriter, sessi
 		return
 	}
 
-	// Register the turn with the tracker. The fan-out goroutine will
-	// distribute events to all subscribers, including this one.
-	at := h.turns.Start(sessionID, eventCh, cancel)
-
-	// Subscribe this writer and block until the turn finishes, the
-	// writer fails (client disconnects), or the context is cancelled.
-	// On write failure we do NOT cancel the turn — other subscribers
-	// may still be connected, or a client may reconnect later.
-	at.Subscribe(ctx, w)
+	// Register the turn with the hub's shared tracker. The fan-out
+	// goroutine broadcasts all events to the hub; no per-client
+	// subscription needed.
+	_ = h.hub.Turns().Start(sessionID, eventCh, cancel)
 }

@@ -690,3 +690,52 @@ func TestGetSessionEvents(t *testing.T) {
 		t.Fatal("expected messages field to be absent (use events instead)")
 	}
 }
+
+func TestFrameForEvent_SessionCreated(t *testing.T) {
+	childID := "child-abc"
+	parentID := "parent-xyz"
+	forkPoint := "fp-1"
+	evt := event.SessionCreated{
+		SessionID: childID,
+		Session: map[string]any{
+			"id":         childID,
+			"parent_id":  parentID,
+			"fork_point": forkPoint,
+			"name":       "child-session",
+			"short_id":   childID[:8],
+			"model":      "deepseek",
+			"message_count": 3,
+		},
+	}
+
+	w := &spyWriter{}
+	processEvent(w, evt)
+
+	frames := w.Frames()
+	if len(frames) != 1 {
+		t.Fatalf("expected 1 frame, got %d", len(frames))
+	}
+	fr := frames[0]
+
+	if fr.Type != "session" {
+		t.Fatalf("expected type 'session', got %q", fr.Type)
+	}
+	if fr.Event != "session_create" {
+		t.Fatalf("expected event 'session_create', got %q", fr.Event)
+	}
+	if fr.SessionID != childID {
+		t.Fatalf("expected session_id %q, got %q", childID, fr.SessionID)
+	}
+	if fr.Session == nil {
+		t.Fatal("expected session metadata map")
+	}
+	if fr.Session["id"] != childID {
+		t.Fatalf("expected session.id %q, got %v", childID, fr.Session["id"])
+	}
+	if fr.Session["parent_id"] != parentID {
+		t.Fatalf("expected session.parent_id %q, got %v", parentID, fr.Session["parent_id"])
+	}
+	if fr.Session["fork_point"] != forkPoint {
+		t.Fatalf("expected session.fork_point %q, got %v", forkPoint, fr.Session["fork_point"])
+	}
+}

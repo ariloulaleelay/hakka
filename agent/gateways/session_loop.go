@@ -268,7 +268,10 @@ func sessionListToMap(sessions []*agent.Session, currentID string, allSessions [
 // Engine event → wire frame conversion
 // ---------------------------------------------------------------------------
 
-func processEvent(w frameWriter, evt event.EngineEvent) bool {
+// frameForEvent converts an EngineEvent to a wire FrameResponse.
+// Returns (frame, true) for events that should be broadcast;
+// unrecognized events return (zero, false).
+func frameForEvent(evt event.EngineEvent) (FrameResponse, bool) {
 	ts := time.Now().UnixMilli()
 
 	switch e := evt.(type) {
@@ -277,7 +280,7 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 		if e.Arguments != "" {
 			args = json.RawMessage(e.Arguments)
 		}
-		return writeFrame(w, FrameResponse{
+		return FrameResponse{
 			Type:      "tool",
 			SessionID: e.SessionID,
 			Tool:      e.Name,
@@ -286,7 +289,7 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 			Args:      args,
 			Snippet:   e.ExecSnippet,
 			Timestamp: ts,
-		})
+		}, true
 
 	case event.ToolCallFinished:
 		status := "ok"
@@ -317,7 +320,7 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 		} else {
 			fr.Error = errMsg
 		}
-		return writeFrame(w, fr)
+		return fr, true
 
 	case event.UsageReported:
 		pt := e.Usage.PromptTokens
@@ -342,24 +345,24 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 		}
 		tc := e.Usage.TotalCost
 		fr.TotalCost = &tc
-		return writeFrame(w, fr)
+		return fr, true
 
 	case event.TextDelta:
-		return writeFrame(w, FrameResponse{
+		return FrameResponse{
 			Type:      "delta",
 			SessionID: e.SessionID,
 			Text:      e.Delta,
 			Timestamp: ts,
-		})
+		}, true
 
 	case event.ClientRequestSent:
-		return writeFrame(w, FrameResponse{
+		return FrameResponse{
 			Type:      "req",
 			SessionID: e.SessionID,
 			RequestID: e.RequestID,
 			Command:   e.Command,
 			Timestamp: ts,
-		})
+		}, true
 
 	case event.TurnFinished:
 		sid := e.SessionID
@@ -373,41 +376,94 @@ func processEvent(w frameWriter, evt event.EngineEvent) bool {
 
 		if e.Err != nil {
 			if errors.Is(e.Err, context.Canceled) {
-				return writeFrame(w, FrameResponse{
+				return FrameResponse{
 					Type:      "done",
 					SessionID: sid,
 					Cancelled: true,
 					Stats:     stats,
 					Timestamp: ts,
-				})
+				}, true
 			}
-			return writeFrame(w, FrameResponse{
+			return FrameResponse{
 				Type:      "done",
 				SessionID: sid,
 				Error:     e.Err.Error(),
 				Stats:     stats,
 				Timestamp: ts,
-			})
+			}, true
 		}
-		return writeFrame(w, FrameResponse{
+		return FrameResponse{
 			Type:      "done",
 			SessionID: sid,
 			Text:      e.Reply,
 			Stats:     stats,
 			Timestamp: ts,
-		})
+		}, true
 
 	case event.SessionRenamed:
-		return writeFrame(w, FrameResponse{
+		return FrameResponse{
 			Type:      "session",
 			SessionID: e.SessionID,
 			Event:     "renamed",
 			OldName:   e.OldName,
 			Name:      e.NewName,
 			Timestamp: ts,
-		})
+		}, true
+
+	case event.SessionCreated:
+		return FrameResponse{
+			Type:      "session",
+			SessionID: e.SessionID,
+			Event:     "session_create",
+			Session:   e.Session,
+			Timestamp: ts,
+		}, true
 	}
-	return true
+	return FrameResponse{}, false
+}
+
+// processEvent converts an EngineEvent to a wire frame and writes it.
+// Returns true on success, false on write failure.
+func processEvent(w frameWriter, evt event.EngineEvent) bool {
+	fr, ok := frameForEvent(evt)
+	if !ok {
+		return true // unrecognized events are silently skipped
+	}
+	return w.Write(fr) == nil
+}
+
+// ---------------------------------------------------------------------------
+// Session event broadcast helpers
+// ---------------------------------------------------------------------------
+
+// sessionEventFrame builds a wire frame from a commands.SessionEvent.
+func sessionEventFrame(ev commands.SessionEvent) FrameResponse {
+	switch ev.Type {
+	case commands.SessionCreated:
+		sessionMap := ev.Session.Metadata()
+		return FrameResponse{
+			Type:      "session",
+			SessionID: ev.SessionID,
+			Event:     "session_create",
+			Session:   sessionMap,
+		}
+	case commands.SessionRenamed:
+		return FrameResponse{
+			Type:      "session",
+			SessionID: ev.SessionID,
+			Event:     "renamed",
+			OldName:   ev.OldName,
+			Name:      ev.NewName,
+		}
+	case commands.SessionDeleted:
+		return FrameResponse{
+			Type:      "session",
+			SessionID: ev.SessionID,
+			Event:     "session_delete",
+		}
+	default:
+		return FrameResponse{}
+	}
 }
 
 func writeFrame(w frameWriter, r FrameResponse) bool {

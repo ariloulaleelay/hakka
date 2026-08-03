@@ -1256,3 +1256,114 @@ func TestShortestUniquePrefix_DifferentLengths(t *testing.T) {
 		t.Fatalf("expected prefix 'b' for b-short, got %q", prefixes["b-short"])
 	}
 }
+
+// --- Session fork tests ---
+
+func TestSessionFork_BlankChild(t *testing.T) {
+	_, cmd, sm, _ := newCommandComponentsWithTools(t)
+
+	// Create a parent with some messages.
+	parent, _ := sm.GetOrCreate(context.Background(), "testns", "")
+	parent.Append(agent.Message{ID: "m1", Role: agent.RoleUser, Content: "hello"})
+	parent.Append(agent.Message{ID: "m2", Role: agent.RoleAssistant, Content: "hi"})
+
+	// Fork without fork_point — blank child.
+	res := cmd.ExecuteJSON(context.Background(), parent.SessionID(), "session_fork",
+		params(map[string]any{"id": parent.SessionID()}))
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+	if res.Action != ActionSessionCreate {
+		t.Fatalf("expected ActionSessionCreate, got %v", res.Action)
+	}
+	if res.Session == nil {
+		t.Fatal("expected a child session")
+	}
+
+	childData := res.Session.Read()
+	if childData.ParentID != parent.SessionID() {
+		t.Fatalf("expected parent_id %q, got %q", parent.SessionID(), childData.ParentID)
+	}
+	if childData.ForkPoint != "" {
+		t.Fatalf("expected empty fork_point, got %q", childData.ForkPoint)
+	}
+	if len(childData.Messages) != 0 {
+		t.Fatalf("expected 0 messages in blank child, got %d", len(childData.Messages))
+	}
+}
+
+func TestSessionFork_CopiesMessages(t *testing.T) {
+	_, cmd, sm, _ := newCommandComponentsWithTools(t)
+
+	parent, _ := sm.GetOrCreate(context.Background(), "testns", "")
+	parent.Append(agent.Message{ID: "m1", Role: agent.RoleUser, Content: "first"})
+	parent.Append(agent.Message{ID: "m2", Role: agent.RoleAssistant, Content: "second"})
+	parent.Append(agent.Message{ID: "m3", Role: agent.RoleUser, Content: "third"})
+
+	// Fork at m2.
+	res := cmd.ExecuteJSON(context.Background(), parent.SessionID(), "session_fork",
+		params(map[string]any{"id": parent.SessionID(), "fork_point": "m2"}))
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+
+	childData := res.Session.Read()
+	if len(childData.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(childData.Messages))
+	}
+	if childData.Messages[0].ID != "m1" || childData.Messages[1].ID != "m2" {
+		t.Fatalf("unexpected messages: %+v", childData.Messages)
+	}
+	if childData.ForkPoint != "m2" {
+		t.Fatalf("expected fork_point 'm2', got %q", childData.ForkPoint)
+	}
+}
+
+func TestSessionFork_BadForkPoint(t *testing.T) {
+	_, cmd, sm, _ := newCommandComponentsWithTools(t)
+
+	parent, _ := sm.GetOrCreate(context.Background(), "testns", "")
+	parent.Append(agent.Message{ID: "m1", Role: agent.RoleUser, Content: "hello"})
+
+	res := cmd.ExecuteJSON(context.Background(), parent.SessionID(), "session_fork",
+		params(map[string]any{"id": parent.SessionID(), "fork_point": "nonexistent"}))
+
+	if res.Error == nil && res.Reply == "" {
+		t.Fatal("expected error for bad fork_point")
+	}
+}
+
+func TestSessionFork_MissingParentID(t *testing.T) {
+	_, cmd, _, _ := newCommandComponentsWithTools(t)
+
+	res := cmd.ExecuteJSON(context.Background(), "any-session", "session_fork",
+		params(map[string]any{}))
+
+	if res.Error == nil && res.Reply == "" {
+		t.Fatal("expected error for missing parent ID")
+	}
+}
+
+func TestSessionFork_MetadataHasLineage(t *testing.T) {
+	_, cmd, sm, _ := newCommandComponentsWithTools(t)
+
+	parent, _ := sm.GetOrCreate(context.Background(), "testns", "")
+	parent.Append(agent.Message{ID: "m1", Role: agent.RoleUser, Content: "hello"})
+
+	res := cmd.ExecuteJSON(context.Background(), parent.SessionID(), "session_fork",
+		params(map[string]any{"id": parent.SessionID(), "fork_point": "m1"}))
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+
+	meta := res.Session.Metadata()
+	if meta["parent_id"] != parent.SessionID() {
+		t.Fatalf("expected parent_id in metadata, got %v", meta["parent_id"])
+	}
+	if meta["fork_point"] != "m1" {
+		t.Fatalf("expected fork_point in metadata, got %v", meta["fork_point"])
+	}
+}

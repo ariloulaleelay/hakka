@@ -92,6 +92,14 @@ func NewSessionCommands(sm *agent.SessionManager, conv *agent.Conversation, ns s
 		Name: "session_autorename", Description: "Auto-generate name using LLM", Display: "session autorename",
 		Handler: sc.jsonSessionAutoRename,
 	})
+	reg.Register(Command{
+		Name: "session_fork", Description: "Fork a session from a parent", Display: "session fork",
+		Params: map[string]string{
+			"id":         "parent session ID or prefix",
+			"fork_point": "message ID to fork at (inclusive; omit for blank child)",
+		},
+		Handler: sc.jsonSessionFork,
+	})
 
 	return sc
 }
@@ -164,6 +172,11 @@ func (sc *SessionCommands) jsonSessionCreate(ctx context.Context, prevSessionID 
 		Cmd:     "session_create",
 		Data:    data,
 		Session: session,
+		SessionEvent: &SessionEvent{
+			Type:      SessionCreated,
+			SessionID: session.SessionID(),
+			Session:   session,
+		},
 	}
 }
 
@@ -207,7 +220,6 @@ func (sc *SessionCommands) jsonGetSession(ctx context.Context, sessionID string,
 	data, _ := json.Marshal(map[string]any{
 		"session":  session.Metadata(),
 		"messages": session.Messages(),
-		"events":   sessionEvents(session),
 	})
 	return CommandResult{
 		Handled: true,
@@ -260,11 +272,18 @@ func (sc *SessionCommands) jsonSessionDelete(ctx context.Context, sessionID stri
 		return CommandResult{Handled: true, Cmd: "session_delete", Error: err}
 	}
 
-	if wasCurrent {
-		return CommandResult{Handled: true, Action: ActionClearSession, Cmd: "session_delete", Data: data}
+	result := CommandResult{
+		Handled: true,
+		Action:  ActionClearSession,
+		Cmd:     "session_delete",
+		Data:    data,
+		SessionEvent: &SessionEvent{
+			Type:      SessionDeleted,
+			SessionID: target,
+		},
 	}
-
-	return CommandResult{Handled: true, Action: ActionClearSession, Cmd: "session_delete", Data: data}
+	_ = wasCurrent
+	return result
 }
 
 func (sc *SessionCommands) jsonSessionInfo(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
@@ -296,6 +315,7 @@ func (sc *SessionCommands) jsonSessionRename(ctx context.Context, sessionID stri
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "session_rename", Error: err}
 	}
+	oldName := session.SessionName()
 	session.SetSessionName(p.Name)
 	if err := sc.Sessions.Save(ctx, ns, session); err != nil {
 		return CommandResult{Handled: true, Cmd: "session_rename", Error: err}
@@ -305,7 +325,18 @@ func (sc *SessionCommands) jsonSessionRename(ctx context.Context, sessionID stri
 		"id":   session.SessionID(),
 		"name": p.Name,
 	})
-	return CommandResult{Handled: true, Cmd: "session_rename", Data: data, Session: session}
+	return CommandResult{
+		Handled: true,
+		Cmd:     "session_rename",
+		Data:    data,
+		Session: session,
+		SessionEvent: &SessionEvent{
+			Type:      SessionRenamed,
+			SessionID: session.SessionID(),
+			OldName:   oldName,
+			NewName:   p.Name,
+		},
+	}
 }
 
 func (sc *SessionCommands) jsonSessionAutoRename(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
@@ -318,6 +349,7 @@ func (sc *SessionCommands) jsonSessionAutoRename(ctx context.Context, sessionID 
 		return CommandResult{Handled: true, Cmd: "session_autorename", Reply: "auto-rename not available"}
 	}
 
+	oldName := session.SessionName()
 	newName, err := sc.Conv.AutoRename(ctx, session)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "session_autorename", Error: err}
@@ -327,68 +359,89 @@ func (sc *SessionCommands) jsonSessionAutoRename(ctx context.Context, sessionID 
 		"id":   session.SessionID(),
 		"name": newName,
 	})
-	return CommandResult{Handled: true, Cmd: "session_autorename", Data: data, Session: session}
+	return CommandResult{
+		Handled: true,
+		Cmd:     "session_autorename",
+		Data:    data,
+		Session: session,
+		SessionEvent: &SessionEvent{
+			Type:      SessionRenamed,
+			SessionID: session.SessionID(),
+			OldName:   oldName,
+			NewName:   newName,
+		},
+	}
 }
 
-// sessionEvents builds a replay-friendly event slice from the session
-// history, mirroring the live wire protocol. Returns []map[string]any
-// directly so the gateway can inject "done" metadata.
-func sessionEvents(session *agent.Session) []map[string]any {
-	var events []map[string]any
-	totalTokens := 0
-	totalCost := float64(0)
+// jsonSessionFork creates a child session by forking a parent at a given
+// message. The child inherits parent settings (model, CWD, tools, skills,
+// compact limit) and copies messages up to fork_point (inclusive).
+func (sc *SessionCommands) jsonSessionFork(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
+	ns := event.NamespaceFromContext(ctx)
 
-	for _, m := range session.Messages() {
-		switch m.Role {
-		case agent.RoleUser:
-			events = append(events, map[string]any{
-				"type":    "chat",
-				"session": session.SessionID(),
-				"text":    m.Content,
-				"ts":      m.Timestamp,
-			})
-		case agent.RoleAssistant:
-			if len(m.ToolCalls) > 0 {
-				for _, tc := range m.ToolCalls {
-					var args any
-					json.Unmarshal([]byte(tc.Arguments), &args)
-					events = append(events, map[string]any{
-						"type": "tool",
-						"id":   tc.ID,
-						"tool": tc.Name,
-						"args": args,
-					})
-				}
-			}
-			if m.Content != "" {
-				events = append(events, map[string]any{
-					"type": "delta",
-					"text": m.Content,
-				})
-				events = append(events, map[string]any{
-					"type": "done",
-					"text": m.Content,
-				})
-			}
-			if m.Usage != nil {
-				totalTokens += m.Usage.TotalTokens
-				totalCost += m.Usage.Cost
-			}
-		case agent.RoleTool:
-			// Tool results are not replayed as separate events
-			// in the current protocol version.
-		}
+	var p struct {
+		ID        string `json:"id"`
+		ForkPoint string `json:"fork_point"`
+	}
+	if params != nil {
+		json.Unmarshal(params, &p)
+	}
+	if p.ID == "" {
+		return CommandResult{Handled: true, Cmd: "session_fork", Reply: "error: parent session ID is required"}
 	}
 
-	// Append the final "done" replay event if the session has messages
-	if len(session.Messages()) > 0 {
-		events = append(events, map[string]any{
-			"type":         "done",
-			"total_tokens": totalTokens,
-			"total_cost":   totalCost,
-			"is_replay":    true,
-		})
+	// Resolve parent.
+	targetID, err := sc.Sessions.ResolveSessionID(ctx, ns, p.ID)
+	if err != nil {
+		return CommandResult{Handled: true, Cmd: "session_fork", Reply: err.Error()}
 	}
 
-	return events
+	parent, ok, err := sc.Sessions.Get(ctx, ns, targetID)
+	if err != nil {
+		return CommandResult{Handled: true, Cmd: "session_fork", Error: err}
+	}
+	if !ok {
+		return CommandResult{Handled: true, Cmd: "session_fork", Reply: fmt.Sprintf("parent session not found: %s", p.ID)}
+	}
+
+	parentData := parent.Read()
+
+	// Fork.
+	childData, err := parentData.ForkData(p.ForkPoint)
+	if err != nil {
+		return CommandResult{Handled: true, Cmd: "session_fork", Reply: fmt.Sprintf("fork failed: %s", err.Error())}
+	}
+
+	// Assign new identity.
+	childData.ID = agent.MakeUniqueID()
+	childData.Namespace = ns
+	childData.Name = "" // child gets its own name (or auto-rename later)
+
+	child := agent.NewSessionFromData(&childData)
+
+	// Persist.
+	if err := sc.Sessions.Store.Put(ctx, ns, child); err != nil {
+		return CommandResult{Handled: true, Cmd: "session_fork", Error: err}
+	}
+
+	// Ensure default model.
+	if sc.Conv != nil {
+		sc.Conv.EnsureDefaultModel(ctx, child)
+	}
+
+	data, _ := json.Marshal(map[string]any{
+		"session": child.Metadata(),
+	})
+	return CommandResult{
+		Handled: true,
+		Action:  ActionSessionCreate,
+		Cmd:     "session_fork",
+		Data:    data,
+		Session: child,
+		SessionEvent: &SessionEvent{
+			Type:      SessionCreated,
+			SessionID: child.SessionID(),
+			Session:   child,
+		},
+	}
 }

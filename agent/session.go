@@ -28,6 +28,7 @@ const (
 
 // Message is a single conversation turn.
 type Message struct {
+	ID               string         `json:"id"`
 	Role             Role           `json:"role"`
 	Content          string         `json:"content"`
 	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`
@@ -54,6 +55,8 @@ type Message struct {
 type SessionData struct {
 	Namespace        string
 	ID               string
+	ParentID         string // parent session ID (empty = root)
+	ForkPoint        string // message ID in parent: last message shared with child (inclusive; empty = no fork)
 	SystemPrompt     string
 	Messages         []Message
 	CreatedAt        time.Time
@@ -113,6 +116,142 @@ func (sd *SessionData) DeepCopy() SessionData {
 		copy(cp.ActiveSkills, sd.ActiveSkills)
 	}
 	return cp
+}
+
+// ForkData creates SessionData for a child session by copying messages
+// from the parent up to forkPoint (inclusive). If forkPoint is "",
+// the child starts with no messages but inherits all parent settings.
+//
+// If the last copied message is an assistant with tool_calls, the fork
+// point is silently advanced to include the corresponding tool results,
+// ensuring the child never sees orphaned tool calls.
+func (sd *SessionData) ForkData(forkPoint string) (SessionData, error) {
+	child := NewSessionData(sd.Namespace, sd.SystemPrompt)
+
+	// Inherit settings.
+	child.Model = sd.Model
+	child.ClientCWD = sd.ClientCWD
+	child.CompactSoftLimit = sd.CompactSoftLimit
+	if sd.EnabledTools != nil {
+		child.EnabledTools = make(map[string]bool, len(sd.EnabledTools))
+		for k, v := range sd.EnabledTools {
+			child.EnabledTools[k] = v
+		}
+	}
+	if sd.BlockedTools != nil {
+		child.BlockedTools = make(map[string]bool, len(sd.BlockedTools))
+		for k, v := range sd.BlockedTools {
+			child.BlockedTools[k] = v
+		}
+	}
+	if len(sd.ActiveSkills) > 0 {
+		child.ActiveSkills = make([]string, len(sd.ActiveSkills))
+		copy(child.ActiveSkills, sd.ActiveSkills)
+	}
+
+	child.ParentID = sd.ID
+	child.ForkPoint = forkPoint
+
+	// Empty forkPoint means no messages copied — blank child.
+	if forkPoint == "" {
+		return child, nil
+	}
+
+	// Find the fork point index.
+	forkIdx := -1
+	for i, m := range sd.Messages {
+		if m.ID == forkPoint {
+			forkIdx = i
+			break
+		}
+	}
+	if forkIdx < 0 {
+		return child, fmt.Errorf("fork_point %q not found in parent session %s", forkPoint, shortID(sd.ID))
+	}
+
+	// Advance past unresolved tool calls. If the last message in the
+	// copied range is an assistant with tool_calls, walk forward to
+	// include any tool results that follow it within the same turn.
+	endIdx := forkIdx
+	if endIdx < len(sd.Messages)-1 {
+		lastMsg := sd.Messages[endIdx]
+		if lastMsg.Role == RoleAssistant && len(lastMsg.ToolCalls) > 0 {
+			// Collect the set of tool call IDs from the last assistant.
+			needed := make(map[string]bool, len(lastMsg.ToolCalls))
+			for _, tc := range lastMsg.ToolCalls {
+				needed[tc.ID] = true
+			}
+			// Advance until all needed tool results are found (or EOM).
+			for endIdx+1 < len(sd.Messages) && len(needed) > 0 {
+				endIdx++
+				m := sd.Messages[endIdx]
+				if m.Role == RoleTool && m.ToolCallID != "" {
+					delete(needed, m.ToolCallID)
+				} else {
+					// Hit a non-tool message before all results — stop.
+					break
+				}
+			}
+		}
+	}
+
+	// Copy messages [0..endIdx] inclusive.
+	child.Messages = make([]Message, endIdx+1)
+	copy(child.Messages, sd.Messages[:endIdx+1])
+
+	// Defensive cleanup: if the last copied message is an assistant with
+	// tool calls whose results are NOT present in the copied range (e.g.
+	// the fork point is the parent's in-flight tool call like subagent_run
+	// whose result has not been appended yet), strip those unresolved
+	// calls so the child never sees orphaned tool_calls. If the message
+	// becomes empty, drop it entirely.
+	stripUnresolvedToolCalls(&child)
+
+	return child, nil
+}
+
+// stripUnresolvedToolCalls removes tool calls without matching tool
+// results from the last message of data, if it is an assistant message.
+// If that message becomes empty (no content, no remaining calls), it is
+// dropped. All other messages are left untouched. It is a no-op for
+// sessions whose last message is not an assistant with tool calls.
+func stripUnresolvedToolCalls(data *SessionData) {
+	msgs := data.Messages
+	if len(msgs) == 0 {
+		return
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != RoleAssistant || len(last.ToolCalls) == 0 {
+		return
+	}
+
+	// Collect all tool call IDs that have a result within the range.
+	resolved := make(map[string]bool, len(msgs))
+	for _, m := range msgs {
+		if m.Role == RoleTool && m.ToolCallID != "" {
+			resolved[m.ToolCallID] = true
+		}
+	}
+
+	var hasUnresolved bool
+	filtered := make([]ToolCall, 0, len(last.ToolCalls))
+	for _, tc := range last.ToolCalls {
+		if resolved[tc.ID] {
+			filtered = append(filtered, tc)
+		} else {
+			hasUnresolved = true
+		}
+	}
+	if !hasUnresolved {
+		return
+	}
+
+	if last.Content == "" && len(filtered) == 0 {
+		data.Messages = msgs[:len(msgs)-1]
+		return
+	}
+	last.ToolCalls = filtered
+	msgs[len(msgs)-1] = last
 }
 
 // ---------------------------------------------------------------------------
@@ -427,6 +566,8 @@ func (sess *Session) Metadata() map[string]any {
 	d := sess.data
 	return map[string]any{
 		"id":                      d.ID,
+		"parent_id":               d.ParentID,
+		"fork_point":              d.ForkPoint,
 		"name":                    d.Name,
 		"short_id":                shortID(d.ID),
 		"model":                   d.Model,

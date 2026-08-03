@@ -184,11 +184,15 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	}
 	logger.Info("models loaded", "default", registry.Default(), "names", registry.Names())
 
-	store, closeStore, err := openStore(cfg.dbPath)
+	store, idGen, closeStore, err := openStore(cfg.dbPath)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer closeStore()
+
+	if idGen != nil {
+		agent.SetDefaultIDGenerator(idGen)
+	}
 
 	// Override feedback URL if configured.
 	if url := modelCfg.FeedbackEndpoint(); url != "" {
@@ -230,7 +234,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	hakkatools.RegisterToolManagementTools(tools)
 	hakkatools.RegisterSkillTools(tools, platform.Skills())
 	hakkatools.RegisterSessionTools(tools, platform.Sessions(), nil)
-	hakkatools.RegisterSubagentTools(tools, platform.Router(), tools, engineCfg, platform.Skills())
+	hakkatools.RegisterSubagentTools(tools, platform.Sessions(), platform.Router(), tools, engineCfg, platform.Skills())
 
 	// ── MCP servers ───────────────────────────────────────────────────
 	mcpMgr := mcp.NewManager()
@@ -261,7 +265,9 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	// ── Gateways ──────────────────────────────────────────────────────
 	clientDecorator := agent.EngineChannelClientDecorator()
 
-	wsGw := buildWebSocketGateway(platform, tools, clientDecorator, cfg.wsAddr)
+	hub := gateways.NewNamespaceHub("ws")
+
+	wsGw := buildWebSocketGateway(platform, tools, clientDecorator, cfg.wsAddr, hub)
 
 	tgGw, err := buildTelegramGateway(platform, cfg.telegramToken, cfg.telegramWhitelist, cfg.telegramSOCKS5)
 	if err != nil {
@@ -273,7 +279,7 @@ func run(cfg appConfig, logger *slog.Logger) error {
 		gws = append(gws, tgGw)
 	}
 	if cfg.webAddr != "" {
-		wfGw := buildWebFrontGateway(platform, tools, cfg.webAddr)
+		wfGw := buildWebFrontGateway(platform, tools, cfg.webAddr, hub)
 		gws = append(gws, wfGw)
 	}
 
@@ -290,24 +296,29 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	return shutdownGateways(gws)
 }
 
-// buildWebSocketGateway wires the WebSocket gateway using the platform.
-func buildWebSocketGateway(platform *agent.Platform, tools *agent.ToolRegistry, decorator agent.ToolContextDecorator, addr string) *gateways.WebSocketGateway {
+// buildWebSocketGateway wires the WebSocket gateway using the platform
+// and the shared namespace hub.
+func buildWebSocketGateway(platform *agent.Platform, tools *agent.ToolRegistry, decorator agent.ToolContextDecorator, addr string, hub *gateways.NamespaceHub) *gateways.WebSocketGateway {
 	ns := platform.ForNamespace("ws", tools, decorator)
 	cmd := commands.New(platform.Sessions(), ns.Conversation, platform.SystemPrompt(), "ws")
 	cmd.SetTools(tools)
-	return gateways.NewWebSocketGateway(ns.Conversation, cmd, addr)
+	gw := gateways.NewWebSocketGateway(ns.Conversation, cmd, addr)
+	gw.Handler.SetHub(hub)
+	return gw
 }
 
 // buildWebFrontGateway creates a webfront Gateway that serves the embedded
 // SPA and a WebSocket endpoint on the same HTTP port. It shares the same
-// namespace ("ws") as the standalone WebSocket gateway so sessions are
-// consistent.
-func buildWebFrontGateway(platform *agent.Platform, tools *agent.ToolRegistry, addr string) *webfront.Gateway {
+// namespace ("ws") and hub as the standalone WebSocket gateway so sessions
+// and turn events are consistent across all transports.
+func buildWebFrontGateway(platform *agent.Platform, tools *agent.ToolRegistry, addr string, hub *gateways.NamespaceHub) *webfront.Gateway {
 	decorator := agent.EngineChannelClientDecorator()
 	ns := platform.ForNamespace("ws", tools, decorator)
 	cmd := commands.New(platform.Sessions(), ns.Conversation, platform.SystemPrompt(), "ws")
 	cmd.SetTools(tools)
-	return webfront.New(addr, ns.Conversation, cmd)
+	wfGw := webfront.New(addr, ns.Conversation, cmd)
+	wfGw.SetHub(hub)
+	return wfGw
 }
 
 // buildTelegramGateway wires the Telegram gateway with a restricted
@@ -418,9 +429,9 @@ func newLogger(level string) *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
 }
 
-func openStore(dataSource string) (agent.SessionStore, func(), error) {
+func openStore(dataSource string) (agent.SessionStore, agent.IDGenerator, func(), error) {
 	if dataSource == "" {
-		return agent.NewMemoryStore(), func() {}, nil
+		return agent.NewMemoryStore(), nil, func() {}, nil
 	}
 
 	// URL-based scheme detection.
@@ -428,24 +439,30 @@ func openStore(dataSource string) (agent.SessionStore, func(), error) {
 	case strings.HasPrefix(dataSource, "postgres://"), strings.HasPrefix(dataSource, "postgresql://"):
 		store, err := postgresstore.Open(dataSource)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return store, func() { _ = store.Close() }, nil
+		idGen := store.IDGenerator()
+		_ = store.MigrateMessageIDs(context.Background(), idGen)
+		return store, idGen, func() { _ = store.Close() }, nil
 
 	case strings.HasPrefix(dataSource, "sqlite:"):
 		path := strings.TrimPrefix(dataSource, "sqlite:")
 		store, err := sqlitestore.Open(path)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return store, func() { _ = store.Close() }, nil
+		idGen := store.IDGenerator()
+		_ = store.MigrateMessageIDs(context.Background(), idGen)
+		return store, idGen, func() { _ = store.Close() }, nil
 
 	default:
 		// Plain path — assume SQLite (backward compatibility).
 		store, err := sqlitestore.Open(dataSource)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return store, func() { _ = store.Close() }, nil
+		idGen := store.IDGenerator()
+		_ = store.MigrateMessageIDs(context.Background(), idGen)
+		return store, idGen, func() { _ = store.Close() }, nil
 	}
 }

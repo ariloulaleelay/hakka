@@ -35,6 +35,14 @@ func New(db *sql.DB, dialect Dialect) *Store {
 	return &Store{db: db, dialect: dialect}
 }
 
+// NewIDGenerator creates a SQLIDGenerator backed by this store's
+// database connection. The id_sequences table must already exist
+// (created by InitSchema). Call SeedSequences on the returned
+// generator to ensure the seed row exists.
+func (s *Store) NewIDGenerator() *SQLIDGenerator {
+	return NewSQLIDGenerator(s.db, s.dialect)
+}
+
 // InitSchema creates tables if they don't exist.
 func (s *Store) InitSchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, s.sessionsDDL()); err != nil {
@@ -43,10 +51,69 @@ func (s *Store) InitSchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, s.messagesDDL()); err != nil {
 		return fmt.Errorf("create messages table: %w", err)
 	}
+	// Add msg_id column to existing messages tables that don't have it yet.
+	if err := s.addMsgIDColumn(ctx); err != nil {
+		slog.Warn("sqlstore: failed to add msg_id column", "error", err)
+	}
+	// Add parent_id and fork_point columns for existing sessions tables.
+	if err := s.addForkColumns(ctx); err != nil {
+		slog.Warn("sqlstore: failed to add fork columns", "error", err)
+	}
+	if _, err := s.db.ExecContext(ctx, s.idSequencesDDL()); err != nil {
+		return fmt.Errorf("create id_sequences table: %w", err)
+	}
 	if _, err := s.db.ExecContext(ctx, s.indexesDDL()); err != nil {
 		slog.Warn("sqlstore: failed to create indexes", "error", err)
 	}
+	// Seed the global sequence if not already present.
+	if err := s.seedSequences(ctx); err != nil {
+		slog.Warn("sqlstore: failed to seed sequences", "error", err)
+	}
 	return nil
+}
+
+// addMsgIDColumn adds the msg_id column if it doesn't already exist.
+// SQLite does not support ADD COLUMN IF NOT EXISTS, so we catch the
+// "duplicate column" error.
+func (s *Store) addMsgIDColumn(ctx context.Context) error {
+	switch s.dialect {
+	case Postgres:
+		_, err := s.db.ExecContext(ctx, `ALTER TABLE messages ADD COLUMN IF NOT EXISTS msg_id TEXT NOT NULL DEFAULT ''`)
+		return err
+	default:
+		_, err := s.db.ExecContext(ctx, `ALTER TABLE messages ADD COLUMN msg_id TEXT NOT NULL DEFAULT ''`)
+		if err != nil && strings.Contains(err.Error(), "duplicate column") {
+			return nil
+		}
+		return err
+	}
+}
+
+// addForkColumns adds parent_id and fork_point columns to the sessions
+// table if they don't already exist.
+func (s *Store) addForkColumns(ctx context.Context) error {
+	switch s.dialect {
+	case Postgres:
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS parent_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS fork_point TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+		return nil
+	default:
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column") {
+				return err
+			}
+		}
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN fork_point TEXT NOT NULL DEFAULT ''`); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column") {
+				return err
+			}
+		}
+		return nil
+	}
 }
 
 // NeedsMigration returns true when the old-style "messages" column exists
@@ -144,6 +211,59 @@ func (s *Store) DropStreamingColumn(ctx context.Context) error {
 	return nil
 }
 
+// MigrateMessageIDs generates unique IDs for all messages that have an
+// empty msg_id. Call once after schema upgrades that add the msg_id column.
+func (s *Store) MigrateMessageIDs(ctx context.Context, idGen *SQLIDGenerator) error {
+	// Find all (session_ns, session_id, msg_index) tuples with empty msg_id.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT session_ns, session_id, msg_index FROM messages WHERE msg_id = '' ORDER BY session_ns, session_id, msg_index`)
+	if err != nil {
+		// Table might not exist yet — that's fine.
+		if strings.Contains(err.Error(), "no such column") {
+			return nil
+		}
+		return fmt.Errorf("query empty msg_ids: %w", err)
+	}
+	defer rows.Close()
+
+	type msgKey struct {
+		ns, id string
+		idx    int
+	}
+	var keys []msgKey
+	for rows.Next() {
+		var k msgKey
+		if err := rows.Scan(&k.ns, &k.id, &k.idx); err != nil {
+			return fmt.Errorf("scan msg key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if len(keys) == 0 {
+		return nil
+	}
+
+	// Update each message with a new unique ID.
+	// We batch updates per-session for efficiency.
+	updateQ := `UPDATE messages SET msg_id = ? WHERE session_ns = ? AND session_id = ? AND msg_index = ?`
+	if s.dialect == Postgres {
+		updateQ = `UPDATE messages SET msg_id = $1 WHERE session_ns = $2 AND session_id = $3 AND msg_index = $4`
+	}
+
+	for _, k := range keys {
+		newID := idGen.GenerateID()
+		if _, err := s.db.ExecContext(ctx, updateQ, newID, k.ns, k.id, k.idx); err != nil {
+			return fmt.Errorf("update msg_id for %s/%s[%d]: %w", k.ns, k.id, k.idx, err)
+		}
+	}
+
+	slog.Info("sqlstore: migrated message IDs", "count", len(keys))
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // SessionStore implementation
 // ---------------------------------------------------------------------------
@@ -194,7 +314,7 @@ func (s *Store) Put(ctx context.Context, namespace string, session *agent.Sessio
 	}
 
 	_, err = s.db.ExecContext(ctx, s.upsertSession(),
-		namespace, data.ID, data.SystemPrompt, string(createdText), string(updatedText),
+		namespace, data.ID, data.ParentID, data.ForkPoint, data.SystemPrompt, string(createdText), string(updatedText),
 		data.ClientCWD, data.Model, data.TotalTokens,
 		data.Name, enabledJSON, blockedJSON, data.CompactSoftLimit,
 		data.EstimatedContextTokens, data.TotalCost, activeSkillsJSON,
@@ -257,6 +377,8 @@ func (s *Store) sessionsDDL() string {
 		return `CREATE TABLE IF NOT EXISTS sessions (
 	namespace      TEXT NOT NULL,
 	id             TEXT NOT NULL,
+	parent_id      TEXT NOT NULL DEFAULT '',
+	fork_point     TEXT NOT NULL DEFAULT '',
 	system_prompt  TEXT NOT NULL,
 	created_at     TEXT NOT NULL,
 	updated_at     TEXT NOT NULL DEFAULT '',
@@ -276,6 +398,8 @@ func (s *Store) sessionsDDL() string {
 		return `CREATE TABLE IF NOT EXISTS sessions (
 	namespace      TEXT NOT NULL,
 	id             TEXT NOT NULL,
+	parent_id      TEXT NOT NULL DEFAULT '',
+	fork_point     TEXT NOT NULL DEFAULT '',
 	system_prompt  TEXT NOT NULL,
 	created_at     TEXT NOT NULL,
 	updated_at     TEXT NOT NULL DEFAULT '',
@@ -301,6 +425,7 @@ func (s *Store) messagesDDL() string {
 	session_ns   TEXT NOT NULL,
 	session_id   TEXT NOT NULL,
 	msg_index    INTEGER NOT NULL,
+	msg_id       TEXT NOT NULL DEFAULT '',
 	role         TEXT NOT NULL,
 	content      TEXT NOT NULL,
 	tool_calls   TEXT,
@@ -318,6 +443,7 @@ func (s *Store) messagesDDL() string {
 	session_ns   TEXT NOT NULL,
 	session_id   TEXT NOT NULL,
 	msg_index    INTEGER NOT NULL,
+	msg_id       TEXT NOT NULL DEFAULT '',
 	role         TEXT NOT NULL,
 	content      TEXT NOT NULL,
 	tool_calls   TEXT,
@@ -334,7 +460,35 @@ func (s *Store) messagesDDL() string {
 }
 
 func (s *Store) indexesDDL() string {
-	return `CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_ns, session_id)`
+	return `CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_ns, session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(session_ns, session_id, msg_id) WHERE msg_id != ''`
+}
+
+func (s *Store) idSequencesDDL() string {
+	switch s.dialect {
+	case Postgres:
+		return `CREATE TABLE IF NOT EXISTS id_sequences (
+	name      TEXT PRIMARY KEY,
+	next_val  INTEGER NOT NULL DEFAULT 0
+)`
+	default:
+		return `CREATE TABLE IF NOT EXISTS id_sequences (
+	name      TEXT NOT NULL,
+	next_val  INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (name)
+)`
+	}
+}
+
+func (s *Store) seedSequences(ctx context.Context) error {
+	switch s.dialect {
+	case Postgres:
+		_, err := s.db.ExecContext(ctx, `INSERT INTO id_sequences (name, next_val) VALUES ('global', 0) ON CONFLICT DO NOTHING`)
+		return err
+	default:
+		_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO id_sequences (name, next_val) VALUES ('global', 0)`)
+		return err
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -344,13 +498,13 @@ func (s *Store) indexesDDL() string {
 func (s *Store) selectSession() string {
 	switch s.dialect {
 	case Postgres:
-		return `SELECT namespace, id, system_prompt, created_at, updated_at, client_cwd,
+		return `SELECT namespace, id, parent_id, fork_point, system_prompt, created_at, updated_at, client_cwd,
 			model, total_tokens, name, enabled_tools, blocked_tools,
 			compact_soft_limit, estimated_context_tokens, total_cost,
 			active_skills
 		FROM sessions WHERE namespace = $1 AND id = $2`
 	default:
-		return `SELECT namespace, id, system_prompt, created_at, updated_at, client_cwd,
+		return `SELECT namespace, id, parent_id, fork_point, system_prompt, created_at, updated_at, client_cwd,
 			model, total_tokens, name, enabled_tools, blocked_tools,
 			compact_soft_limit, estimated_context_tokens, total_cost,
 			active_skills
@@ -361,13 +515,13 @@ func (s *Store) selectSession() string {
 func (s *Store) selectSessionsByNamespace() string {
 	switch s.dialect {
 	case Postgres:
-		return `SELECT namespace, id, system_prompt, created_at, updated_at, client_cwd,
+		return `SELECT namespace, id, parent_id, fork_point, system_prompt, created_at, updated_at, client_cwd,
 			model, total_tokens, name, enabled_tools, blocked_tools,
 			compact_soft_limit, estimated_context_tokens, total_cost,
 			active_skills
 		FROM sessions WHERE namespace = $1 ORDER BY updated_at DESC`
 	default:
-		return `SELECT namespace, id, system_prompt, created_at, updated_at, client_cwd,
+		return `SELECT namespace, id, parent_id, fork_point, system_prompt, created_at, updated_at, client_cwd,
 			model, total_tokens, name, enabled_tools, blocked_tools,
 			compact_soft_limit, estimated_context_tokens, total_cost,
 			active_skills
@@ -378,9 +532,11 @@ func (s *Store) selectSessionsByNamespace() string {
 func (s *Store) upsertSession() string {
 	switch s.dialect {
 	case Postgres:
-		return `INSERT INTO sessions (namespace, id, system_prompt, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		return `INSERT INTO sessions (namespace, id, parent_id, fork_point, system_prompt, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT(namespace, id) DO UPDATE SET
+			parent_id     = EXCLUDED.parent_id,
+			fork_point    = EXCLUDED.fork_point,
 			system_prompt = EXCLUDED.system_prompt,
 			updated_at    = EXCLUDED.updated_at,
 			client_cwd    = EXCLUDED.client_cwd,
@@ -394,9 +550,11 @@ func (s *Store) upsertSession() string {
 			total_cost    = EXCLUDED.total_cost,
 			active_skills = EXCLUDED.active_skills`
 	default:
-		return `INSERT INTO sessions (namespace, id, system_prompt, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		return `INSERT INTO sessions (namespace, id, parent_id, fork_point, system_prompt, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(namespace, id) DO UPDATE SET
+			parent_id     = excluded.parent_id,
+			fork_point    = excluded.fork_point,
 			system_prompt = excluded.system_prompt,
 			updated_at    = excluded.updated_at,
 			client_cwd    = excluded.client_cwd,
@@ -424,11 +582,11 @@ func (s *Store) deleteSession() string {
 func (s *Store) selectMessages() string {
 	switch s.dialect {
 	case Postgres:
-		return `SELECT role, content, tool_calls, tool_call_id, name, usage, finish_reason, provider_metadata, timestamp
+		return `SELECT msg_id, role, content, tool_calls, tool_call_id, name, usage, finish_reason, provider_metadata, timestamp
 		 FROM messages WHERE session_ns = $1 AND session_id = $2
 		 ORDER BY msg_index ASC`
 	default:
-		return `SELECT role, content, tool_calls, tool_call_id, name, usage, finish_reason, provider_metadata, timestamp
+		return `SELECT msg_id, role, content, tool_calls, tool_call_id, name, usage, finish_reason, provider_metadata, timestamp
 		 FROM messages WHERE session_ns = ? AND session_id = ?
 		 ORDER BY msg_index ASC`
 	}
@@ -446,11 +604,11 @@ func (s *Store) deleteMessages() string {
 func (s *Store) insertMessage() string {
 	switch s.dialect {
 	case Postgres:
-		return `INSERT INTO messages (session_ns, session_id, msg_index, role, content, tool_calls, tool_call_id, name, usage, finish_reason, provider_metadata, timestamp)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
+		return `INSERT INTO messages (session_ns, session_id, msg_index, msg_id, role, content, tool_calls, tool_call_id, name, usage, finish_reason, provider_metadata, timestamp)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
 	default:
-		return `INSERT INTO messages (session_ns, session_id, msg_index, role, content, tool_calls, tool_call_id, name, usage, finish_reason, provider_metadata, timestamp)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		return `INSERT INTO messages (session_ns, session_id, msg_index, msg_id, role, content, tool_calls, tool_call_id, name, usage, finish_reason, provider_metadata, timestamp)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	}
 }
 
@@ -473,7 +631,7 @@ func (s *Store) scanSession(scanner interface{ Scan(dest ...any) error }) (*agen
 		activeSkillsStr        string
 	)
 	err := scanner.Scan(
-		&data.Namespace, &data.ID, &data.SystemPrompt,
+		&data.Namespace, &data.ID, &data.ParentID, &data.ForkPoint, &data.SystemPrompt,
 		&createdText, &updatedText,
 		&data.ClientCWD, &modelStr, &totalTokens,
 		&data.Name, &enabledStr, &blockedStr, &compactSoftLim,
@@ -524,6 +682,7 @@ func (s *Store) loadMessages(ctx context.Context, ns, id string) ([]agent.Messag
 	var msgs []agent.Message
 	for rows.Next() {
 		var (
+			msgID               sql.NullString
 			roleStr             string
 			content             string
 			toolCallsJSON       sql.NullString
@@ -534,13 +693,16 @@ func (s *Store) loadMessages(ctx context.Context, ns, id string) ([]agent.Messag
 			providerMetadataJSON sql.NullString
 			ts                  sql.NullInt64
 		)
-		if err := rows.Scan(&roleStr, &content, &toolCallsJSON, &toolCallID,
+		if err := rows.Scan(&msgID, &roleStr, &content, &toolCallsJSON, &toolCallID,
 			&nameStr, &usageJSON, &finishReason, &providerMetadataJSON, &ts); err != nil {
 			return nil, err
 		}
 		msg := agent.Message{
 			Role:    agent.Role(roleStr),
 			Content: content,
+		}
+		if msgID.Valid {
+			msg.ID = msgID.String
 		}
 		if toolCallsJSON.Valid && toolCallsJSON.String != "" {
 			if err := json.Unmarshal([]byte(toolCallsJSON.String), &msg.ToolCalls); err != nil {
@@ -590,7 +752,7 @@ func (s *Store) insertMessages(ctx context.Context, ns, id string, msgs []agent.
 	q := s.insertMessage()
 	for i, msg := range msgs {
 		_, err := s.db.ExecContext(ctx, q,
-			ns, id, i, string(msg.Role), msg.Content,
+			ns, id, i, msg.ID, string(msg.Role), msg.Content,
 			nullJSON(msg.ToolCalls),
 			nullStr(msg.ToolCallID),
 			nullStr(msg.Name),

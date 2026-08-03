@@ -62,6 +62,14 @@ func New(addr string, conv *agent.Conversation, cmd *commands.CommandProcessor) 
 	}
 }
 
+// SetHub replaces the turn handler's namespace hub with a shared
+// instance. This must be called before Start. It enables all transports
+// for the same namespace (e.g. standalone WS + webfront) to share
+// event broadcasts, turn tracking, and in_flight status.
+func (gw *Gateway) SetHub(hub *gateways.NamespaceHub) {
+	gw.handler.SetHub(hub)
+}
+
 func (gw *Gateway) Start(ctx context.Context) error {
 	if gw.addr == "" {
 		return nil

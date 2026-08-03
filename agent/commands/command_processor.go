@@ -22,6 +22,9 @@ type CommandResult struct {
 	// Used by get_session to decide whether to append a "done" event
 	// to the events replay.
 	InFlight bool
+	// SessionEvent, when non-nil, describes a session lifecycle event
+	// that should be broadcast to all clients in the namespace.
+	SessionEvent *SessionEvent
 }
 
 // CommandAction describes what effect the command had on the session.
@@ -34,6 +37,28 @@ const (
 	ActionSessionCreate               // a new session was created
 	ActionContinue                    // trigger LLM without adding a user message
 )
+
+// ---------------------------------------------------------------------------
+// Session event — broadcast to all clients in namespace
+// ---------------------------------------------------------------------------
+
+// SessionEventType identifies the kind of lifecycle event.
+type SessionEventType string
+
+const (
+	SessionCreated SessionEventType = "session_create"
+	SessionRenamed SessionEventType = "renamed"
+	SessionDeleted SessionEventType = "session_delete"
+)
+
+// SessionEvent describes a session lifecycle event to be broadcast.
+type SessionEvent struct {
+	Type      SessionEventType
+	SessionID string
+	Session   *agent.Session // for SessionCreated / SessionUpdated
+	OldName   string         // for SessionRenamed
+	NewName   string         // for SessionRenamed
+}
 
 // CommandProcessor handles structured JSON commands (/help, /model, /session,
 // /tool, ...). No text-based slash command parsing happens here — clients
@@ -189,6 +214,11 @@ func (cp *CommandProcessor) execStart(ctx context.Context, sessionID string, par
 		Cmd:     "start",
 		Data:    data,
 		Session: session,
+		SessionEvent: &SessionEvent{
+			Type:      SessionCreated,
+			SessionID: session.SessionID(),
+			Session:   session,
+		},
 	}
 }
 

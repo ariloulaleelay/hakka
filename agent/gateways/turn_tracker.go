@@ -7,22 +7,15 @@ import (
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
-// subscriber represents a single connected client that receives events
-// from an active turn. When the writer fails (client disconnects), the
-// done channel is closed so the subscriber's goroutine can exit.
-type subscriber struct {
-	writer frameWriter
-	done   chan struct{} // closed when writer is removed due to write failure
-}
-
 // activeTurn represents a currently running turn for a session. It
-// reads from the turn's event channel and fan-outs to all subscribed
-// writers. The turn continues even if all subscribers disconnect.
+// reads from the turn's event channel and broadcasts every event to
+// the namespace hub. The turn continues even if all clients disconnect.
 type activeTurn struct {
-	cancel context.CancelFunc // cancels the turn's context (LLM + tools)
+	cancel  context.CancelFunc
 	eventCh <-chan event.EngineEvent
 	done    chan struct{} // closed when the fan-out goroutine exits
-	subs    []*subscriber
+	hub     *NamespaceHub
+	sessionID string
 	mu      sync.Mutex
 }
 
@@ -31,35 +24,53 @@ type activeTurn struct {
 // cancel a turn explicitly.
 type turnTracker struct {
 	turns sync.Map // sessionID -> *activeTurn
+	hub   *NamespaceHub
 }
 
-// Start registers a new active turn for the given session and launches
-// a fan-out goroutine that distributes events to all subscribers. The
-// goroutine exits when the event channel closes.
+func newTurnTracker(hub *NamespaceHub) *turnTracker {
+	return &turnTracker{hub: hub}
+}
+
+// Start registers a new active turn for the given session, broadcasts a
+// "turn_started" session event, and launches a fan-out goroutine that
+// broadcasts every engine event to the namespace hub. The goroutine
+// exits when the event channel closes, at which point a "turn_finished"
+// session event is broadcast.
 func (tt *turnTracker) Start(sessionID string, eventCh <-chan event.EngineEvent, cancel context.CancelFunc) *activeTurn {
 	at := &activeTurn{
-		cancel:  cancel,
-		eventCh: eventCh,
-		done:    make(chan struct{}),
+		cancel:    cancel,
+		eventCh:   eventCh,
+		done:      make(chan struct{}),
+		hub:       tt.hub,
+		sessionID: sessionID,
 	}
 	tt.turns.Store(sessionID, at)
+
+	// Notify all clients that a turn started on this session.
+	tt.hub.Broadcast(FrameResponse{
+		Type:      "session",
+		SessionID: sessionID,
+		Event:     "turn_started",
+	})
 
 	go func() {
 		defer close(at.done)
 		defer tt.turns.Delete(sessionID)
+		defer func() {
+			// Notify all clients the turn finished.
+			tt.hub.Broadcast(FrameResponse{
+				Type:      "session",
+				SessionID: sessionID,
+				Event:     "turn_finished",
+			})
+		}()
 
 		for evt := range eventCh {
-			at.mu.Lock()
-			var alive []*subscriber
-			for _, sub := range at.subs {
-				if processEvent(sub.writer, evt) {
-					alive = append(alive, sub)
-				} else {
-					close(sub.done) // signal that this writer disconnected
-				}
+			fr, ok := frameForEvent(evt)
+			if !ok {
+				continue
 			}
-			at.subs = alive
-			at.mu.Unlock()
+			tt.hub.Broadcast(fr)
 		}
 	}()
 
@@ -85,57 +96,4 @@ func (tt *turnTracker) Cancel(sessionID string) bool {
 		at.cancel()
 	}
 	return true
-}
-
-// Subscribe adds a writer to the active turn's subscriber list and
-// blocks until one of:
-//   - the turn finishes naturally (event channel closes)
-//   - the writer fails (client disconnects)
-//   - the context is cancelled
-func (at *activeTurn) Subscribe(ctx context.Context, w frameWriter) {
-	sub := &subscriber{writer: w, done: make(chan struct{})}
-
-	at.mu.Lock()
-	at.subs = append(at.subs, sub)
-	at.mu.Unlock()
-
-	select {
-	case <-at.done:
-	case <-sub.done:
-	case <-ctx.Done():
-	}
-}
-
-// ReplaceSubscriber removes any existing subscriber for the same
-// connection (identified by ConnKey) and replaces it with the new
-// writer. The old subscriber's done channel is closed so its blocking
-// goroutine can exit. Then blocks like Subscribe until the turn finishes,
-// the writer fails, or the context is cancelled.
-//
-// This prevents duplicate subscribers when a client re-subscribes to
-// an active turn (e.g. via get_session) from a different goroutine
-// on the same connection.
-func (at *activeTurn) ReplaceSubscriber(ctx context.Context, w frameWriter) {
-	key := w.ConnKey()
-	sub := &subscriber{writer: w, done: make(chan struct{})}
-
-	at.mu.Lock()
-	// Remove any existing subscriber with the same connection key.
-	var alive []*subscriber
-	for _, s := range at.subs {
-		if s.writer.ConnKey() == key {
-			close(s.done) // unblock the old subscriber's goroutine
-		} else {
-			alive = append(alive, s)
-		}
-	}
-	alive = append(alive, sub)
-	at.subs = alive
-	at.mu.Unlock()
-
-	select {
-	case <-at.done:
-	case <-sub.done:
-	case <-ctx.Done():
-	}
 }

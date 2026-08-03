@@ -50,3 +50,9 @@ func Open(dsn string) (*Store, error) {
 func (s *Store) Close() error {
 	return s.db.Close()
 }
+
+// IDGenerator creates a sequence-backed ID generator using the store's
+// database connection.
+func (s *Store) IDGenerator() *sqlstore.SQLIDGenerator {
+	return s.Store.NewIDGenerator()
+}

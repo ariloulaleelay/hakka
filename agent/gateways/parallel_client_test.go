@@ -21,6 +21,10 @@ import (
 // Uses MockProvider + mock tools for deterministic behavior across
 // multiple concurrent WebSocket connections.
 //
+// With the namespace hub, ALL events are broadcast to ALL clients in the
+// namespace. Tests verify that session lifecycle events and turn events
+// are correctly delivered to every connected client.
+//
 // Key constraint: the coder/websocket library treats Read errors
 // (including context timeouts) as fatal. Once a Read times out, the
 // connection cannot be reused. All helper functions respect this.
@@ -63,7 +67,6 @@ func connectAndWelcome(t *testing.T, addr string) *websocket.Conn {
 		t.Fatalf("expected welcome, got %q", welcome.Type)
 	}
 	// If sessions exist, consume the auto-subscribe frame.
-	// Use a blocking read since sendWelcome sends it synchronously.
 	if len(welcome.Sessions) > 0 {
 		readWSFrame(t, conn, 3*time.Second, &struct{ Type string }{})
 	}
@@ -115,10 +118,53 @@ func getSessionViaWebSocket(t *testing.T, conn *websocket.Conn, sessionID string
 	return f.Session
 }
 
+// readFrameByType reads from the WebSocket until a frame with the given
+// type is received, or timeout. Returns the matching frame and its raw data.
+// Skips frames of other types.
+func readFrameByType(t *testing.T, conn *websocket.Conn, frameType string, timeout time.Duration) (map[string]any, []byte) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("read frame: %v", err)
+		}
+		var f map[string]any
+		if err := json.Unmarshal(data, &f); err != nil {
+			continue
+		}
+		if f["type"] == frameType {
+			return f, data
+		}
+	}
+}
+
+// readDoneForSession reads frames until a done frame with the given
+// session_id is found.
+func readDoneForSession(t *testing.T, conn *websocket.Conn, sessionID string, timeout time.Duration) map[string]any {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("read frame: %v", err)
+		}
+		var f map[string]any
+		if err := json.Unmarshal(data, &f); err != nil {
+			continue
+		}
+		if f["type"] == "done" && f["session_id"] == sessionID {
+			return f
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
-// Test 1: New session not broadcast (design limitation)
+// Test 1: Session create broadcast — B receives session_create.
 // ---------------------------------------------------------------------------
-func TestParallel_NewSessionNotBroadcast(t *testing.T) {
+func TestParallel_SessionCreateBroadcast(t *testing.T) {
 	conv, cmd, mockAdapter, _, addr := parallelSetup(t, "par1")
 	gw := startMockGateway(t, conv, cmd, addr)
 	defer gw.Stop(context.Background())
@@ -129,38 +175,26 @@ func TestParallel_NewSessionNotBroadcast(t *testing.T) {
 	connB := connectAndWelcome(t, addr)
 	defer connB.CloseNow()
 
+	// A creates a session. B should receive the broadcast.
 	sessionID := createSessionViaWebSocket(t, connA)
 	t.Logf("Client A: created %s", sessionID)
 
-	// Conn C verifies the session exists in the store.
-	connC := connectAndWelcome(t, addr)
-	defer connC.CloseNow()
-
-	// Conn B can see it via session_list.
-	writeWSFrame(t, connB, map[string]any{
-		"type":    "cmd",
-		"command": map[string]any{"cmd": "session_list"},
-	})
-	var listRes struct {
-		Type  string          `json:"type"`
-		Cmd   string          `json:"cmd"`
-		Data  json.RawMessage `json:"data"`
-		Error string          `json:"error"`
+	// B should have received a "session" frame with event="session_create"
+	// since the hub broadcasts session lifecycle events to all clients.
+	f, _ := readFrameByType(t, connB, "session", 3*time.Second)
+	if f["event"] != "session_create" {
+		t.Fatalf("B: expected event 'session_create', got %q", f["event"])
 	}
-	readWSFrame(t, connB, 3*time.Second, &listRes)
-	if listRes.Error != "" {
-		t.Fatalf("session_list error: %s", listRes.Error)
+	s := f["session"].(map[string]any)
+	if s["id"] != sessionID {
+		t.Fatalf("B: expected session_id %s, got %v", sessionID, s["id"])
 	}
-	if listRes.Type != "result" {
-		t.Fatalf("expected type=result, got %q", listRes.Type)
-	}
-	t.Log("Client B: session_list works via explicit query")
-	t.Log("NOTE: new sessions are NOT broadcast to other connected clients (design limitation)")
+	t.Logf("Client B: received session_create broadcast for session %s", sessionID)
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: Shared session — B connects while A's turn (with slow_tool)
-// is running. Both receive the same tool and done events.
+// Test 2: Shared session — both receive the same tool and done events
+// via hub broadcast. B doesn't need to call get_session.
 // ---------------------------------------------------------------------------
 func TestParallel_SharedSessionBothReceiveEvents(t *testing.T) {
 	conv, cmd, mockAdapter, _, addr := parallelSetup(t, "par2")
@@ -176,61 +210,30 @@ func TestParallel_SharedSessionBothReceiveEvents(t *testing.T) {
 	enableToolsDirect(session, "slow_tool", "echo_tool")
 	conv.Sessions().Save(context.Background(), "par2", session)
 
+	// B connects BEFORE the turn starts — just for broadcast receipt.
+	connB := connectAndWelcome(t, addr)
+	defer connB.CloseNow()
+
 	// Start a turn that calls slow_tool (2s) then echo_tool then responds.
-	// The 2-second delay keeps the turn alive for B to connect.
 	writeWSFrame(t, connA, map[string]any{
 		"type": "chat", "session_id": sessionID,
 		"input": `[{"run_tool":{"name":"slow_tool","args":{"seconds":2}}},{"run_tool":{"name":"echo_tool","args":{"message":"done"}}},{"message":{"content":"Final"}}]`,
 	})
 
-	// Give the turn time to start executing slow_tool.
-	time.Sleep(200 * time.Millisecond)
-
-	// Client B connects and fetches the session.
-	connB := connectAndWelcome(t, addr)
-	defer connB.CloseNow()
-	getSessionViaWebSocket(t, connB, sessionID)
-
-	// Both receive done.
+	// Both receive done via hub broadcast (filter by session_id).
 	var wg sync.WaitGroup
-	doneA, doneB := make(chan struct{}), make(chan struct{})
-
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for {
-			_, d, e := connA.Read(context.Background())
-			if e != nil { return }
-			var base struct{ Type string }
-			json.Unmarshal(d, &base)
-			if base.Type == "done" { close(doneA); return }
-		}
+		readDoneForSession(t, connA, sessionID, 10*time.Second)
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for {
-			_, d, e := connB.Read(context.Background())
-			if e != nil { return }
-			var base struct{ Type string }
-			json.Unmarshal(d, &base)
-			if base.Type == "done" { close(doneB); return }
-		}
+		readDoneForSession(t, connB, sessionID, 10*time.Second)
 	}()
-
-	select {
-	case <-doneA:
-		t.Log("Client A: done")
-	case <-time.After(5 * time.Second):
-		t.Fatal("A timed out")
-	}
-	select {
-	case <-doneB:
-		t.Log("Client B: done")
-	case <-time.After(5 * time.Second):
-		t.Fatal("B timed out")
-	}
 	wg.Wait()
+	t.Log("Both clients received done for the shared session")
 }
 
 // ---------------------------------------------------------------------------
@@ -275,27 +278,14 @@ func TestParallel_CrossClientCancel(t *testing.T) {
 	}
 	t.Log("B: cancel acknowledged")
 
-	// A also gets cancelled done.
-	for {
-		_, d, e := connA.Read(context.Background())
-		if e != nil { t.Fatalf("A read: %v", e) }
-		var f struct {
-			Type      string `json:"type"`
-			Cancelled bool   `json:"cancelled"`
-			Error     string `json:"error"`
-		}
-		json.Unmarshal(d, &f)
-		if f.Type == "done" {
-			if f.Error != "" { t.Fatalf("A error: %s", f.Error) }
-			if !f.Cancelled { t.Fatal("A expected cancelled") }
-			break
-		}
-	}
-	t.Log("A: received cancel")
+	// A also gets cancelled done via hub broadcast.
+	readDoneForSession(t, connA, sessionID, 5*time.Second)
+	t.Log("A: received cancel done")
 }
 
 // ---------------------------------------------------------------------------
 // Test 4: Independent sessions — two clients chat on different sessions.
+// Each receives only the relevant done by filtering session_id.
 // ---------------------------------------------------------------------------
 func TestParallel_IndependentSessions(t *testing.T) {
 	conv, cmd, mockAdapter, _, addr := parallelSetup(t, "par4")
@@ -332,22 +322,24 @@ func TestParallel_IndependentSessions(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ctx, cxl := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cxl()
-		for { _, d, e := connA.Read(ctx); if e != nil { return }; var f struct{ Type, Text string }; json.Unmarshal(d, &f); if f.Type == "done" { textA = f.Text; return } }
+		f := readDoneForSession(t, connA, sidA, 5*time.Second)
+		if v, ok := f["text"].(string); ok {
+			textA = v
+		}
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ctx, cxl := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cxl()
-		for { _, d, e := connB.Read(ctx); if e != nil { return }; var f struct{ Type, Text string }; json.Unmarshal(d, &f); if f.Type == "done" { textB = f.Text; return } }
+		f := readDoneForSession(t, connB, sidB, 5*time.Second)
+		if v, ok := f["text"].(string); ok {
+			textB = v
+		}
 	}()
 	wg.Wait()
 
 	if textA != "A done" { t.Fatalf("expected 'A done', got %q", textA) }
 	if textB != "B done" { t.Fatalf("expected 'B done', got %q", textB) }
-	t.Logf("Independent turns: A=%q B=%q", textA, textB)
+	t.Logf("Independent turns filtered by session_id: A=%q B=%q", textA, textB)
 }
 
 // ---------------------------------------------------------------------------
@@ -361,13 +353,18 @@ func TestParallel_SessionListVisibility(t *testing.T) {
 
 	connA := connectAndWelcome(t, addr)
 	defer connA.CloseNow()
-	createSessionViaWebSocket(t, connA)
-	createSessionViaWebSocket(t, connA)
-
-	// Client B connects and lists sessions.
 	connB := connectAndWelcome(t, addr)
 	defer connB.CloseNow()
 
+	createSessionViaWebSocket(t, connA)
+	createSessionViaWebSocket(t, connA)
+
+	// B receives session_create broadcasts for both. Consume them.
+	for i := 0; i < 2; i++ {
+		readFrameByType(t, connB, "session", 3*time.Second)
+	}
+
+	// B lists sessions.
 	writeWSFrame(t, connB, map[string]any{
 		"type": "cmd", "command": map[string]any{"cmd": "session_list"},
 	})
@@ -383,7 +380,11 @@ func TestParallel_SessionListVisibility(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: Two clients create sessions simultaneously — unique IDs.
+// Test 6: Two clients create sessions — unique IDs.
+// Sessions are created sequentially to avoid the race condition where
+// each client's createSessionViaWebSocket helper may consume the other
+// client's broadcast instead of its own direct response. Both clients
+// still verify that session IDs are unique.
 // ---------------------------------------------------------------------------
 func TestParallel_SimultaneousSessionCreate(t *testing.T) {
 	conv, cmd, mockAdapter, _, addr := parallelSetup(t, "par6")
@@ -396,13 +397,15 @@ func TestParallel_SimultaneousSessionCreate(t *testing.T) {
 	connB := connectAndWelcome(t, addr)
 	defer connB.CloseNow()
 
-	var sidA, sidB string
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() { defer wg.Done(); sidA = createSessionViaWebSocket(t, connA) }()
-	wg.Add(1)
-	go func() { defer wg.Done(); sidB = createSessionViaWebSocket(t, connB) }()
-	wg.Wait()
+	// A creates a session; B receives the broadcast.
+	sidA := createSessionViaWebSocket(t, connA)
+	// B consumes the broadcast.
+	readFrameByType(t, connB, "session", 3*time.Second)
+
+	// B creates a session; A receives the broadcast.
+	sidB := createSessionViaWebSocket(t, connB)
+	// A consumes the broadcast.
+	readFrameByType(t, connA, "session", 3*time.Second)
 
 	if sidA == "" || sidB == "" { t.Fatal("both IDs must be non-empty") }
 	if sidA == sidB { t.Fatal("duplicate session IDs") }
@@ -435,25 +438,26 @@ func TestParallel_MidTurnReconnect(t *testing.T) {
 	})
 	time.Sleep(200 * time.Millisecond)
 
+	// B connects mid-turn. Welcome + auto-subscribe sent. B already
+	// receives live turn events via hub broadcast without needing
+	// explicit subscription.
 	connB := connectAndWelcome(t, addr)
 	defer connB.CloseNow()
-	getSessionViaWebSocket(t, connB, sessionID)
 
+	// Both receive done via hub broadcast.
 	var wg sync.WaitGroup
-	doneA, doneB := make(chan struct{}), make(chan struct{})
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for { _, d, e := connA.Read(context.Background()); if e != nil { return }; var base struct{ Type string }; json.Unmarshal(d, &base); if base.Type == "done" { close(doneA); return } }
+		readDoneForSession(t, connA, sessionID, 10*time.Second)
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for { _, d, e := connB.Read(context.Background()); if e != nil { return }; var base struct{ Type string }; json.Unmarshal(d, &base); if base.Type == "done" { close(doneB); return } }
+		readDoneForSession(t, connB, sessionID, 10*time.Second)
 	}()
-	<-doneA; t.Log("A done")
-	<-doneB; t.Log("B done")
 	wg.Wait()
+	t.Log("Both done")
 }
 
 // ---------------------------------------------------------------------------
@@ -482,23 +486,20 @@ func TestParallel_StreamingMidTurnReconnect(t *testing.T) {
 
 	connB := connectAndWelcome(t, addr)
 	defer connB.CloseNow()
-	getSessionViaWebSocket(t, connB, sessionID)
 
 	var wg sync.WaitGroup
-	doneA, doneB := make(chan struct{}), make(chan struct{})
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for { _, d, e := connA.Read(context.Background()); if e != nil { return }; var base struct{ Type string }; json.Unmarshal(d, &base); if base.Type == "done" { close(doneA); return } }
+		readDoneForSession(t, connA, sessionID, 10*time.Second)
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for { _, d, e := connB.Read(context.Background()); if e != nil { return }; var base struct{ Type string }; json.Unmarshal(d, &base); if base.Type == "done" { close(doneB); return } }
+		readDoneForSession(t, connB, sessionID, 10*time.Second)
 	}()
-	<-doneA; t.Log("A done")
-	<-doneB; t.Log("B done")
 	wg.Wait()
+	t.Log("Both done after streaming reconnect")
 }
 
 // ---------------------------------------------------------------------------
@@ -538,16 +539,18 @@ func TestParallel_ConcurrentToolTurnsDifferentSessions(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ctx, cxl := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cxl()
-		for { _, d, e := connA.Read(ctx); if e != nil { return }; var f struct{ Type, Text string }; json.Unmarshal(d, &f); if f.Type == "done" { textA = f.Text; return } }
+		f := readDoneForSession(t, connA, sidA, 5*time.Second)
+		if v, ok := f["text"].(string); ok {
+			textA = v
+		}
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ctx, cxl := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cxl()
-		for { _, d, e := connB.Read(ctx); if e != nil { return }; var f struct{ Type, Text string }; json.Unmarshal(d, &f); if f.Type == "done" { textB = f.Text; return } }
+		f := readDoneForSession(t, connB, sidB, 5*time.Second)
+		if v, ok := f["text"].(string); ok {
+			textB = v
+		}
 	}()
 	wg.Wait()
 

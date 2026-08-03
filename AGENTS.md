@@ -31,6 +31,7 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
                          │    ├─ ToolExecutor (concurrent)     │
                          │    └─ AutoRenamer (naming)          │
                          │    commands/ (slash-commands)       │
+                         │    NamespaceHub (broadcast)         │
                          └──────────┬──────────────────────────┘
                                     │
               ┌─────────────────────┼─────────────────────┐
@@ -74,7 +75,8 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | **ProcessManager** | `agent/tools/process.go` | Goroutine-safe subprocess registry with ring-buffered stdout+stderr |
 | **Gateway** | `agent/gateways/` | Transport layer — WebSocket (`websocket.go`), Telegram (`telegram.go`). Wire framing in `frame.go`. |
 | **ResponseReader** | `agent/gateways/response_reader.go` | Async response awaiting for client-initiated tool calls (e.g. Neovim `vim_run_command`) |
-| **TurnTracker** | `agent/gateways/turn_tracker.go` | Manages active turns per session — allows reconnection, fan-out to multiple subscribers, and cancellation |
+| **TurnTracker** | `agent/gateways/turn_tracker.go` | Manages active turns per session — cancellation, in_flight status. All turn events are broadcast to every connected client via the `NamespaceHub`; no per-client subscription lists |
+| **NamespaceHub** | `agent/gateways/namespace_hub.go` | Per-namespace event broadcast hub. All connected clients (WS, webfront) register their writers here. All turn events and session lifecycle events are broadcast to every subscriber in the namespace. Owns the namespace's shared `turnTracker`. |
 | **Hooks** | `agent/engine.go` | Lifecycle callbacks: `OnToolCall`, `OnToolResult`, `OnLLMResponse`, `OnError` |
 | **EngineEvent types** | `agent/event/event.go` | Typed event structs (`ToolCallStarted`, `ToolCallFinished`, `UsageReported`, `TextDelta`, etc.) |
 | **EngineChannelWriter** | `agent/event/engine_writer.go` | Serialises tool-to-client requests through the engine event channel |
@@ -197,6 +199,8 @@ A typical client follows this sequence:
 **Key rules for client authors:**
 
 - Always include `session_id` on every request once you have one.
+- **All events are broadcast to all clients in the namespace.** Filter by
+  `session_id` to show only the session(s) you are viewing.
 - Streaming is adapter-controlled: the server emits `type:"delta"` frames
   when the adapter supports streaming, or just a `type:"done"` frame with
   the full text. Clients must handle both paths.
@@ -206,11 +210,13 @@ A typical client follows this sequence:
   interleaved with deltas. Each tool event carries a unique `id` field
   that correlates `status:"start"` with `status:"ok"`/`status:"err"`.
 - If the LLM calls `vim_run_command`, you will receive a `type:"req"` event
-  with flat `request_id` and `command` fields. You **must** reply with
+  with flat `request_id` and `command` fields — broadcast to ALL clients.
+  You **must** reply with
   `{"type":"resp","request_id":"...","result":...}` or the tool will block
-  until timeout.
+  until timeout. First responder wins.
 - Cancel an in-flight turn by sending `{"type":"cancel","session_id":"..."}`.
-  The server replies with `{"type":"done","cancelled":true}`.
+  The server replies with `{"type":"done","cancelled":true}` immediately,
+  followed by a second `done` with `stats` when the turn terminates.
 - Set CWD before sending substantive input via `cwd_set` command.
 
 See `protocol.md` for the complete frame reference.

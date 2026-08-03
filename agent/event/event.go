@@ -92,6 +92,18 @@ type SessionRenamed struct {
 
 func (SessionRenamed) engineEvent() {}
 
+// SessionCreated is emitted by tools that create a new session during
+// a turn (subagent_run, session_create). Transports map it to a
+// type:"session" frame with event:"session_create" and broadcast it
+// through the namespace hub so all connected clients see the new
+// session immediately — no reconnect or manual refresh needed.
+type SessionCreated struct {
+	SessionID string
+	Session   map[string]any // session.Metadata() — already carries parent_id, fork_point, etc.
+}
+
+func (SessionCreated) engineEvent() {}
+
 // ---------------------------------------------------------------------------
 // Client communication — allows tools to send requests to the client
 // (e.g. Neovim) and receive responses over the same connection.
@@ -235,6 +247,27 @@ type ClientRequestSent struct {
 }
 
 func (ClientRequestSent) engineEvent() {}
+
+// ---------------------------------------------------------------------------
+// Event sender context — lets tools emit engine events into the turn's
+// event channel (which the turnTracker fans out to all hub subscribers).
+// ---------------------------------------------------------------------------
+
+type engineEventSenderKey struct{}
+
+// ContextWithEventSender stores a sender in the context so tools can
+// emit EngineEvents (e.g. SessionCreated) into the parent turn's event
+// channel, where the turnTracker picks them up and broadcasts them.
+func ContextWithEventSender(ctx context.Context, sender chan<- EngineEvent) context.Context {
+	return context.WithValue(ctx, engineEventSenderKey{}, sender)
+}
+
+// EventSenderFromContext returns the EngineEvent sender stored in the
+// context, or nil.
+func EventSenderFromContext(ctx context.Context) chan<- EngineEvent {
+	s, _ := ctx.Value(engineEventSenderKey{}).(chan<- EngineEvent)
+	return s
+}
 
 // ---------------------------------------------------------------------------
 // ToolResult — typed outcome of a tool invocation.

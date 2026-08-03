@@ -14,8 +14,10 @@ import (
 
 // spyWriter captures all frames written to it.
 type spyWriter struct {
-	mu     sync.Mutex
-	frames []FrameResponse
+	mu      sync.Mutex
+	frames  []FrameResponse
+	name    string // for debugging
+	connKey string // unique ID, defaults to "test" for backward compat
 }
 
 func (w *spyWriter) Write(f FrameResponse) error {
@@ -25,7 +27,12 @@ func (w *spyWriter) Write(f FrameResponse) error {
 	return nil
 }
 
-func (w *spyWriter) ConnKey() string { return "test" }
+func (w *spyWriter) ConnKey() string {
+	if w.connKey != "" {
+		return w.connKey
+	}
+	return "test"
+}
 
 func (w *spyWriter) Frames() []FrameResponse {
 	w.mu.Lock()

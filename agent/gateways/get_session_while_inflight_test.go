@@ -12,12 +12,10 @@ import (
 )
 
 // TestGetSessionDuringActiveTurn verifies that sending a get_session
-// command while a turn is running returns the session data immediately,
-// without getting blocked by the active turn's subscription.
-//
-// Regression test for the bug where sendWelcome called ReplaceSubscriber
-// (which blocks) before sending the session data, preventing the
-// get_session response from being delivered.
+// command while a turn is running returns the session data immediately
+// (without blocking on turn completion). With the namespace hub
+// architecture, all events are broadcast to every subscriber; no
+// per-turn subscription is needed.
 func TestGetSessionDuringActiveTurn(t *testing.T) {
 	// ── Setup: adapter that blocks until we signal ──────────────────────
 	blockCh := make(chan struct{})
@@ -49,19 +47,20 @@ func TestGetSessionDuringActiveTurn(t *testing.T) {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
 
-	// Writer for the chat request (simulates the active turn subscriber)
-	chatWriter := &spyWriter{}
+	// Writer for the chat request.
+	chatWriter := &spyWriter{connKey: "chat-writer"}
 	responseReader := NewInProcessResponseReader()
 	defer responseReader.Stop()
 
 	// Start a chat turn in a separate goroutine (the turn will block
-	// because the adapter blocks on blockCh).
+	// because the adapter blocks on blockCh). With the hub, the goroutine
+	// returns immediately; the turn runs in the background.
 	go handler.HandleRequest(context.Background(), FrameRequest{
 		SessionID: session.SessionID(),
 		Input:     "hello",
 	}, chatWriter, responseReader)
 
-	// Wait for the turn to actually start and subscribe.
+	// Wait for the turn to actually start.
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify the turn is active.
@@ -70,27 +69,21 @@ func TestGetSessionDuringActiveTurn(t *testing.T) {
 	}
 
 	// ── Now simulate a second connection sending get_session ────────────
-	// Run in a goroutine because handleJSONCommand will block on
-	// ReplaceSubscriber after sending the session data (this is the
-	// buggy behaviour we're testing against).
-	getSessionWriter := &spyWriter{}
-	getSessionDone := make(chan struct{})
-	go func() {
-		defer close(getSessionDone)
-		handler.HandleRequest(context.Background(), FrameRequest{
-			SessionID: session.SessionID(),
-			Command: &CommandRequest{
-				Cmd:    "get_session",
-				Params: json.RawMessage(`{"id":"` + session.SessionID() + `"}`),
-			},
-		}, getSessionWriter, responseReader)
-	}()
+	getSessionWriter := &spyWriter{connKey: "get-session-writer"}
+	go handler.HandleRequest(context.Background(), FrameRequest{
+		SessionID: session.SessionID(),
+		Command: &CommandRequest{
+			Cmd:    "get_session",
+			Params: json.RawMessage(`{"id":"` + session.SessionID() + `"}`),
+		},
+	}, getSessionWriter, responseReader)
 
 	// Give the get_session handler time to execute and write frames.
+	// With the hub, get_session returns immediately (no blocking on
+	// ReplaceSubscriber).
 	time.Sleep(200 * time.Millisecond)
 
-	// The get_session response should have been sent IMMEDIATELY
-	// (not blocked by the active turn). Check the frames.
+	// The get_session response should have been sent immediately.
 	frames := getSessionWriter.Frames()
 	if len(frames) == 0 {
 		t.Fatal("expected at least one frame from get_session, got none — " +
@@ -123,12 +116,10 @@ func TestGetSessionDuringActiveTurn(t *testing.T) {
 	// Unblock the turn so it can finish.
 	close(blockCh)
 
-	// Wait for get_session goroutine to finish too (it's blocked on
-	// ReplaceSubscriber, which blocks until the turn finishes).
-	select {
-	case <-getSessionDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for get_session handler to finish")
+	// Wait for the turn to complete — the done frame is broadcast
+	// to all hub subscribers (including chatWriter).
+	if !chatWriter.WaitForDone(t, 5*time.Second) {
+		t.Fatal("timed out waiting for turn to finish")
 	}
 
 	// Verify the turn completed by checking session messages.
@@ -136,15 +127,13 @@ func TestGetSessionDuringActiveTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get session after turn: %v", err)
 	}
-	// After the turn, we should have user + assistant messages
 	if len(session.Messages()) != 2 {
 		t.Fatalf("expected 2 messages after turn (user+assistant), got %d", len(session.Messages()))
 	}
 	t.Logf("session messages after turn: %d", len(session.Messages()))
 
 	// The get_session writer should also have received the done frame
-	// from the turn (because after ReplaceSubscriber, the new writer
-	// was subscribed to the active turn).
+	// via the hub broadcast.
 	frames = getSessionWriter.Frames()
 	var foundDone bool
 	for _, f := range frames {
@@ -154,9 +143,6 @@ func TestGetSessionDuringActiveTurn(t *testing.T) {
 		}
 	}
 	if !foundDone {
-		// The done frame might have been sent before we checked;
-		// this is not critical for the test — the main assertion
-		// is that get_session response was sent immediately.
 		t.Log("get_session writer did not receive done frame (may have been missed)")
 	}
 }
@@ -184,9 +170,8 @@ func (a *blockingAdapter) Complete(ctx context.Context, _ []agent.Message, _ []a
 }
 
 // TestGetSessionDuringActiveTurnViaWebSocket is the same test but through
-// the full WebSocket gateway (end-to-end). It verifies that when a client
-// connects while there's an in-flight turn, the sendWelcome function does
-// NOT block on ReplaceSubscriber before sending the session data.
+// the full WebSocket gateway (end-to-end). With the hub, sendWelcome
+// no longer blocks on ReplaceSubscriber.
 func TestGetSessionDuringActiveTurnViaWebSocket(t *testing.T) {
 	blockCh := make(chan struct{})
 	slowAdapter := &blockingAdapter{blockCh: blockCh}
@@ -276,7 +261,8 @@ func TestGetSessionDuringActiveTurnViaWebSocket(t *testing.T) {
 	// Unblock the turn.
 	close(blockCh)
 
-	// Wait for c1's turn to finish.
+	// Wait for c1's turn to finish. The done frame arrives via hub broadcast
+	// to all subscribers (including both c1 and c2).
 	ctxDone, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	for {
@@ -293,4 +279,3 @@ func TestGetSessionDuringActiveTurnViaWebSocket(t *testing.T) {
 		}
 	}
 }
-

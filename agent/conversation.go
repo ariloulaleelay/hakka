@@ -227,7 +227,7 @@ func (conv *Conversation) prepareWithInput(ctx context.Context, sessionID, userI
 	}
 	conv.EnsureDefaultModel(ctx, session)
 	if userInput != "" {
-		session.Append(Message{Role: RoleUser, Content: userInput, Timestamp: nowMillis()})
+		session.Append(Message{ID: MakeUniqueID(), Role: RoleUser, Content: userInput, Timestamp: nowMillis()})
 		if err := conv.sessions.Save(ctx, ns, session); err != nil {
 			return nil, err
 		}

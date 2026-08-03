@@ -90,6 +90,11 @@ func (gw *WebSocketGateway) handle(w http.ResponseWriter, r *http.Request) {
 
 	writer := wsWriter(readCtx, wsConn)
 
+	// Register with the namespace hub so this connection receives
+	// all broadcast events. Remove on disconnect.
+	gw.Handler.Hub().Subscribe(writer)
+	defer gw.Handler.Hub().Unsubscribe(writer)
+
 	// Send welcome frame immediately on connect.
 	gw.sendWelcome(readCtx, writer, responseReader)
 
@@ -144,11 +149,18 @@ func (gw *WebSocketGateway) handle(w http.ResponseWriter, r *http.Request) {
 				}
 				continue
 			}
-			cancelled := gw.Handler.CancelSession(cancelReq.SessionID)
+			if !gw.Handler.CancelSession(cancelReq.SessionID) {
+				if writer.Write(FrameResponse{Type: "error", SessionID: cancelReq.SessionID, Error: "no active turn to cancel"}) != nil {
+					return
+				}
+				continue
+			}
+			// Acknowledge immediately. The turn's actual done frame
+			// (with stats) arrives later via the hub broadcast.
 			if writer.Write(FrameResponse{
 				Type:      "done",
 				SessionID: cancelReq.SessionID,
-				Cancelled: cancelled,
+				Cancelled: true,
 			}) != nil {
 				return
 			}
@@ -189,27 +201,6 @@ func (gw *WebSocketGateway) sendWelcome(ctx context.Context, w frameWriter, resp
 			// Non-fatal — send empty session list.
 			sessions = nil
 		}
-	}
-
-	// Build session list with in_flight status.
-	type sessionEntry struct {
-		ID       string `json:"id"`
-		ShortID  string `json:"short_id"`
-		Name     string `json:"name"`
-		Model    string `json:"model"`
-		MsgCount int    `json:"message_count"`
-		InFlight bool   `json:"in_flight"`
-	}
-	entries := make([]sessionEntry, 0, len(sessions))
-	for _, s := range sessions {
-		entries = append(entries, sessionEntry{
-			ID:       s.SessionID(),
-			ShortID:  shortID(s.SessionID()),
-			Name:     s.SessionName(),
-			Model:    s.GetModel(),
-			MsgCount: len(s.Messages()),
-			InFlight: gw.Handler.Turns().Get(s.SessionID()) != nil,
-		})
 	}
 
 	// Build session maps for top-level sessions field.
@@ -264,7 +255,7 @@ func (gw *WebSocketGateway) sendWelcome(ctx context.Context, w frameWriter, resp
 				fr.Events = messagesToEvents(msgs)
 				// Append "done" terminal event only if the session is
 				// NOT in-flight. If it IS in-flight, live events will
-				// arrive after subscription (below).
+				// arrive via hub broadcast.
 				if !isInFlight {
 					fr.Events = append(fr.Events, map[string]any{"type": "done"})
 				}
@@ -272,13 +263,9 @@ func (gw *WebSocketGateway) sendWelcome(ctx context.Context, w frameWriter, resp
 			w.Write(fr)
 		}
 
-		// Subscribe to the active turn if one exists.
-		// This is done in a goroutine so sendWelcome does NOT block —
-		// the WebSocket read loop must start immediately to process
-		// subsequent client commands (like get_session).
-		if active := gw.Handler.Turns().Get(bestSession.SessionID()); active != nil {
-			go active.ReplaceSubscriber(ctx, w)
-		}
+		// No need to subscribe to the active turn — all turn events
+		// are broadcast to all hub subscribers. The connection was
+		// already registered with the hub at the top of handle().
 	}
 }
 
@@ -316,4 +303,3 @@ func (gw *WebSocketGateway) HandleWSConnection(w http.ResponseWriter, r *http.Re
 }
 
 var _ Gateway = (*WebSocketGateway)(nil)
-

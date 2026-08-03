@@ -9,13 +9,7 @@ import (
 
 	"github.com/ariloulaleelay/hakka/agent"
 	"github.com/ariloulaleelay/hakka/agent/event"
-	"github.com/google/uuid"
 )
-
-// subagentNamespace is an ephemeral namespace used exclusively for subagent
-// sessions. These sessions live in memory and are never persisted to any
-// durable store visible to the user.
-const subagentNamespace = "__subagent__"
 
 // SubagentRun returns a tool that forks the current session and runs an
 // autonomous subtask in a child LLM session, returning the result.
@@ -24,19 +18,22 @@ const subagentNamespace = "__subagent__"
 //   - All messages from the parent (full conversation history)
 //   - All enabled tools (except subagent_run, which is blocked to prevent
 //     recursion)
-//   - The parent's system prompt, CWD, and compact soft limit
-//   - The parent's model
-//   - Active skills from the parent
+//   - The parent's system prompt, CWD, model, compact soft limit, and
+//     active skills
 //
-// The child runs in a fresh memory-backed store and is NOT persisted to
-// any durable store visible to users. The parent gets back the final
-// reply, token/cost stats, and a session ID (short) for reference.
-func SubagentRun(router *agent.Router, tools *agent.ToolRegistry, cfg agent.EngineConfig, skills *agent.SkillRegistry) agent.Tool {
+// The child is a REAL session persisted in the parent's store and
+// namespace, linked to the parent via ParentID/ForkPoint. It is visible
+// to session tools (session_list, session_read, ...) and survives
+// restarts, so it can be inspected, continued, or deleted like any other
+// session. The parent gets back the final reply, token/cost stats, and a
+// short child session ID for reference.
+func SubagentRun(sessions *agent.SessionManager, router *agent.Router, tools *agent.ToolRegistry, cfg agent.EngineConfig, skills *agent.SkillRegistry) agent.Tool {
 	return NewTool("subagent_run",
 		"Run a subagent — fork the current session with a specific task. "+
 			"The subagent inherits the full conversation history and all enabled tools "+
 			"(except subagent_run itself, which is blocked to prevent recursion). "+
-			"The subagent runs autonomously and returns its final result. "+
+			"The subagent runs autonomously in a persistent child session (visible in "+
+			"session_list, linked to the parent via parent_id) and returns its final result. "+
 			"Use this for tasks that need their own LLM context, like refactoring a function "+
 			"or analyzing a file while the main agent continues.").
 		StringParam("task", "The task description for the subagent to execute. This is appended to the forked conversation as a user message.", true).
@@ -71,74 +68,128 @@ func SubagentRun(router *agent.Router, tools *agent.ToolRegistry, cfg agent.Engi
 				return "", fmt.Errorf("subagent_run: parent session is not a *Session")
 			}
 
+			ns := event.NamespaceFromContext(ctx)
+			if ns == "" {
+				return "", fmt.Errorf("subagent_run: no namespace available in context")
+			}
+
 			parentData := parentSession.Read()
 
 			// ---------------------------------------------------------------
-			// Fork the parent session into a child session
+			// Fork the parent session into a persistent child session.
 			//
-			// IMPORTANT: The last assistant message may contain tool_calls
-			// that are still in-flight (tool results not yet appended).
-			// Forking them as-is would produce an invalid sequence for the
-			// child's LLM provider ("tool_calls without matching results").
-			// We strip those unresolved calls. If the message ends up empty,
-			// we drop it entirely.
+			// ForkData copies all parent messages up to the last message
+			// (inclusive) and strips any in-flight tool calls whose results
+			// have not been appended yet (e.g. subagent_run itself), so the
+			// child always receives a valid message sequence. It also
+			// establishes the lineage: ParentID + ForkPoint.
 			// ---------------------------------------------------------------
 
-			childData := agent.NewSessionData(subagentNamespace, parentData.SystemPrompt)
-			childData.ID = uuid.New().String()
-			childData.Messages = forkMessages(parentData.Messages)
-			childData.ClientCWD = parentData.ClientCWD
-			childData.CompactSoftLimit = parentData.CompactSoftLimit
-			childData.Model = parentData.Model
-
-			// Copy enabled tools, but block subagent_run to prevent recursion.
-			childData.EnabledTools = make(map[string]bool, len(parentData.EnabledTools))
-			for name, enabled := range parentData.EnabledTools {
-				if enabled && name != "subagent_run" {
-					childData.EnabledTools[name] = true
-				}
+			forkPoint := ""
+			if n := len(parentData.Messages); n > 0 {
+				forkPoint = parentData.Messages[n-1].ID
+			}
+			childData, err := parentData.ForkData(forkPoint)
+			if err != nil {
+				return "", fmt.Errorf("subagent_run: fork: %w", err)
 			}
 
-			childData.BlockedTools = map[string]bool{"subagent_run": true}
-
-			// Copy active skills.
-			if len(parentData.ActiveSkills) > 0 {
-				childData.ActiveSkills = make([]string, len(parentData.ActiveSkills))
-				copy(childData.ActiveSkills, parentData.ActiveSkills)
+			// Defensive fallback: engine-managed sessions always assign IDs
+			// to every message, so forkPoint is non-empty whenever there is
+			// history. If a session was constructed manually without message
+			// IDs, ForkData("") returns a blank child — copy the full history
+			// instead so we never silently drop context. In this degraded
+			// mode ForkPoint stays empty (there is no ID to reference).
+			if forkPoint == "" && len(parentData.Messages) > 0 {
+				childData.Messages = make([]agent.Message, len(parentData.Messages))
+				copy(childData.Messages, parentData.Messages)
 			}
+
+			// New identity in the parent's namespace.
+			childData.Namespace = ns
+			childData.ID = agent.MakeUniqueID()
+			childData.Name = ""
+
+			// Block subagent_run on the child to prevent recursion. Mutate
+			// the maps directly — DenyTool/DisableTool would fail when the
+			// forked history already contains a subagent_run call (locked
+			// tools), and replacing BlockedTools would drop the parent's
+			// other blocked tools.
+			if childData.BlockedTools == nil {
+				childData.BlockedTools = make(map[string]bool)
+			}
+			childData.BlockedTools["subagent_run"] = true
+			if childData.EnabledTools != nil {
+				childData.EnabledTools["subagent_run"] = false
+			}
+
+			// ---------------------------------------------------------------
+			// Inform the child that it is a subagent.
+			//
+			// The forked history may contain the parent's show_tool output
+			// that describes subagent_run (or the parent's own requests to
+			// run subagents), which can mislead the child into trying to
+			// fork further subagents — only to get "denied" errors. An
+			// explicit notice prevents that: the child learns it is ALREADY
+			// a subagent and that subagent_run is blocked for it.
+			//
+			// The notice is deliberately a USER message, not a system
+			// message: system content is part of the prompt-cache key
+			// (Anthropic system string, OpenAI instructions, Gemini system
+			// instruction), so a system notice would invalidate the cache
+			// for the inherited prefix. As a user message appended AFTER
+			// the forked history, the system + history prefix stays
+			// byte-identical to the parent's last request and remains
+			// cacheable; only the notice + task are new tokens. It is also
+			// appended (not prepended) so compaction-range indices from the
+			// parent stay aligned.
+			// ---------------------------------------------------------------
+
+			parentShort := parentSession.SessionID()
+			if len(parentShort) > 8 {
+				parentShort = parentShort[:8]
+			}
+			notice := agent.Message{
+				ID:        agent.MakeUniqueID(),
+				Role:      agent.RoleUser,
+				Content:   fmt.Sprintf("You are a subagent — an autonomous child session forked from parent session %s to complete a specific task. You are ALREADY inside a subagent session: the subagent_run tool is permanently blocked for you and cannot be enabled, so do NOT attempt to call it or fork further subagents. The conversation history inherited from the parent session is provided as context only. Complete your assigned task with the tools available to you, then return a concise final result.", parentShort),
+				Timestamp: time.Now().UnixMilli(),
+			}
+			childData.Messages = append(childData.Messages, notice)
 
 			childSession := agent.NewSessionFromData(&childData)
 
 			// ---------------------------------------------------------------
-			// Set up an ephemeral child conversation
+			// Persist the child BEFORE running the turn — it is a real
+			// session in the parent's store, not an ephemeral in-memory fork.
 			// ---------------------------------------------------------------
 
-			childStore := agent.NewMemoryStore()
-			if err := childStore.Put(ctx, subagentNamespace, childSession); err != nil {
+			if err := sessions.Save(ctx, ns, childSession); err != nil {
 				return "", fmt.Errorf("subagent_run: save child session: %w", err)
 			}
 
-			childSM := agent.NewSessionManager(childStore, parentData.SystemPrompt)
+			// Notify all connected clients about the new child session so
+			// they can update the session list without reconnecting.
+			if sender := event.EventSenderFromContext(ctx); sender != nil {
+				sender <- event.SessionCreated{
+					SessionID: childSession.SessionID(),
+					Session:   childSession.Metadata(),
+				}
+			}
 
-			childConv := agent.NewConversation(childSM, router, tools, subagentNamespace, cfg)
+			// ---------------------------------------------------------------
+			// Set up the child conversation on the SAME store/namespace, so
+			// the turn's saves land on the persisted child session.
+			// ---------------------------------------------------------------
+
+			childConv := agent.NewConversation(sessions, router, tools, ns, cfg)
 			if skills != nil {
 				childConv.SetSkills(skills)
 			}
 
-			// ---------------------------------------------------------------
-			// Execute the subagent turn.
-			//
-			// IMPORTANT: We MUST override the namespace in the context
-			// because the parent's context carries its own namespace
-			// (e.g. "default"). If we don't, prepareWithInput will try to
-			// look up the child session in the parent's namespace in the
-			// child store, fail to find it, and create a brand-new empty
-			// session — losing all forked history.
-			// ---------------------------------------------------------------
-
 			runCtx, cancel := context.WithTimeout(ctx, time.Duration(args.TimeoutSeconds)*time.Second)
 			defer cancel()
-			runCtx = event.ContextWithNamespace(runCtx, subagentNamespace)
+			runCtx = event.ContextWithNamespace(runCtx, ns)
 
 			eventCh, err := childConv.Execute(runCtx, childSession.SessionID(), args.Task)
 			if err != nil {
@@ -175,63 +226,11 @@ func SubagentRun(router *agent.Router, tools *agent.ToolRegistry, cfg agent.Engi
 			b.WriteString(reply)
 			b.WriteString("\n\n")
 			b.WriteString("---\n")
-			b.WriteString(fmt.Sprintf("Session: %s\n", shortID))
+			b.WriteString(fmt.Sprintf("Session: %s (persistent child of %s)\n", shortID, parentShort))
 			b.WriteString(fmt.Sprintf("Tokens: %d\n", totalTokens))
 			b.WriteString(fmt.Sprintf("Cost: $%.6f\n", totalCost))
 			b.WriteString(fmt.Sprintf("Messages: %d\n", messageCount))
 			return b.String(), nil
 		}).
 		Build()
-}
-
-// forkMessages prepares a clean copy of parent messages for the child
-// session. It strips unresolved tool calls (calls whose tool results
-// haven't been appended yet) from the last assistant message. This
-// is necessary because subagent_run itself is called as a tool — the
-// engine records the assistant message with tool_calls before appending
-// tool results. Forking that orphaned tool_calls message would produce
-// an invalid sequence for the child's LLM provider.
-func forkMessages(parentMsgs []agent.Message) []agent.Message {
-	if len(parentMsgs) == 0 {
-		return nil
-	}
-
-	// Build a set of all resolved tool call IDs.
-	resolved := make(map[string]bool)
-	for _, m := range parentMsgs {
-		if m.Role == agent.RoleTool && m.ToolCallID != "" {
-			resolved[m.ToolCallID] = true
-		}
-	}
-
-	// Work on a copy.
-	msgs := make([]agent.Message, len(parentMsgs))
-	copy(msgs, parentMsgs)
-
-	// Check the last message — if it's an assistant with unresolved tool
-	// calls, strip them. If the message becomes empty, remove it entirely.
-	last := len(msgs) - 1
-	if msgs[last].Role == agent.RoleAssistant && len(msgs[last].ToolCalls) > 0 {
-		var hasUnresolved bool
-		for _, tc := range msgs[last].ToolCalls {
-			if !resolved[tc.ID] {
-				hasUnresolved = true
-				break
-			}
-		}
-		if hasUnresolved {
-			filtered := make([]agent.ToolCall, 0, len(msgs[last].ToolCalls))
-			for _, tc := range msgs[last].ToolCalls {
-				if resolved[tc.ID] {
-					filtered = append(filtered, tc)
-				}
-			}
-			msgs[last].ToolCalls = filtered
-			if msgs[last].Content == "" && len(filtered) == 0 {
-				msgs = msgs[:last]
-			}
-		}
-	}
-
-	return msgs
 }

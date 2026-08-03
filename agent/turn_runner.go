@@ -129,6 +129,7 @@ func (r *turnRunner) runLoop(
 
 		r.reportUsage(session, resp, events)
 		assistantMessage := Message{
+			ID:               MakeUniqueID(),
 			Role:             RoleAssistant,
 			Content:          resp.Message.Content,
 			ToolCalls:        resp.Message.ToolCalls,

@@ -100,7 +100,9 @@ type FrameResponse struct {
 	Events []map[string]any `json:"events,omitempty"`
 
 	// --- "session" lifecycle fields ---
-	Event   string `json:"event,omitempty"` // "session_create", "get_session", "renamed", "deleted"
+	// Event types: "get_session", "session_create", "renamed", "session_delete",
+	// "turn_started", "turn_finished"
+	Event   string `json:"event,omitempty"`
 	OldName string `json:"old_name,omitempty"`
 	Name    string `json:"name,omitempty"`
 }
