@@ -208,7 +208,9 @@ func SessionRename(sm *agent.SessionManager) agent.Tool {
 			}
 
 			s.SetSessionName(args.Name)
-			if err := sm.Store.Put(ctx, ns, s); err != nil {
+			if err := sm.Store.PatchMeta(ctx, ns, s.SessionID(), &agent.SessionMetaPatch{
+				Name: &args.Name,
+			}); err != nil {
 				return "", fmt.Errorf("session_rename: %w", err)
 			}
 

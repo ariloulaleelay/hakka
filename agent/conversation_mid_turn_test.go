@@ -212,19 +212,17 @@ func TestConversationMidTurnEnableTool_ContextInjection_Run(t *testing.T) {
 
 	engineCfg := EngineConfig{MaxToolIterations: 5, Logger: testLogger(t)}
 	toolExec := newToolExecutor(tools, nil, engineCfg.Hooks)
-	rr := newTurnRunner(tools, toolExec, engineCfg, router, testLogger(t), nil)
+	rr := newTurnRunner(tools, toolExec, engineCfg, router, testLogger(t), nil, sm.Store)
 
 	session, err := sm.GetOrCreate(context.Background(), "testns", sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	saveFn := func(ctx context.Context, s SessionView) error {
-		return sm.Save(ctx, "testns", s)
-	}
 	noopRenameFn := func(ctx context.Context, s SessionView, ev eventSender) {}
 
-	eventCh := rr.executeTurn(context.Background(), session, saveFn, noopRenameFn)
+	ctx := event.ContextWithNamespace(context.Background(), "testns")
+	eventCh := rr.executeTurn(ctx, session, noopRenameFn)
 	var reply string
 	for evt := range eventCh {
 		if te, ok := evt.(event.TurnFinished); ok {

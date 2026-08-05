@@ -204,7 +204,16 @@ func (cp *CommandProcessor) execStart(ctx context.Context, sessionID string, par
 			session.EnableTool(schema.Name)
 		}
 	}
-	if err := cp.Sessions.Save(ctx, ns, session); err != nil {
+	cwd := session.Read().ClientCWD
+	model := session.GetModel()
+	limit := session.GetCompactSoftLimit()
+	enabled := session.Read().EnabledTools
+	if err := cp.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
+		ClientCWD:        &cwd,
+		Model:            &model,
+		CompactSoftLimit: &limit,
+		EnabledTools:     enabled,
+	}); err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}
 	data, _ := json.Marshal(map[string]any{
@@ -240,7 +249,9 @@ func (cp *CommandProcessor) execCWDSet(ctx context.Context, sessionID string, pa
 		return CommandResult{Handled: true, Cmd: "cwd_set", Error: err}
 	}
 	session.SetClientCWD(p.CWD)
-	if err := cp.Sessions.Save(ctx, ns, session); err != nil {
+	if err := cp.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
+		ClientCWD: &p.CWD,
+	}); err != nil {
 		return CommandResult{Handled: true, Cmd: "cwd_set", Error: err}
 	}
 	data, _ := json.Marshal(map[string]any{"cwd": p.CWD, "session_id": session.SessionID()})
@@ -271,7 +282,9 @@ func (cp *CommandProcessor) execCompact(ctx context.Context, sessionID string, p
 	}
 
 	session.SetCompactSoftLimit(p.N)
-	if err := cp.Sessions.Save(ctx, ns, session); err != nil {
+	if err := cp.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
+		CompactSoftLimit: &p.N,
+	}); err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}
 

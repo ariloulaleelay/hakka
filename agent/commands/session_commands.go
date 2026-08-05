@@ -156,10 +156,16 @@ func (sc *SessionCommands) jsonSessionCreate(ctx context.Context, prevSessionID 
 	}
 	inheritCWD(ctx, sc.Sessions, ns, prevSessionID, session)
 
-	// Persist the inherited CWD — GetOrCreate saves the session
-	// with os.Getwd() before inheritCWD runs, and without an explicit
-	// save the store retains the wrong CWD.
-	if err := sc.Sessions.Save(ctx, ns, session); err != nil {
+	// Persist the inherited CWD and model defaults set by EnsureDefaultModel.
+	// GetOrCreate saved the session before these were applied, so we patch.
+	cwd := session.Read().ClientCWD
+	model := session.GetModel()
+	limit := session.GetCompactSoftLimit()
+	if err := sc.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
+		ClientCWD:        &cwd,
+		Model:            &model,
+		CompactSoftLimit: &limit,
+	}); err != nil {
 		return CommandResult{Handled: true, Cmd: "session_create", Error: err}
 	}
 
@@ -209,12 +215,11 @@ func (sc *SessionCommands) jsonGetSession(ctx context.Context, sessionID string,
 		return CommandResult{Handled: true, Cmd: "get_session", Error: err}
 	}
 
-	// Ensure the session has a default model set. This handles both
-	// new sessions created before the model was set at creation time
-	// and sessions restored from DB before the model persistence fix.
+	// Ensure the session has sensible in-memory defaults for the response.
+	// This is a read-only operation — mutations only affect the returned
+	// copy, not the stored session.
 	if sc.Conv != nil {
 		sc.Conv.EnsureDefaultModel(ctx, session)
-		sc.Sessions.Save(ctx, ns, session)
 	}
 
 	data, _ := json.Marshal(map[string]any{
@@ -317,7 +322,9 @@ func (sc *SessionCommands) jsonSessionRename(ctx context.Context, sessionID stri
 	}
 	oldName := session.SessionName()
 	session.SetSessionName(p.Name)
-	if err := sc.Sessions.Save(ctx, ns, session); err != nil {
+	if err := sc.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
+		Name: &p.Name,
+	}); err != nil {
 		return CommandResult{Handled: true, Cmd: "session_rename", Error: err}
 	}
 
@@ -419,14 +426,14 @@ func (sc *SessionCommands) jsonSessionFork(ctx context.Context, sessionID string
 
 	child := agent.NewSessionFromData(&childData)
 
+	// Ensure model defaults are applied BEFORE persisting.
+	if sc.Conv != nil {
+		sc.Conv.EnsureDefaultModel(ctx, child)
+	}
+
 	// Persist.
 	if err := sc.Sessions.Store.Put(ctx, ns, child); err != nil {
 		return CommandResult{Handled: true, Cmd: "session_fork", Error: err}
-	}
-
-	// Ensure default model.
-	if sc.Conv != nil {
-		sc.Conv.EnsureDefaultModel(ctx, child)
 	}
 
 	data, _ := json.Marshal(map[string]any{

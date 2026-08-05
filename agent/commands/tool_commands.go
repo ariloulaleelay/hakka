@@ -99,7 +99,12 @@ func (tc *ToolCommands) jsonToolAllow(ctx context.Context, sessionID string, par
 	}
 	session.AllowTool(p.Name)
 	session.EnableTool(p.Name)
-	if err := tc.Sessions.Save(ctx, ns, session); err != nil {
+	enabled := session.Read().EnabledTools
+	blocked := session.Read().BlockedTools
+	if err := tc.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
+		EnabledTools: enabled,
+		BlockedTools: blocked,
+	}); err != nil {
 		return CommandResult{Handled: true, Cmd: "tool_allow", Error: err}
 	}
 
@@ -131,7 +136,12 @@ func (tc *ToolCommands) jsonToolDeny(ctx context.Context, sessionID string, para
 	if err := session.DenyTool(p.Name); err != nil {
 		return CommandResult{Handled: true, Cmd: "tool_deny", Reply: fmt.Sprintf("error: %v", err)}
 	}
-	if err := tc.Sessions.Save(ctx, ns, session); err != nil {
+	enabled := session.Read().EnabledTools
+	blocked := session.Read().BlockedTools
+	if err := tc.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
+		EnabledTools: enabled,
+		BlockedTools: blocked,
+	}); err != nil {
 		return CommandResult{Handled: true, Cmd: "tool_deny", Error: err}
 	}
 
@@ -161,7 +171,12 @@ func (tc *ToolCommands) jsonAllowByTag(ctx context.Context, sessionID, tag strin
 		session.EnableTool(ts.Name)
 		names = append(names, ts.Name)
 	}
-	if err := tc.Sessions.Save(ctx, ns, session); err != nil {
+	enabled := session.Read().EnabledTools
+	blocked := session.Read().BlockedTools
+	if err := tc.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
+		EnabledTools: enabled,
+		BlockedTools: blocked,
+	}); err != nil {
 		return CommandResult{Handled: true, Cmd: "tool_allow", Error: err}
 	}
 
@@ -192,7 +207,12 @@ func (tc *ToolCommands) jsonDenyByTag(ctx context.Context, sessionID, tag string
 		}
 		names = append(names, ts.Name)
 	}
-	if err := tc.Sessions.Save(ctx, ns, session); err != nil {
+	enabled := session.Read().EnabledTools
+	blocked := session.Read().BlockedTools
+	if err := tc.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
+		EnabledTools: enabled,
+		BlockedTools: blocked,
+	}); err != nil {
 		return CommandResult{Handled: true, Cmd: "tool_deny", Error: err}
 	}
 

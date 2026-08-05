@@ -88,17 +88,15 @@ func NewConversation(sm *SessionManager, router *Router, tools *ToolRegistry, na
 		toolExec:  newToolExecutor(tools, nil, cfg.Hooks),
 		skills:    nil,
 	}
-	conv.turnRunner = newTurnRunner(tools, conv.toolExec, cfg, router, cfg.Logger, nil)
+	conv.turnRunner = newTurnRunner(tools, conv.toolExec, cfg, router, cfg.Logger, nil, sm.Store)
 	return conv
 }
 
 // EnsureDefaultModel sets the registry default model on the session if
 // none is set yet, and ensures the compact soft limit is populated.
-//
-// For new sessions (no model), we set both model and limit.
-// For existing sessions (model already set, e.g. from DB), we ensure
-// the compact soft limit is populated for compatibility with sessions
-// created before this feature existed.
+// All session creation paths (session_create, session_fork, execStart)
+// call this before persisting. Read paths (get_session) may call it
+// for in-memory response quality only, without persisting.
 func (conv *Conversation) EnsureDefaultModel(ctx context.Context, session SessionView) {
 	if session.GetModel() == "" {
 		if conv.router == nil {
@@ -111,8 +109,7 @@ func (conv *Conversation) EnsureDefaultModel(ctx context.Context, session Sessio
 		session.SetModel(defaultModel)
 	}
 
-	// Always ensure the compact soft limit is set, even for existing
-	// sessions that may have been created before this feature.
+	// Ensure compact soft limit is populated if not already set.
 	if conv.router != nil && session.GetCompactSoftLimit() <= 0 {
 		if profile, ok := conv.router.GetProfile(session); ok && profile.CompactSoftLimit > 0 {
 			session.SetCompactSoftLimit(profile.CompactSoftLimit)
@@ -155,7 +152,7 @@ func (conv *Conversation) SetToolContext(tc ToolContextDecorator) {
 	defer conv.mu.Unlock()
 	conv.toolContext = tc
 	conv.toolExec = newToolExecutor(conv.tools, tc, conv.config.Hooks)
-	conv.turnRunner = newTurnRunner(conv.tools, conv.toolExec, conv.config, conv.router, conv.config.Logger, conv.skills)
+	conv.turnRunner = newTurnRunner(conv.tools, conv.toolExec, conv.config, conv.router, conv.config.Logger, conv.skills, conv.sessions.Store)
 }
 
 // SetSkills installs a skill registry that the conversation uses to
@@ -165,7 +162,7 @@ func (conv *Conversation) SetSkills(skills *SkillRegistry) {
 	conv.mu.Lock()
 	defer conv.mu.Unlock()
 	conv.skills = skills
-	conv.turnRunner = newTurnRunner(conv.tools, conv.toolExec, conv.config, conv.router, conv.config.Logger, skills)
+	conv.turnRunner = newTurnRunner(conv.tools, conv.toolExec, conv.config, conv.router, conv.config.Logger, skills, conv.sessions.Store)
 }
 
 // resolveNamespace returns the namespace to use for store operations.
@@ -195,9 +192,6 @@ func (conv *Conversation) Execute(ctx context.Context, sessionID, userInput stri
 	if event.NamespaceFromContext(ctx) == "" {
 		ctx = event.ContextWithNamespace(ctx, conv.namespace)
 	}
-	saveFn := func(ctx context.Context, session SessionView) error {
-		return conv.sessions.Save(ctx, conv.resolveNamespace(ctx), session)
-	}
 	renameFn := func(ctx context.Context, s SessionView, events eventSender) {
 		oldName := s.SessionName()
 		conv.autoRenameIfNeeded(ctx, s)
@@ -214,7 +208,7 @@ func (conv *Conversation) Execute(ctx context.Context, sessionID, userInput stri
 	if err != nil {
 		return nil, err
 	}
-	return conv.turnRunner.executeTurn(ctx, session, saveFn, renameFn), nil
+	return conv.turnRunner.executeTurn(ctx, session, renameFn), nil
 }
 
 // prepareWithInput gets or creates a session. If userInput is non-empty,
@@ -226,9 +220,25 @@ func (conv *Conversation) prepareWithInput(ctx context.Context, sessionID, userI
 		return nil, err
 	}
 	conv.EnsureDefaultModel(ctx, session)
+
+	// Persist model + compact soft limit from EnsureDefaultModel.
+	model := session.GetModel()
+	limit := session.GetCompactSoftLimit()
+	if model != "" || limit > 0 {
+		patch := &SessionMetaPatch{}
+		if model != "" {
+			patch.Model = &model
+		}
+		if limit > 0 {
+			patch.CompactSoftLimit = &limit
+		}
+		conv.sessions.Store.PatchMeta(ctx, ns, session.SessionID(), patch)
+	}
+
 	if userInput != "" {
-		session.Append(Message{ID: MakeUniqueID(), Role: RoleUser, Content: userInput, Timestamp: nowMillis()})
-		if err := conv.sessions.Save(ctx, ns, session); err != nil {
+		msg := Message{ID: MakeUniqueID(), Role: RoleUser, Content: userInput, Timestamp: nowMillis()}
+		session.Append(msg)
+		if err := conv.sessions.Store.AppendMessages(ctx, ns, session.SessionID(), []Message{msg}, 0, 0); err != nil {
 			return nil, err
 		}
 	}
@@ -264,7 +274,14 @@ func (conv *Conversation) BindSessionModel(ctx context.Context, sessionID, name 
 	}
 	// Update compact soft limit from the new model's profile
 	conv.ensureCompactSoftLimit(sess)
-	if err := conv.sessions.Save(ctx, ns, sess); err != nil {
+
+	// Persist model + compact_soft_limit via targeted patch.
+	newModel := sess.GetModel()
+	newLimit := sess.GetCompactSoftLimit()
+	if err := conv.sessions.Store.PatchMeta(ctx, ns, sess.SessionID(), &SessionMetaPatch{
+		Model:            &newModel,
+		CompactSoftLimit: &newLimit,
+	}); err != nil {
 		return sess, err
 	}
 	return sess, nil
@@ -312,7 +329,10 @@ func (conv *Conversation) AutoRename(ctx context.Context, session SessionView) (
 	}
 
 	session.SetSessionName(name)
-	if saveErr := conv.sessions.Save(ctx, conv.resolveNamespace(ctx), session); saveErr != nil {
+	ns := conv.resolveNamespace(ctx)
+	if saveErr := conv.sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &SessionMetaPatch{
+		Name: &name,
+	}); saveErr != nil {
 		conv.config.Logger.Warn("session auto-rename save failed",
 			"session", session.SessionID(), "error", saveErr)
 		return "", fmt.Errorf("save failed: %w", saveErr)
@@ -357,7 +377,10 @@ func (conv *Conversation) autoRenameIfNeeded(ctx context.Context, session Sessio
 	}
 
 	session.SetSessionName(name)
-	if saveErr := conv.sessions.Save(ctx, conv.resolveNamespace(ctx), session); saveErr != nil {
+	ns := conv.resolveNamespace(ctx)
+	if saveErr := conv.sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &SessionMetaPatch{
+		Name: &name,
+	}); saveErr != nil {
 		conv.config.Logger.Warn("session auto-rename save failed",
 			"session", session.SessionID(), "error", saveErr)
 	}

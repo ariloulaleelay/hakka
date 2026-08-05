@@ -16,25 +16,30 @@ import (
 // testSessionStore is a minimal in-memory store for testing.
 type testSessionStore struct {
 	mu       sync.Mutex
-	sessions map[string]*agent.Session // key = "namespace:id"
+	sessions map[string]agent.SessionData // key = "namespace:id"
 }
 
 func newTestStore() *testSessionStore {
-	return &testSessionStore{sessions: make(map[string]*agent.Session)}
+	return &testSessionStore{sessions: make(map[string]agent.SessionData)}
 }
 
 func (ts *testSessionStore) Get(_ context.Context, namespace, id string) (*agent.Session, bool, error) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	s, ok := ts.sessions[namespace+":"+id]
-	return s, ok, nil
+	d, ok := ts.sessions[namespace+":"+id]
+	if !ok {
+		return nil, false, nil
+	}
+	cp := d.DeepCopy()
+	return agent.NewSessionFromData(&cp), true, nil
 }
 
 func (ts *testSessionStore) Put(_ context.Context, namespace string, s *agent.Session) error {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	s.Update(func(d *agent.SessionData) { d.Namespace = namespace })
-	ts.sessions[namespace+":"+s.SessionID()] = s
+	data := s.Read()
+	data.Namespace = namespace
+	ts.sessions[namespace+":"+s.SessionID()] = data
 	return nil
 }
 
@@ -50,12 +55,67 @@ func (ts *testSessionStore) List(_ context.Context, namespace string) ([]*agent.
 	defer ts.mu.Unlock()
 	prefix := namespace + ":"
 	var out []*agent.Session
-	for key, s := range ts.sessions {
+	for key, d := range ts.sessions {
 		if strings.HasPrefix(key, prefix) {
-			out = append(out, s)
+			cp := d.DeepCopy()
+			out = append(out, agent.NewSessionFromData(&cp))
 		}
 	}
 	return out, nil
+}
+
+func (ts *testSessionStore) AppendMessages(_ context.Context, namespace, id string, msgs []agent.Message, deltaTokens int, deltaCost float64) error {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	d, ok := ts.sessions[namespace+":"+id]
+	if !ok {
+		return fmt.Errorf("session %q not found in namespace %q", id, namespace)
+	}
+	d.Messages = append(d.Messages, msgs...)
+	d.TotalTokens += deltaTokens
+	d.TotalCost += deltaCost
+	d.UpdatedAt = time.Now()
+	ts.sessions[namespace+":"+id] = d
+	return nil
+}
+
+func (ts *testSessionStore) PatchMeta(_ context.Context, namespace, id string, patch *agent.SessionMetaPatch) error {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	d, ok := ts.sessions[namespace+":"+id]
+	if !ok {
+		return fmt.Errorf("session %q not found in namespace %q", id, namespace)
+	}
+	if patch == nil {
+		return nil
+	}
+	if patch.Name != nil {
+		d.Name = *patch.Name
+	}
+	if patch.Model != nil {
+		d.Model = *patch.Model
+	}
+	if patch.CompactSoftLimit != nil {
+		d.CompactSoftLimit = *patch.CompactSoftLimit
+	}
+	if patch.ClientCWD != nil {
+		d.ClientCWD = *patch.ClientCWD
+	}
+	if patch.EstimatedContextTokens != nil {
+		d.EstimatedContextTokens = *patch.EstimatedContextTokens
+	}
+	if patch.EnabledTools != nil {
+		d.EnabledTools = patch.EnabledTools
+	}
+	if patch.BlockedTools != nil {
+		d.BlockedTools = patch.BlockedTools
+	}
+	if patch.ActiveSkills != nil {
+		d.ActiveSkills = patch.ActiveSkills
+	}
+	d.UpdatedAt = time.Now()
+	ts.sessions[namespace+":"+id] = d
+	return nil
 }
 
 var _ agent.SessionStore = (*testSessionStore)(nil)

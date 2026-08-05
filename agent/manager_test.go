@@ -36,8 +36,8 @@ func TestSessionManagerReusesExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if b != a {
-		t.Fatal("expected same session pointer from memory store")
+	if b.SessionID() != a.SessionID() {
+		t.Fatal("expected same session ID")
 	}
 	if len(b.Messages()) != 1 || b.Messages()[0].Content != "marker" {
 		t.Fatalf("messages not retained: %+v", b.Messages())

@@ -5,7 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	
+	"time"
+
 	"github.com/ariloulaleelay/hakka/agent"
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
@@ -227,6 +228,14 @@ func (s *serializingStore) Delete(ctx context.Context, ns, id string) error {
 }
 func (s *serializingStore) List(ctx context.Context, ns string) ([]*agent.Session, error) {
 	return s.inner.List(ctx, ns)
+}
+
+func (s *serializingStore) AppendMessages(ctx context.Context, ns, id string, msgs []agent.Message, deltaTokens int, deltaCost float64) error {
+	return s.inner.AppendMessages(ctx, ns, id, msgs, deltaTokens, deltaCost)
+}
+
+func (s *serializingStore) PatchMeta(ctx context.Context, ns, id string, patch *agent.SessionMetaPatch) error {
+	return s.inner.PatchMeta(ctx, ns, id, patch)
 }
 
 func TestSessionCreate_PersistsCWD(t *testing.T) {
@@ -469,8 +478,8 @@ func TestGetSession_ReturnsDefaultModelAndEstimatedTokens(t *testing.T) {
 		t.Fatal("expected data in result")
 	}
 	var data struct {
-		Session  map[string]any   `json:"session"`
-		Messages []agent.Message  `json:"messages"`
+		Session  map[string]any  `json:"session"`
+		Messages []agent.Message `json:"messages"`
 	}
 	if err := json.Unmarshal(res.Data, &data); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -488,15 +497,18 @@ func TestGetSession_ReturnsDefaultModelAndEstimatedTokens(t *testing.T) {
 		t.Fatalf("expected estimated_context_tokens=12345, got %v", est)
 	}
 
-	// Verify that session_info returns the same model
+	// session_info is a separate read path that does NOT apply in-memory
+	// defaults (get_session does, for response quality). Since the session
+	// was never explicitly given a model, session_info returns the stored
+	// value (empty string).
 	infoRes := cmd.ExecuteJSON(context.Background(), "model-test-session", "session_info", nil)
 	var infoData struct {
 		Session map[string]any `json:"session"`
 	}
 	json.Unmarshal(infoRes.Data, &infoData)
 	infoModel, _ := infoData.Session["model"].(string)
-	if infoModel != "alpha" {
-		t.Fatalf("expected session_info model 'alpha', got %q", infoModel)
+	if infoModel != "" {
+		t.Fatalf("expected session_info model '' (never persisted), got %q", infoModel)
 	}
 }
 
@@ -506,6 +518,7 @@ func TestSessionInfo_ShowsDetails(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
 	session.SetSessionName("My Session")
+	_ = sm.Save(context.Background(), "testns", session)
 
 	res := cmd.ExecuteJSON(context.Background(), "session1", "session_info", nil)
 
@@ -703,14 +716,14 @@ func TestToolList_ReturnsTools(t *testing.T) {
 
 func TestToolAllow_EnablesTool(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
+	sm.GetOrCreate(context.Background(), "testns", "s1")
 
 	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_allow", params(map[string]any{"name": "read_file"}))
 
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if !session.IsToolEnabled("read_file") {
+	if !res.Session.IsToolEnabled("read_file") {
 		t.Fatal("expected read_file to be enabled")
 	}
 }
@@ -719,27 +732,28 @@ func TestToolDeny_DisablesTool(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
 	session.EnableTool("write_file")
+	_ = sm.Save(context.Background(), "testns", session)
 
 	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_deny", params(map[string]any{"name": "write_file"}))
 
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if session.IsToolEnabled("write_file") {
+	if res.Session.IsToolEnabled("write_file") {
 		t.Fatal("expected write_file to be disabled")
 	}
 }
 
 func TestToolAllow_ByTag(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
+	sm.GetOrCreate(context.Background(), "testns", "s1")
 
 	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_allow", params(map[string]any{"name": "#filesystem"}))
 
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if !session.IsToolEnabled("read_file") || !session.IsToolEnabled("write_file") {
+	if !res.Session.IsToolEnabled("read_file") || !res.Session.IsToolEnabled("write_file") {
 		t.Fatal("expected filesystem tools to be enabled via tag")
 	}
 }
@@ -749,16 +763,17 @@ func TestToolDeny_ByTag(t *testing.T) {
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
 	session.EnableTool("read_file")
 	session.EnableTool("shell")
+	_ = sm.Save(context.Background(), "testns", session)
 
 	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_deny", params(map[string]any{"name": "#filesystem"}))
 
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if session.IsToolEnabled("read_file") {
+	if res.Session.IsToolEnabled("read_file") {
 		t.Fatal("expected read_file to be disabled via tag")
 	}
-	if !session.IsToolEnabled("shell") {
+	if !res.Session.IsToolEnabled("shell") {
 		t.Fatal("expected shell to remain enabled (different tag)")
 	}
 }
@@ -789,6 +804,7 @@ func TestToolList_ShowsEnabledStatus(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
 	session.EnableTool("http_get")
+	_ = sm.Save(context.Background(), "testns", session)
 
 	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_list", nil)
 
@@ -1007,6 +1023,7 @@ func TestSessionMetadata_ConsistentAcrossGetSessionAndSessionInfo(t *testing.T) 
 	session.SetSessionName("Meta Test")
 	session.SetClientCWD("/home/test/project")
 	session.SetEstimatedContextTokens(54321)
+	session.SetModel("beta") // explicit model so both paths agree
 	session.Append(agent.Message{Role: agent.RoleUser, Content: "hi"})
 	sm.Save(context.Background(), "testns", session)
 
@@ -1301,7 +1318,7 @@ func TestSessionFork_CopiesMessages(t *testing.T) {
 	parent.Append(agent.Message{ID: "m1", Role: agent.RoleUser, Content: "first"})
 	parent.Append(agent.Message{ID: "m2", Role: agent.RoleAssistant, Content: "second"})
 	parent.Append(agent.Message{ID: "m3", Role: agent.RoleUser, Content: "third"})
-
+	_ = sm.Save(context.Background(), "testns", parent)
 	// Fork at m2.
 	res := cmd.ExecuteJSON(context.Background(), parent.SessionID(), "session_fork",
 		params(map[string]any{"id": parent.SessionID(), "fork_point": "m2"}))
@@ -1327,6 +1344,7 @@ func TestSessionFork_BadForkPoint(t *testing.T) {
 
 	parent, _ := sm.GetOrCreate(context.Background(), "testns", "")
 	parent.Append(agent.Message{ID: "m1", Role: agent.RoleUser, Content: "hello"})
+	_ = sm.Save(context.Background(), "testns", parent)
 
 	res := cmd.ExecuteJSON(context.Background(), parent.SessionID(), "session_fork",
 		params(map[string]any{"id": parent.SessionID(), "fork_point": "nonexistent"}))
@@ -1352,6 +1370,7 @@ func TestSessionFork_MetadataHasLineage(t *testing.T) {
 
 	parent, _ := sm.GetOrCreate(context.Background(), "testns", "")
 	parent.Append(agent.Message{ID: "m1", Role: agent.RoleUser, Content: "hello"})
+	_ = sm.Save(context.Background(), "testns", parent)
 
 	res := cmd.ExecuteJSON(context.Background(), parent.SessionID(), "session_fork",
 		params(map[string]any{"id": parent.SessionID(), "fork_point": "m1"}))
@@ -1375,6 +1394,7 @@ func TestSessionFork_LastAssistantMessage(t *testing.T) {
 	parent, _ := sm.GetOrCreate(context.Background(), "testns", "")
 	parent.Append(agent.Message{ID: "91c", Role: agent.RoleUser, Content: "what is 2+2?"})
 	parent.Append(agent.Message{ID: "91d", Role: agent.RoleAssistant, Content: "4"})
+	_ = sm.Save(context.Background(), "testns", parent)
 
 	// Fork at the last assistant message.
 	ctx := event.ContextWithNamespace(context.Background(), "testns")
@@ -1427,4 +1447,61 @@ func TestSessionFork_LastAssistantMessage(t *testing.T) {
 	// response (see writeCommandResult). The client must call get_session
 	// separately. This test verifies the data is correct; the protocol
 	// gap (no events on session_create) is a separate issue.
+}
+
+// TestNonModifyingCommandsDontBumpUpdatedAt verifies that read-only
+// commands (get_session, session_info, session_list) do not mutate
+// a session's updated_at timestamp. This is a contract test — all
+// commands that claim to be non-modifying must leave the session
+// exactly as they found it.
+func TestNonModifyingCommandsDontBumpUpdatedAt(t *testing.T) {
+	_, cmd, sm := newCommandComponents(t)
+
+	// Create a fully-configured session with model and compact limit.
+	session, _ := sm.GetOrCreate(context.Background(), "testns", "readonly-test")
+	session.SetModel("alpha")
+	session.SetCompactSoftLimit(100000)
+	session.SetClientCWD("/home/test")
+	if err := sm.Save(context.Background(), "testns", session); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// Wait a tick so any accidental bump would be visible.
+	time.Sleep(time.Millisecond)
+
+	initial := session.Read().UpdatedAt
+
+	// ---- get_session ----
+	res := cmd.ExecuteJSON(context.Background(), "readonly-test", "get_session",
+		params(map[string]any{"id": "readonly-test"}))
+	if res.Error != nil {
+		t.Fatalf("get_session error: %v", res.Error)
+	}
+	s, ok, err := sm.Get(context.Background(), "testns", "readonly-test")
+	if err != nil || !ok {
+		t.Fatalf("re-fetch after get_session: ok=%v err=%v", ok, err)
+	}
+	if !s.Read().UpdatedAt.Equal(initial) {
+		t.Fatal("get_session should not change updated_at")
+	}
+
+	// ---- session_info ----
+	_ = cmd.ExecuteJSON(context.Background(), "readonly-test", "session_info", nil)
+	s2, ok, err := sm.Get(context.Background(), "testns", "readonly-test")
+	if err != nil || !ok {
+		t.Fatalf("re-fetch after session_info: ok=%v err=%v", ok, err)
+	}
+	if !s2.Read().UpdatedAt.Equal(initial) {
+		t.Fatal("session_info should not change updated_at")
+	}
+
+	// ---- session_list ----
+	_ = cmd.ExecuteJSON(context.Background(), "readonly-test", "session_list", nil)
+	s3, ok, err := sm.Get(context.Background(), "testns", "readonly-test")
+	if err != nil || !ok {
+		t.Fatalf("re-fetch after session_list: ok=%v err=%v", ok, err)
+	}
+	if !s3.Read().UpdatedAt.Equal(initial) {
+		t.Fatal("session_list should not change updated_at")
+	}
 }

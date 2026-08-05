@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ariloulaleelay/hakka/agent"
 )
@@ -823,6 +824,199 @@ func nullInt64(n int64) interface{} {
 		return nil
 	}
 	return n
+}
+
+// ---------------------------------------------------------------------------
+// AppendMessages / PatchMeta — targeted persistence
+// ---------------------------------------------------------------------------
+
+// AppendMessages inserts new messages and atomically updates token/cost counters.
+func (s *Store) AppendMessages(ctx context.Context, namespace, id string, msgs []agent.Message, deltaTokens int, deltaCost float64) error {
+	if len(msgs) == 0 && deltaTokens == 0 && deltaCost == 0 {
+		return nil
+	}
+
+	// Verify session exists.
+	var exists int
+	err := s.db.QueryRowContext(ctx, s.sessionExistsQuery(), namespace, id).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("check session: %w", err)
+	}
+	if exists == 0 {
+		return fmt.Errorf("session %q not found in namespace %q", id, namespace)
+	}
+
+	// Find current max msg_index.
+	var maxIdx sql.NullInt64
+	err = s.db.QueryRowContext(ctx, s.maxMsgIndexQuery(), namespace, id).Scan(&maxIdx)
+	if err != nil {
+		return fmt.Errorf("max msg_index: %w", err)
+	}
+	nextIdx := 0
+	if maxIdx.Valid {
+		nextIdx = int(maxIdx.Int64) + 1
+	}
+
+	// Insert new messages.
+	insertQ := s.insertMessage()
+	for i, msg := range msgs {
+		_, err := s.db.ExecContext(ctx, insertQ,
+			namespace, id, nextIdx+i, msg.ID, string(msg.Role), msg.Content,
+			nullJSON(msg.ToolCalls),
+			nullStr(msg.ToolCallID),
+			nullStr(msg.Name),
+			nullJSON(msg.Usage),
+			nullStr(msg.FinishReason),
+			nullJSON(msg.ProviderMetadata),
+			nullInt64(msg.Timestamp),
+		)
+		if err != nil {
+			return fmt.Errorf("insert message %d: %w", i, err)
+		}
+	}
+
+	// Update counters and updated_at.
+	if err := s.updateSessionCounters(ctx, namespace, id, deltaTokens, deltaCost); err != nil {
+		return fmt.Errorf("update counters: %w", err)
+	}
+
+	return nil
+}
+
+// PatchMeta updates only the non-nil fields on a session row.
+func (s *Store) PatchMeta(ctx context.Context, namespace, id string, patch *agent.SessionMetaPatch) error {
+	if patch == nil {
+		return nil
+	}
+
+	// Build dynamic SET clauses.
+	setClauses, args := s.buildMetaPatch(patch)
+	if len(setClauses) == 0 {
+		return nil
+	}
+
+	// Always bump updated_at.
+	setClauses = append(setClauses, "updated_at = ?")
+	now := time.Now()
+	nowText, err := now.MarshalText()
+	if err != nil {
+		return err
+	}
+	args = append(args, string(nowText))
+
+	// Add WHERE args.
+	args = append(args, namespace, id)
+
+	q := s.buildUpdateMetaQuery(setClauses)
+	result, err := s.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return fmt.Errorf("PatchMeta: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("session %q not found in namespace %q", id, namespace)
+	}
+
+	return nil
+}
+
+// sessionExistsQuery returns a dialect-aware query for session existence.
+func (s *Store) sessionExistsQuery() string {
+	switch s.dialect {
+	case Postgres:
+		return `SELECT COUNT(*) FROM sessions WHERE namespace = $1 AND id = $2`
+	default:
+		return `SELECT COUNT(*) FROM sessions WHERE namespace = ? AND id = ?`
+	}
+}
+
+// maxMsgIndexQuery returns the max msg_index for a session.
+func (s *Store) maxMsgIndexQuery() string {
+	switch s.dialect {
+	case Postgres:
+		return `SELECT MAX(msg_index) FROM messages WHERE session_ns = $1 AND session_id = $2`
+	default:
+		return `SELECT MAX(msg_index) FROM messages WHERE session_ns = ? AND session_id = ?`
+	}
+}
+
+// updateSessionCounters atomically bumps total_tokens, total_cost, and updated_at.
+func (s *Store) updateSessionCounters(ctx context.Context, namespace, id string, deltaTokens int, deltaCost float64) error {
+	now := time.Now()
+	nowText, err := now.MarshalText()
+	if err != nil {
+		return err
+	}
+	switch s.dialect {
+	case Postgres:
+		_, err = s.db.ExecContext(ctx,
+			`UPDATE sessions SET total_tokens = total_tokens + $1, total_cost = total_cost + $2, updated_at = $3 WHERE namespace = $4 AND id = $5`,
+			deltaTokens, deltaCost, string(nowText), namespace, id)
+	default:
+		_, err = s.db.ExecContext(ctx,
+			`UPDATE sessions SET total_tokens = total_tokens + ?, total_cost = total_cost + ?, updated_at = ? WHERE namespace = ? AND id = ?`,
+			deltaTokens, deltaCost, string(nowText), namespace, id)
+	}
+	return err
+}
+
+// buildMetaPatch builds SET clauses and args from a SessionMetaPatch.
+func (s *Store) buildMetaPatch(patch *agent.SessionMetaPatch) ([]string, []any) {
+	var clauses []string
+	var args []any
+
+	add := func(col string, val any) {
+		clauses = append(clauses, col+" = ?")
+		args = append(args, val)
+	}
+
+	if patch.Name != nil {
+		add("name", *patch.Name)
+	}
+	if patch.Model != nil {
+		add("model", *patch.Model)
+	}
+	if patch.CompactSoftLimit != nil {
+		add("compact_soft_limit", *patch.CompactSoftLimit)
+	}
+	if patch.ClientCWD != nil {
+		add("client_cwd", *patch.ClientCWD)
+	}
+	if patch.EstimatedContextTokens != nil {
+		add("estimated_context_tokens", *patch.EstimatedContextTokens)
+	}
+	if patch.EnabledTools != nil {
+		json, err := marshalMap(patch.EnabledTools)
+		if err == nil {
+			add("enabled_tools", json)
+		}
+	}
+	if patch.BlockedTools != nil {
+		json, err := marshalMap(patch.BlockedTools)
+		if err == nil {
+			add("blocked_tools", json)
+		}
+	}
+	if patch.ActiveSkills != nil {
+		json, err := marshalSlice(patch.ActiveSkills)
+		if err == nil {
+			add("active_skills", json)
+		}
+	}
+
+	return clauses, args
+}
+
+// buildUpdateMetaQuery builds the UPDATE query.
+func (s *Store) buildUpdateMetaQuery(clauses []string) string {
+	sets := strings.Join(clauses, ", ")
+	switch s.dialect {
+	case Postgres:
+		return fmt.Sprintf(`UPDATE sessions SET %s WHERE namespace = $%d AND id = $%d`,
+			sets, len(clauses)+1, len(clauses)+2)
+	default:
+		return fmt.Sprintf(`UPDATE sessions SET %s WHERE namespace = ? AND id = ?`, sets)
+	}
 }
 
 var _ agent.SessionStore = (*Store)(nil)

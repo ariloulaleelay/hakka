@@ -21,10 +21,11 @@ type turnRunner struct {
 	router   *Router
 	logger   *slog.Logger
 	skills   *SkillRegistry
+	store    SessionStore
 }
 
 // newTurnRunner builds a turnRunner from the shared engine dependencies.
-func newTurnRunner(tools *ToolRegistry, toolExec *toolExecutor, config EngineConfig, router *Router, logger *slog.Logger, skills *SkillRegistry) *turnRunner {
+func newTurnRunner(tools *ToolRegistry, toolExec *toolExecutor, config EngineConfig, router *Router, logger *slog.Logger, skills *SkillRegistry, store SessionStore) *turnRunner {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -35,6 +36,7 @@ func newTurnRunner(tools *ToolRegistry, toolExec *toolExecutor, config EngineCon
 		router:   router,
 		logger:   logger,
 		skills:   skills,
+		store:    store,
 	}
 }
 
@@ -43,14 +45,20 @@ func newTurnRunner(tools *ToolRegistry, toolExec *toolExecutor, config EngineCon
 func (r *turnRunner) executeTurn(
 	ctx context.Context,
 	session SessionView,
-	saveFn func(context.Context, SessionView) error,
 	renameFn func(context.Context, SessionView, eventSender),
 ) <-chan event.EngineEvent {
 	eventCh := make(chan event.EngineEvent, 256)
 	go func() {
 		defer close(eventCh)
 
-		reply, msgID, err := r.runLoop(ctx, session, eventCh, saveFn)
+		reply, msgID, err := r.runLoop(ctx, session, eventCh)
+
+		// Persist estimated context tokens post-turn (best-effort).
+		ns := event.NamespaceFromContext(ctx)
+		ect := session.GetEstimatedContextTokens()
+		_ = r.store.PatchMeta(ctx, ns, session.SessionID(), &SessionMetaPatch{
+			EstimatedContextTokens: &ect,
+		})
 
 		// Fetch quota from the provider after the turn (best-effort).
 		r.fetchAndEmitQuota(ctx, session, eventCh)
@@ -80,13 +88,16 @@ func (r *turnRunner) runLoop(
 	ctx context.Context,
 	session SessionView,
 	events eventSender,
-	saveFn func(context.Context, SessionView) error,
 ) (string, string, error) {
 	const maxAutoContinue = 3
 
 	var turnMu sync.Mutex
 	hooks := r.toolExec.SerialisedHooks(&turnMu)
 	autoContinueCount := 0
+
+	// Accumulated deltas for AppendMessages since last save.
+	var accumTokens int
+	var accumCost float64
 
 	// msgID is captured by onDelta and updated each iteration before
 	// calling Complete. This way streaming deltas and the final TurnFinished
@@ -162,10 +173,20 @@ func (r *turnRunner) runLoop(
 		for _, toolMessage := range toolMessages {
 			session.Append(toolMessage)
 		}
-		if err := saveFn(ctx, session); err != nil {
+
+		// Accumulate delta for AppendMessages.
+		if resp.Usage != nil {
+			accumTokens += resp.Usage.TotalTokens
+			accumCost += resp.Usage.Cost
+		}
+		ns := event.NamespaceFromContext(ctx)
+		allNew := append([]Message{assistantMessage}, toolMessages...)
+		if err := r.store.AppendMessages(ctx, ns, session.SessionID(), allNew, accumTokens, accumCost); err != nil {
 			r.logger.Error("failed to save session mid-turn", "session", session.SessionID(), "iteration", i, "error", err)
 			return "", msgID, fmt.Errorf("save session: %w", err)
 		}
+		accumTokens = 0
+		accumCost = 0
 
 		if r.isEmptyStopResponse(resp) && r.isIgnoreStopOnNoContent(session) {
 			if autoContinueCount < maxAutoContinue {

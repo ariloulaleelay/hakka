@@ -527,6 +527,13 @@ func TestConversation_SomeToolsEnabled_LLMGetsThoseSchemas(t *testing.T) {
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "some-session")
 	session.EnableTool("alpha")
 	session.DisableTool("beta")
+	// Persist tool auth changes so they survive the store's deep-copy.
+	enabled := session.Read().EnabledTools
+	blocked := session.Read().BlockedTools
+	_ = sm.Store.PatchMeta(context.Background(), "testns", session.SessionID(), &SessionMetaPatch{
+		EnabledTools: enabled,
+		BlockedTools: blocked,
+	})
 	adapter.sessionFn = func() *Session { return session }
 
 	_, _, err := executeSync(conv, context.Background(), "some-session", "hello")
@@ -573,6 +580,13 @@ func TestConversation_DefenseInDepth_DeniedToolReturnsError(t *testing.T) {
 
 	session, _ := sm.GetOrCreate(context.Background(), "testns", "defense-session")
 	session.DenyTool("echo") // deny the tool
+	// Persist tool auth changes.
+	enabled := session.Read().EnabledTools
+	blocked := session.Read().BlockedTools
+	_ = sm.Store.PatchMeta(context.Background(), "testns", session.SessionID(), &SessionMetaPatch{
+		EnabledTools: enabled,
+		BlockedTools: blocked,
+	})
 
 	_, _, err := executeSync(conv, context.Background(), "defense-session", "do it")
 	if err != nil {
@@ -766,12 +780,12 @@ func TestModelCompactSoftLimit_UpdatesOnModelChange(t *testing.T) {
 	}
 
 	// Now bind to model-b
-	_, err = conv.BindSessionModel(context.Background(), session.SessionID(), "model-b")
+	boundSession, err := conv.BindSessionModel(context.Background(), session.SessionID(), "model-b")
 	if err != nil {
 		t.Fatalf("BindSessionModel failed: %v", err)
 	}
 
-	if got := session.GetCompactSoftLimit(); got != 99999 {
+	if got := boundSession.GetCompactSoftLimit(); got != 99999 {
 		t.Fatalf("expected session CompactSoftLimit=99999 from model-b, got %d", got)
 	}
 }

@@ -48,15 +48,15 @@ func TestRouterBindUnknownModelIsRejected(t *testing.T) {
 	}
 }
 
-func TestRouterFallsBackWhenBoundModelDisappears(t *testing.T) {
-	// A session may have been bound to a model that the current process
-	// no longer registers (config edit, rename, etc). Adapter must fall
-	// back to the registry default rather than returning nil.
-	r, a, _ := newTestRouter()
+func TestRouterReturnsNilWhenBoundModelDisappears(t *testing.T) {
+	// When a session's recorded model no longer exists in the registry
+	// (config edit, rename, etc), Adapter must return nil so callers
+	// surface an error to the user instead of silently falling back.
+	r, _, _ := newTestRouter()
 	sess := NewSession("testns", "sys")
 	sess.SetModel("ghost")
-	if r.Adapter(sess) != a {
-		t.Fatal("expected fallback to default when bound model is unknown")
+	if r.Adapter(sess) != nil {
+		t.Fatal("expected nil when bound model is unknown")
 	}
 }
 

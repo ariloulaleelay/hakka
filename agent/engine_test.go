@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
@@ -227,6 +228,60 @@ func (c *copyBackStore) List(_ context.Context, namespace string) ([]*Session, e
 		}
 	}
 	return out, nil
+}
+
+func (c *copyBackStore) AppendMessages(_ context.Context, namespace, id string, msgs []Message, deltaTokens int, deltaCost float64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	d, ok := c.data[c.key(namespace, id)]
+	if !ok {
+		return fmt.Errorf("session %q not found in namespace %q", id, namespace)
+	}
+	d.Messages = append(d.Messages, msgs...)
+	d.TotalTokens += deltaTokens
+	d.TotalCost += deltaCost
+	d.UpdatedAt = time.Now()
+	c.data[c.key(namespace, id)] = d
+	return nil
+}
+
+func (c *copyBackStore) PatchMeta(_ context.Context, namespace, id string, patch *SessionMetaPatch) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	d, ok := c.data[c.key(namespace, id)]
+	if !ok {
+		return fmt.Errorf("session %q not found in namespace %q", id, namespace)
+	}
+	if patch == nil {
+		return nil
+	}
+	if patch.Name != nil {
+		d.Name = *patch.Name
+	}
+	if patch.Model != nil {
+		d.Model = *patch.Model
+	}
+	if patch.CompactSoftLimit != nil {
+		d.CompactSoftLimit = *patch.CompactSoftLimit
+	}
+	if patch.ClientCWD != nil {
+		d.ClientCWD = *patch.ClientCWD
+	}
+	if patch.EstimatedContextTokens != nil {
+		d.EstimatedContextTokens = *patch.EstimatedContextTokens
+	}
+	if patch.EnabledTools != nil {
+		d.EnabledTools = patch.EnabledTools
+	}
+	if patch.BlockedTools != nil {
+		d.BlockedTools = patch.BlockedTools
+	}
+	if patch.ActiveSkills != nil {
+		d.ActiveSkills = patch.ActiveSkills
+	}
+	d.UpdatedAt = time.Now()
+	c.data[c.key(namespace, id)] = d
+	return nil
 }
 
 
@@ -589,20 +644,46 @@ func TestExecute_AutoRenameViaStream(t *testing.T) {
 // Save-failure propagation tests
 // ---------------------------------------------------------------------------
 
-// errStore is a SessionStore wrapper that fails Put calls once
-// failAfterPuts puts have succeeded.
+// errStore is a SessionStore wrapper that fails persistence calls once
+// failAfterCalls calls have succeeded. It wraps AppendMessages and
+// PatchMeta as well as Put.
 type errStore struct {
 	SessionStore
-	failCount    int // number of Puts that should fail (0 = never)
-	putCalls     int
+	failCount    int // number of calls that should succeed first (0 = fail immediately)
+	callCount    int
+	mu           sync.Mutex
+}
+
+func (es *errStore) count() int {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	es.callCount++
+	return es.callCount
+}
+
+func (es *errStore) shouldFail() bool {
+	return es.count() > es.failCount
 }
 
 func (es *errStore) Put(ctx context.Context, namespace string, s *Session) error {
-	es.putCalls++
-	if es.failCount > 0 && es.putCalls > es.failCount {
+	if es.shouldFail() {
 		return errors.New("disk full")
 	}
 	return es.SessionStore.Put(ctx, namespace, s)
+}
+
+func (es *errStore) AppendMessages(ctx context.Context, namespace, id string, msgs []Message, deltaTokens int, deltaCost float64) error {
+	if es.shouldFail() {
+		return errors.New("disk full")
+	}
+	return es.SessionStore.AppendMessages(ctx, namespace, id, msgs, deltaTokens, deltaCost)
+}
+
+func (es *errStore) PatchMeta(ctx context.Context, namespace, id string, patch *SessionMetaPatch) error {
+	if es.shouldFail() {
+		return errors.New("disk full")
+	}
+	return es.SessionStore.PatchMeta(ctx, namespace, id, patch)
 }
 
 // TestEngineChat_SaveFailurePropagatesToTurnFinished verifies that when the
@@ -622,8 +703,8 @@ func TestEngineChat_SaveFailurePropagatesToTurnFinished(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	// Now wrap with errStore that lets the initial creates succeed but
-	// fails after 2 successful Puts (session creation + user message).
-	failStore := &errStore{SessionStore: memStore, failCount: 1}
+	// fails after the first successful turn iteration (PatchMeta + user AppendMessages).
+	failStore := &errStore{SessionStore: memStore, failCount: 2}
 	sm := NewSessionManager(failStore, "sys")
 	tools := NewToolRegistry()
 	reg := NewRegistry()
@@ -671,9 +752,9 @@ func TestEngineChat_SaveFailureBeforeAutoRename(t *testing.T) {
 	if err := memStore.Put(context.Background(), "testns", seedSession); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// After seeding, fail on every Put (user message save will also fail — that's OK,
-	// the turn error should still propagate).
-	failStore := &errStore{SessionStore: memStore, failCount: 1}
+	// After seeding, fail on the first AppendMessages during the turn
+	// (PatchMeta + user msg AppendMessages will succeed first).
+	failStore := &errStore{SessionStore: memStore, failCount: 2}
 	sm := NewSessionManager(failStore, "sys")
 	tools := NewToolRegistry()
 	reg := NewRegistry()

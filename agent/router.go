@@ -24,8 +24,10 @@ func NewRouter(models *Registry) *Router {
 	return &Router{models: models}
 }
 
-// Adapter returns the LLMAdapter for the session. Falls back to the registry
-// default when the session's recorded model is no longer registered.
+// Adapter returns the LLMAdapter for the session. When the session has
+// no recorded model, the registry default is used. When the session's
+// recorded model is no longer registered, nil is returned — the caller
+// must surface this as an error so the user can switch to a valid model.
 func (router *Router) Adapter(session SessionModelBinding) LLMAdapter {
 	if router == nil || router.models == nil {
 		return nil
@@ -34,7 +36,9 @@ func (router *Router) Adapter(session SessionModelBinding) LLMAdapter {
 		if a, ok := router.models.Get(name); ok {
 			return a
 		}
-		slog.Warn("model not found, falling back to default", "model", name, "default", router.models.Default())
+		slog.Error("stored model not found in registry — user must switch models",
+			"model", name, "available", router.models.Names())
+		return nil
 	}
 	a, _ := router.models.Get(router.models.Default())
 	return a
