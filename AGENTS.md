@@ -135,13 +135,28 @@ incremental message operations.
 
 | Tool | Description |
 |---|---|
-| `search_skills` | Search the skill registry by name, description, or tags to discover available skills |
-| `inspect_skill` | Show full content of a registered skill without loading it (read before loading) |
-| `load_skill` | Load a skill into the session — its content becomes part of the system prompt on every turn |
+| `search_skills` | Search the skill registry by name, description, or tags. Includes full metadata (license, compatibility, allowed tools) — no inspect step needed |
+| `import_skill` | Register skill(s) from a path into the registry — SKILL.md file, single skill dir, or registry dir. Never loads into session |
+| `load_skill` | Load a registered skill into the session — its content becomes part of the system prompt on every turn |
 | `unload_skill` | Remove a loaded skill from the session to free context |
-| `import_skill` | Load an ad-hoc skill from any file path, registering it on-the-fly |
 
-Skills are reusable instructions/knowledge (markdown files with optional YAML frontmatter) that teach the agent HOW to do something. They are stored in a `SkillRegistry` and loaded into sessions on demand. When loaded, skill content is injected as additional `RoleSystem` messages after the base system prompt.
+Skills are reusable instructions/knowledge that teach the agent HOW to do something. They follow the [Agent Skills specification](https://agentskills.io): a skill is a directory containing a `SKILL.md` file with YAML frontmatter (`name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools`) and optional `scripts/`, `references/`, `assets/` subdirectories. Skills are stored in a `SkillRegistry` and loaded into sessions on demand. When loaded, skill content is injected as additional `RoleSystem` messages after the base system prompt.
+
+A skill **registry** is a directory containing multiple skill subdirectories:
+
+```
+skills/
+├── pdf-processing/
+│   ├── SKILL.md
+│   └── references/
+├── data-analysis/
+│   ├── SKILL.md
+│   └── scripts/
+└── code-review/
+    └── SKILL.md
+```
+
+Use `--skill-dir /path/to/skills` to load a registry at startup. There is no backward compatibility with flat `.md` files — only the spec format is supported.
 
 The `context_compactify` warning also suggests using `unload_skill` to free context when the soft limit is exceeded.
 

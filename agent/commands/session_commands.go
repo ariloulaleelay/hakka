@@ -434,12 +434,12 @@ func (sc *SessionCommands) jsonSessionFork(ctx context.Context, sessionID string
 	})
 	return CommandResult{
 		Handled: true,
-		Action:  ActionSessionCreate,
+		Action:  ActionSessionFork,
 		Cmd:     "session_fork",
 		Data:    data,
 		Session: child,
 		SessionEvent: &SessionEvent{
-			Type:      SessionCreated,
+			Type:      SessionForked,
 			SessionID: child.SessionID(),
 			Session:   child,
 		},

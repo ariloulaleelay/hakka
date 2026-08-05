@@ -734,7 +734,7 @@ func TestSessionAskQuestion_WithPrefix(t *testing.T) {
 
 	tool := SessionAskQuestion(sm, conv)
 	// Use prefix of s2
-	prefix := s2.SessionID()[:8]
+	prefix := agent.TruncateID(s2.SessionID(), 8)
 	res := runPlainCtx(t, ctxWithNS(ns), tool.Handler, map[string]any{
 		"session_id": prefix,
 		"question":   "What is this about?",

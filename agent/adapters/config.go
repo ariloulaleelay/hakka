@@ -1,6 +1,10 @@
 package adapters
 
-import "github.com/ariloulaleelay/hakka/agent"
+import (
+	"net/http"
+
+	"github.com/ariloulaleelay/hakka/agent"
+)
 
 // AdapterConfig is the common surface every adapter config must expose.
 type AdapterConfig interface {
@@ -11,10 +15,12 @@ type AdapterConfig interface {
 
 // OpenAIConfig holds configuration for the OpenAI adapter.
 type OpenAIConfig struct {
-	debugDir string
-	retryCfg agent.RetryConfig
-	pricing  agent.Pricing
-	Extra    map[string]any
+	debugDir   string
+	retryCfg   agent.RetryConfig
+	pricing    agent.Pricing
+	Extra      map[string]any
+	Quota      *agent.QuotaConfig
+	HTTPClient *http.Client // for quota fetching
 }
 
 func NewOpenAIConfig(debugDir string, retryCfg agent.RetryConfig, pricing agent.Pricing, extra map[string]any) OpenAIConfig {
@@ -40,6 +46,7 @@ type AnthropicConfig struct {
 	pricing   agent.Pricing
 	Version   string
 	MaxTokens int
+	Quota     *agent.QuotaConfig
 }
 
 func NewAnthropicConfig(debugDir string, retryCfg agent.RetryConfig, pricing agent.Pricing, version string, maxTokens int) AnthropicConfig {
@@ -63,6 +70,7 @@ type GeminiConfig struct {
 	debugDir string
 	retryCfg agent.RetryConfig
 	pricing  agent.Pricing
+	Quota    *agent.QuotaConfig
 }
 
 func NewGeminiConfig(debugDir string, retryCfg agent.RetryConfig, pricing agent.Pricing) GeminiConfig {
@@ -87,6 +95,7 @@ type DeepSeekConfig struct {
 	retryCfg agent.RetryConfig
 	pricing  agent.Pricing
 	Extra    map[string]any
+	Quota    *agent.QuotaConfig
 }
 
 func NewDeepSeekConfig(debugDir string, retryCfg agent.RetryConfig, pricing agent.Pricing, extra ...map[string]any) DeepSeekConfig {

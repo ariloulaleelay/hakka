@@ -72,12 +72,14 @@ func writeCommandResult(w frameWriter, res commands.CommandResult) (handled, ok 
 	}
 
 	// Session lifecycle events — emit type:"session" with top-level fields.
-	if res.Action == commands.ActionGetSession || res.Action == commands.ActionSessionCreate {
+	if res.Action == commands.ActionGetSession || res.Action == commands.ActionSessionCreate || res.Action == commands.ActionSessionFork {
 		sessionMap := sessionToMap(res.Session)
 
 		eventType := "get_session"
 		if res.Action == commands.ActionSessionCreate {
 			eventType = "session_create"
+		} else if res.Action == commands.ActionSessionFork {
+			eventType = "session_fork"
 		}
 
 		fr := FrameResponse{
@@ -86,7 +88,7 @@ func writeCommandResult(w frameWriter, res commands.CommandResult) (handled, ok 
 			Event:     eventType,
 			Session:   sessionMap,
 		}
-		if res.Action == commands.ActionGetSession && res.Session != nil {
+		if res.Session != nil {
 			// Build events replay from stored messages.
 			events := messagesToEvents(res.Session.Messages())
 			if !res.InFlight {
@@ -155,6 +157,7 @@ func messagesToEvents(msgs []agent.Message) []map[string]any {
 		case agent.RoleUser:
 			evt := map[string]any{
 				"type": "chat",
+				"id":   m.ID,
 				"text": m.Content,
 			}
 			if ts != 0 {
@@ -167,6 +170,7 @@ func messagesToEvents(msgs []agent.Message) []map[string]any {
 			if m.Content != "" {
 				evt := map[string]any{
 					"type": "delta",
+					"id":   m.ID,
 					"text": m.Content,
 				}
 				if ts != 0 {
@@ -353,6 +357,7 @@ func frameForEvent(evt event.EngineEvent) (FrameResponse, bool) {
 			SessionID: e.SessionID,
 			Text:      e.Delta,
 			Timestamp: ts,
+			ID:        e.MessageID,
 		}, true
 
 	case event.ClientRequestSent:
@@ -382,6 +387,7 @@ func frameForEvent(evt event.EngineEvent) (FrameResponse, bool) {
 					Cancelled: true,
 					Stats:     stats,
 					Timestamp: ts,
+					ID:        e.MessageID,
 				}, true
 			}
 			return FrameResponse{
@@ -390,6 +396,7 @@ func frameForEvent(evt event.EngineEvent) (FrameResponse, bool) {
 				Error:     e.Err.Error(),
 				Stats:     stats,
 				Timestamp: ts,
+				ID:        e.MessageID,
 			}, true
 		}
 		return FrameResponse{
@@ -398,6 +405,7 @@ func frameForEvent(evt event.EngineEvent) (FrameResponse, bool) {
 			Text:      e.Reply,
 			Stats:     stats,
 			Timestamp: ts,
+			ID:        e.MessageID,
 		}, true
 
 	case event.SessionRenamed:
@@ -416,6 +424,15 @@ func frameForEvent(evt event.EngineEvent) (FrameResponse, bool) {
 			SessionID: e.SessionID,
 			Event:     "session_create",
 			Session:   e.Session,
+			Timestamp: ts,
+		}, true
+
+	case event.QuotaUpdated:
+		return FrameResponse{
+			Type:      "quota",
+			Provider:  e.Provider,
+			Balance:   e.Balance,
+			Currency:  e.Currency,
 			Timestamp: ts,
 		}, true
 	}
@@ -441,12 +458,32 @@ func sessionEventFrame(ev commands.SessionEvent) FrameResponse {
 	switch ev.Type {
 	case commands.SessionCreated:
 		sessionMap := ev.Session.Metadata()
-		return FrameResponse{
+		fr := FrameResponse{
 			Type:      "session",
 			SessionID: ev.SessionID,
 			Event:     "session_create",
 			Session:   sessionMap,
 		}
+		// Include events replay so other clients can see messages
+		// immediately without a separate get_session call.
+		events := messagesToEvents(ev.Session.Messages())
+		events = append(events, map[string]any{"type": "done"})
+		fr.Events = events
+		return fr
+	case commands.SessionForked:
+		sessionMap := ev.Session.Metadata()
+		fr := FrameResponse{
+			Type:      "session",
+			SessionID: ev.SessionID,
+			Event:     "session_fork",
+			Session:   sessionMap,
+		}
+		// Include events replay so the webfront can cache and display
+		// the forked session's messages immediately.
+		events := messagesToEvents(ev.Session.Messages())
+		events = append(events, map[string]any{"type": "done"})
+		fr.Events = events
+		return fr
 	case commands.SessionRenamed:
 		return FrameResponse{
 			Type:      "session",
@@ -480,8 +517,8 @@ func enrichCtxWithCWD(ctx context.Context, conv *agent.Conversation, sessionID s
 	if sessionID == "" || conv == nil {
 		return ctx
 	}
-	session, err := conv.Sessions().GetOrCreate(ctx, conv.Namespace(), sessionID)
-	if err == nil && session != nil && session.Read().ClientCWD != "" {
+	session, ok, err := conv.Sessions().Get(ctx, conv.Namespace(), sessionID)
+	if err == nil && ok && session != nil && session.Read().ClientCWD != "" {
 		ctx = event.ContextWithCWD(ctx, session.Read().ClientCWD)
 	}
 	return ctx

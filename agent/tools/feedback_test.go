@@ -46,8 +46,14 @@ func TestFeedbackSubmitsToURL(t *testing.T) {
 	if received.ID == "" {
 		t.Fatal("expected a non-empty ID")
 	}
-	if !strings.Contains(received.ID, "-") {
-		t.Fatal("expected UUID format (with dashes), got:", received.ID)
+	if !strings.ContainsAny(received.ID, "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") {
+		t.Fatal("expected non-empty ID, got:", received.ID)
+	}
+	if len(received.ID) < 5 || len(received.ID) > 20 {
+		t.Fatal("expected short ID format (5-20 chars), got:", received.ID)
+	}
+	if strings.Contains(received.ID, "-") {
+		t.Fatal("expected short ID without dashes, got:", received.ID)
 	}
 	if received.Title != "Add dark mode" {
 		t.Fatalf("expected title 'Add dark mode', got %q", received.Title)
@@ -194,10 +200,15 @@ func TestFeedbackValidUUID(t *testing.T) {
 	<-done
 
 	parts := strings.Split(received.ID, "-")
-	if len(parts) != 5 {
-		t.Fatalf("expected 5 UUID parts, got %d in %q", len(parts), received.ID)
+	if len(parts) > 1 {
+		t.Fatalf("expected no dashes in short ID, got %q", received.ID)
 	}
-	if len(parts[0]) != 8 || len(parts[1]) != 4 || len(parts[2]) != 4 || len(parts[3]) != 4 || len(parts[4]) != 12 {
-		t.Fatalf("invalid UUID segment lengths in %q", received.ID)
+	if len(received.ID) < 5 || len(received.ID) > 20 {
+		t.Fatalf("expected short ID (5-20 chars), got %q (len=%d)", received.ID, len(received.ID))
+	}
+	for _, c := range received.ID {
+		if !((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+			t.Fatalf("invalid char %q in ID %q", c, received.ID)
+		}
 	}
 }

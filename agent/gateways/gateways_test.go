@@ -12,6 +12,7 @@ import (
 
 	"github.com/ariloulaleelay/hakka/agent"
 	"github.com/ariloulaleelay/hakka/agent/commands"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 type fakeAdapter struct {
@@ -492,5 +493,121 @@ func TestWebSocketGatewayDoneFrameHasStats(t *testing.T) {
 	}
 	if done.Stats.MessageCount <= 0 {
 		t.Fatalf("expected positive message_count in stats, got %d", done.Stats.MessageCount)
+	}
+}
+
+func TestMessagesToEvents_includes_message_ids(t *testing.T) {
+	msgs := []agent.Message{
+		{ID: "m1", Role: agent.RoleUser, Content: "hello", Timestamp: 1700000000123},
+		{ID: "m2", Role: agent.RoleAssistant, Content: "hi there", Timestamp: 1700000000456},
+	}
+
+	events := messagesToEvents(msgs)
+
+	// First event: type:"chat" with message id.
+	if len(events) < 2 {
+		t.Fatalf("expected at least 2 events, got %d", len(events))
+	}
+
+	chat := events[0]
+	if chat["type"] != "chat" {
+		t.Fatalf("expected type 'chat', got %q", chat["type"])
+	}
+	if chat["id"] != "m1" {
+		t.Fatalf("expected id 'm1' on chat event, got %v", chat["id"])
+	}
+	if chat["text"] != "hello" {
+		t.Fatalf("expected text 'hello', got %v", chat["text"])
+	}
+
+	delta := events[1]
+	if delta["type"] != "delta" {
+		t.Fatalf("expected type 'delta', got %q", delta["type"])
+	}
+	if delta["id"] != "m2" {
+		t.Fatalf("expected id 'm2' on delta event, got %v", delta["id"])
+	}
+	if delta["text"] != "hi there" {
+		t.Fatalf("expected text 'hi there', got %v", delta["text"])
+	}
+}
+
+func TestFrameForEvent_includes_message_id_on_delta_and_done(t *testing.T) {
+	// TextDelta → delta frame should carry message ID.
+	deltaEvt := event.TextDelta{SessionID: "s1", Delta: "hello", MessageID: "msg-1"}
+	fr, ok := frameForEvent(deltaEvt)
+	if !ok {
+		t.Fatal("frameForEvent(TextDelta) should return ok")
+	}
+	if fr.Type != "delta" {
+		t.Fatalf("expected type 'delta', got %q", fr.Type)
+	}
+	if fr.ID != "msg-1" {
+		t.Fatalf("expected id 'msg-1' on delta frame, got %q", fr.ID)
+	}
+
+	// TurnFinished → done frame should carry message ID.
+	doneEvt := event.TurnFinished{
+		SessionID: "s1",
+		Reply:     "final",
+		MessageID: "msg-2",
+	}
+	fr, ok = frameForEvent(doneEvt)
+	if !ok {
+		t.Fatal("frameForEvent(TurnFinished) should return ok")
+	}
+	if fr.Type != "done" {
+		t.Fatalf("expected type 'done', got %q", fr.Type)
+	}
+	if fr.ID != "msg-2" {
+		t.Fatalf("expected id 'msg-2' on done frame, got %q", fr.ID)
+	}
+}
+
+func TestDeltaAndDoneCarrySameMessageID(t *testing.T) {
+	conv, _ := newGatewayComponents("hello from streaming")
+
+	// Create a session first.
+	sess, err := conv.Sessions().GetOrCreate(context.Background(), "tcp", "test-session-1")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	conv.EnsureDefaultModel(context.Background(), sess)
+	sess.Append(agent.Message{ID: agent.MakeUniqueID(), Role: agent.RoleUser, Content: "hi"})
+
+	// Execute a turn with streaming.
+	eventCh, err := conv.Execute(context.Background(), sess.SessionID(), "hi again")
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	var deltaID, doneID string
+	var gotDelta, gotDone bool
+
+	for evt := range eventCh {
+		switch e := evt.(type) {
+		case event.TextDelta:
+			deltaID = e.MessageID
+			gotDelta = true
+		case event.TurnFinished:
+			doneID = e.MessageID
+			gotDone = true
+		}
+	}
+
+	if !gotDelta {
+		t.Fatal("expected at least one TextDelta event")
+	}
+	if !gotDone {
+		t.Fatal("expected a TurnFinished event")
+	}
+	if deltaID == "" {
+		t.Fatal("expected non-empty MessageID on TextDelta")
+	}
+	if doneID == "" {
+		t.Fatal("expected non-empty MessageID on TurnFinished")
+	}
+	if deltaID != doneID {
+		t.Fatalf("delta MessageID %q != done MessageID %q", deltaID, doneID)
 	}
 }

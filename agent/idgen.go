@@ -31,6 +31,15 @@ func SetDefaultIDGenerator(g IDGenerator) {
 	}
 }
 
+// TruncateID safely truncates an ID to at most n characters.
+// If the ID is shorter than n, it returns the full ID.
+func TruncateID(id string, n int) string {
+	if len(id) <= n {
+		return id
+	}
+	return id[:n]
+}
+
 // ---------------------------------------------------------------------------
 // Base62 encoding (0-9a-zA-Z)
 // ---------------------------------------------------------------------------

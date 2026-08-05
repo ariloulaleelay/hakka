@@ -214,7 +214,7 @@ func (gw *WebSocketGateway) sendWelcome(ctx context.Context, w frameWriter, resp
 	// Send welcome with sessions at top level (always present, even if empty).
 	w.Write(FrameResponse{
 		Type:     "welcome",
-		Sessions: sessionMaps,
+		Sessions: &sessionMaps,
 	})
 
 	// Auto-subscribe to the best session:

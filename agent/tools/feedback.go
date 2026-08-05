@@ -10,8 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/ariloulaleelay/hakka/agent"
 )
 
@@ -56,7 +54,7 @@ type feedbackArgs struct {
 // FeedbackTool returns the feedback submission tool that sends feature
 // requests and bug reports to a configurable HTTP endpoint.
 //
-// The tool generates a unique anonymous ID (UUID v4) for each submission,
+// The tool generates a unique anonymous ID for each submission,
 // so the user can reference it later without revealing their identity.
 func FeedbackTool() agent.Tool {
 	return NewTool("feedback",
@@ -90,7 +88,7 @@ func FeedbackTool() agent.Tool {
 				return "", fmt.Errorf("feedback: description is required")
 			}
 
-			id := uuid.New().String()
+			id := agent.MakeUniqueID()
 
 			payload := map[string]any{
 				"id":          id,

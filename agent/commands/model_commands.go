@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/ariloulaleelay/hakka/agent"
 	"github.com/ariloulaleelay/hakka/agent/event"
@@ -74,7 +75,26 @@ func (mc *ModelCommands) jsonModelSwitch(ctx context.Context, sessionID string, 
 		return CommandResult{Handled: true, Cmd: "model_switch", Session: session, Error: err}
 	}
 
-	data, _ := json.Marshal(map[string]any{"model": p.Name})
+	result := map[string]any{"model": p.Name}
+
+	// Fetch quota for the newly selected model.
+	if mc.Conv != nil && mc.Conv.Router() != nil {
+		adapter := mc.Conv.Router().Adapter(session)
+		if qf, ok := adapter.(agent.QuotaFetcher); ok {
+			fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			if info, err := qf.FetchQuota(fetchCtx); err == nil && info != nil {
+				if info.Balance != nil {
+					result["quota_balance"] = *info.Balance
+				}
+				if info.Currency != "" {
+					result["quota_currency"] = info.Currency
+				}
+			}
+		}
+	}
+
+	data, _ := json.Marshal(result)
 	return CommandResult{Handled: true, Cmd: "model_switch", Data: data, Session: session}
 }
 

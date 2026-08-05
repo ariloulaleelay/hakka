@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/ariloulaleelay/hakka/agent"
 	"github.com/ariloulaleelay/hakka/agent/event"
 )
@@ -78,7 +76,7 @@ func sendClientRequest(ctx context.Context, command string) (json.RawMessage, er
 		return nil, fmt.Errorf("vim tool: not connected to a Neovim client")
 	}
 
-	requestID := uuid.NewString()
+	requestID := agent.MakeUniqueID()
 	slog.Debug("vim tool: sending request", "requestID", requestID, "command", agent.Truncate(command, 80))
 
 	if err := cw.WriteFrame(event.Frame{

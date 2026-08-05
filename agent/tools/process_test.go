@@ -336,20 +336,20 @@ func TestProcessManager_Concurrency(t *testing.T) {
 	}
 }
 
-// extractProcessID extracts the UUID from a spawn result like:
-// "Started: 550e8400-e29b-41d4-a716-446655440000 (pid=12345, command=cat)"
+// extractProcessID extracts the ID from a spawn result like:
+// "Started: abc123 (pid=12345, command=cat)"
 func extractProcessID(result string) string {
-	// Find the UUID pattern.
 	idx := strings.Index(result, "Started: ")
 	if idx < 0 {
 		return ""
 	}
 	rest := result[idx+len("Started: "):]
-	// UUID is 36 chars.
-	if len(rest) < 36 {
+	// ID ends at the space before " (pid=".
+	spaceIdx := strings.Index(rest, " ")
+	if spaceIdx < 0 {
 		return ""
 	}
-	return rest[:36]
+	return rest[:spaceIdx]
 }
 
 func TestSpawnProcess_ExitEarly(t *testing.T) {

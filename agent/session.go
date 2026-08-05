@@ -5,8 +5,6 @@ import (
 	"os"
 	"sync"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // ToolCall represents a model-requested tool invocation.
@@ -79,7 +77,7 @@ func NewSessionData(namespace, systemPrompt string) SessionData {
 	now := time.Now()
 	return SessionData{
 		Namespace:        namespace,
-		ID:               uuid.NewString(),
+		ID:               MakeUniqueID(),
 		SystemPrompt:     systemPrompt,
 		CreatedAt:        now,
 		UpdatedAt:        now,

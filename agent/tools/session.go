@@ -157,10 +157,10 @@ func SessionList(sm *agent.SessionManager) agent.Tool {
 				}
 				if s.SessionName() != "" {
 					b.WriteString(fmt.Sprintf("  %d. %s [%s] <%s> — %d msgs, model: %s\n",
-						i+1, s.SessionName(), s.SessionID()[:8], created, msgCount, model))
+						i+1, s.SessionName(), agent.TruncateID(s.SessionID(), 8), created, msgCount, model))
 				} else {
 					b.WriteString(fmt.Sprintf("  %d. %s <%s> — %d msgs, model: %s\n",
-						i+1, s.SessionID()[:8], created, msgCount, model))
+						i+1, agent.TruncateID(s.SessionID(), 8), created, msgCount, model))
 				}
 				// Show first user message
 				for _, m := range s.Messages() {
@@ -212,7 +212,7 @@ func SessionRename(sm *agent.SessionManager) agent.Tool {
 				return "", fmt.Errorf("session_rename: %w", err)
 			}
 
-			return fmt.Sprintf("Session %s renamed to %q.", s.SessionID()[:8], args.Name), nil
+			return fmt.Sprintf("Session %s renamed to %q.", agent.TruncateID(s.SessionID(), 8), args.Name), nil
 		}).
 		Build()
 }
@@ -330,7 +330,7 @@ func SessionRead(sm *agent.SessionManager) agent.Tool {
 			display := messages[start:]
 
 			var b strings.Builder
-			b.WriteString(fmt.Sprintf("Session %s — %d messages", s.SessionID()[:8], len(messages)))
+			b.WriteString(fmt.Sprintf("Session %s — %d messages", agent.TruncateID(s.SessionID(), 8), len(messages)))
 			if start > 0 {
 				b.WriteString(fmt.Sprintf(" (showing last %d, %d omitted)", len(display), start))
 			}
@@ -520,7 +520,7 @@ func generateLLMSummary(ctx context.Context, adapter agent.LLMAdapter, s *agent.
 
 	name := s.SessionName()
 	if name == "" {
-		name = s.SessionID()[:8]
+		name = agent.TruncateID(s.SessionID(), 8)
 	}
 	return fmt.Sprintf("Summary for session %s:\n%s\n", name, resp.Message.Content), nil
 }
@@ -531,7 +531,7 @@ func buildHeuristicSummary(s *agent.Session) string {
 
 	name := s.SessionName()
 	if name == "" {
-		name = s.SessionID()[:8]
+		name = agent.TruncateID(s.SessionID(), 8)
 	}
 
 	b.WriteString(fmt.Sprintf("Session: %s\n", name))
@@ -684,7 +684,7 @@ func SessionAskQuestion(sm *agent.SessionManager, conv *agent.Conversation) agen
 			}
 			adapter := conv.Router().Adapter(s)
 			if adapter == nil {
-				return "", fmt.Errorf("session_ask_question: no LLM adapter available for session %s", s.SessionID()[:8])
+				return "", fmt.Errorf("session_ask_question: no LLM adapter available for session %s", agent.TruncateID(s.SessionID(), 8))
 			}
 
 			msgs := buildAskQuestionMessages(s, args.Question)

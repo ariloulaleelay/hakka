@@ -67,19 +67,21 @@ func (UsageReported) engineEvent() {}
 type TextDelta struct {
 	SessionID string
 	Delta     string
+	MessageID string // ID of the assistant message being streamed
 }
 
 func (TextDelta) engineEvent() {}
 
 type TurnFinished struct {
-	SessionID             string
-	Reply                 string
-	Err                   error
-	TotalTokens           int     // accumulated token usage from the session
-	TotalCost             float64 // accumulated monetary cost in USD
-	MessageCount          int     // total messages in session history
-	EstimatedContextTokens int    // last estimated context size in tokens
-	Model                 string  // model used for this turn
+	SessionID              string
+	Reply                  string
+	Err                    error
+	TotalTokens            int     // accumulated token usage from the session
+	TotalCost              float64 // accumulated monetary cost in USD
+	MessageCount           int     // total messages in session history
+	EstimatedContextTokens int     // last estimated context size in tokens
+	Model                  string  // model used for this turn
+	MessageID              string  // ID of the final assistant message
 }
 
 func (TurnFinished) engineEvent() {}
@@ -103,6 +105,17 @@ type SessionCreated struct {
 }
 
 func (SessionCreated) engineEvent() {}
+
+// QuotaUpdated is emitted after a turn completes (or on model switch) when
+// the provider adapter supports quota fetching. Gateways map it to a
+// type:"quota" wire frame so clients can display balance info.
+type QuotaUpdated struct {
+	Provider string
+	Balance  *float64 `json:"balance,omitempty"`
+	Currency string   `json:"currency,omitempty"`
+}
+
+func (QuotaUpdated) engineEvent() {}
 
 // ---------------------------------------------------------------------------
 // Client communication — allows tools to send requests to the client

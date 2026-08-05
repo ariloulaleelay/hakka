@@ -394,3 +394,67 @@ func TestContinueCommand_CommandProcessorDoesNotInvokeLLM(t *testing.T) {
 		t.Fatalf("expected 0 LLM calls from command processor alone, got %d", adapter.CallCount())
 	}
 }
+
+// TestEnrichCtxWithCWD_DoesNotRecreateDeletedSession verifies that
+// enrichCtxWithCWD does not re-create a session that was previously
+// deleted. It uses GetOrCreate internally, which is a bug: the function
+// should treat the session as a read-only source of CWD and must not
+// mutate the store.
+func TestEnrichCtxWithCWD_DoesNotRecreateDeletedSession(t *testing.T) {
+	sm := agent.NewSessionManager(nil, "") // memory store
+	ns := "testns"
+	sessionID := "session-to-delete"
+
+	// Create a session.
+	session, err := sm.GetOrCreate(context.Background(), ns, sessionID)
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	session.SetClientCWD("/home/user/project")
+
+	// Verify the session exists.
+	_, ok, err := sm.Get(context.Background(), ns, sessionID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !ok {
+		t.Fatal("session should exist before deletion")
+	}
+
+	// Delete the session.
+	if err := sm.Drop(context.Background(), ns, sessionID); err != nil {
+		t.Fatalf("Drop: %v", err)
+	}
+
+	// Verify the session is gone.
+	_, ok, err = sm.Get(context.Background(), ns, sessionID)
+	if err != nil {
+		t.Fatalf("Get after drop: %v", err)
+	}
+	if ok {
+		t.Fatal("session should not exist after deletion")
+	}
+
+	// Create a Conversation (needed by enrichCtxWithCWD).
+	reg := agent.NewRegistry()
+	reg.Register("default", &fakeAdapter{reply: "hi"})
+	router := agent.NewRouter(reg)
+	cfg := agent.EngineConfig{MaxToolIterations: 2}
+	conv := agent.NewConversation(sm, router, agent.NewToolRegistry(), ns, cfg)
+
+	// Call enrichCtxWithCWD with the deleted session's ID.
+	// BUG: this calls GetOrCreate internally, which re-creates the session.
+	ctx := context.Background()
+	_ = enrichCtxWithCWD(ctx, conv, sessionID)
+
+	// Check that the session was NOT re-created.
+	_, ok, err = sm.Get(context.Background(), ns, sessionID)
+	if err != nil {
+		t.Fatalf("Get after enrichCtxWithCWD: %v", err)
+	}
+	if ok {
+		t.Error("enrichCtxWithCWD re-created a deleted session! This is the bug: " +
+			"enrichCtxWithCWD uses GetOrCreate which mutates the store. " +
+			"After fixing, this test should pass (session should NOT exist).")
+	}
+}

@@ -13,7 +13,7 @@ type CompleteOptions struct {
 	// Extra carries additional body fields to inject into the LLM request.
 	// Adapters that support it merge these into the outgoing JSON payload.
 	Extra map[string]any
-	// SessionID is the current hakka session UUID. Adapters can use it to
+	// SessionID is the current hakka session ID. Adapters can use it to
 	// resolve placeholders like "$session_id" in their Extra configuration.
 	SessionID string
 }
@@ -78,6 +78,27 @@ type Pricing struct {
 	Input         float64 `json:"input"`
 	Output        float64 `json:"output"`
 	CacheHitInput float64 `json:"cache_hit_input,omitempty"`
+}
+
+// QuotaInfo holds the fetched quota/balance information for a provider.
+type QuotaInfo struct {
+	Balance  *float64 `json:"balance,omitempty"` // money left
+	Currency string   `json:"currency,omitempty"` // e.g. "CNY", "USD"
+}
+
+// QuotaConfig describes how to fetch quota/balance info from a provider's API.
+// URL is the endpoint. Balance and Currency are jq-like path expressions.
+type QuotaConfig struct {
+	URL      string `json:"url"`
+	Balance  string `json:"balance,omitempty"`  // path to money-left value
+	Currency string `json:"currency,omitempty"` // path to currency string, or static literal
+}
+
+// QuotaFetcher is an optional interface that adapters can implement to
+// provide quota/balance information from the provider's API. The
+// engine calls FetchQuota after each turn and on model switch.
+type QuotaFetcher interface {
+	FetchQuota(ctx context.Context) (*QuotaInfo, error)
 }
 
 // LLMResponse is the normalized result of a single completion call.

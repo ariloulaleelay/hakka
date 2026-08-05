@@ -16,6 +16,11 @@
       "compact_soft_limit": 200000,
       "hacks": {
         "ignore_stop_if_no_content": true
+      },
+      "quota": {
+        "url": "https://api.deepseek.com/user/balance",
+        "balance": ".balance_infos[currency=USD].total_balance",
+        "currency": ".balance_infos[currency=USD].currency"
       }
     },
     "claude": {

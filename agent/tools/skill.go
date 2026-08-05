@@ -21,18 +21,16 @@ type searchSkillsArgs struct {
 }
 
 // SearchSkills returns a tool that searches the skill registry by name,
-// description, or tags.
+// description, or tags. Results include all metadata needed to decide
+// whether to load a skill — no separate inspect step needed.
 func SearchSkills(sr *agent.SkillRegistry) agent.Tool {
 	return NewTool("search_skills", "Search registered skills by name, description, or tags. Use this to discover what skills are available.").
-		StringParam("query", "Search query — matches against skill name, description, and tags", true).
+		StringParam("query", "Search query — matches against skill name, description, and tags. Empty returns all.", true).
 		Tags("skill", "all").
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args searchSkillsArgs
 			if err := json.Unmarshal(raw, &args); err != nil {
 				return "", fmt.Errorf("search_skills: %w", err)
-			}
-			if args.Query == "" {
-				return "Error: query is required", nil
 			}
 
 			results := sr.Search(args.Query)
@@ -43,59 +41,27 @@ func SearchSkills(sr *agent.SkillRegistry) agent.Tool {
 			var b strings.Builder
 			b.WriteString(fmt.Sprintf("Found %d skill(s) matching %q:\n", len(results), args.Query))
 			for _, s := range results {
-				tagStr := ""
+				b.WriteString(fmt.Sprintf("  %s — %s\n", s.Name, s.Description))
 				if len(s.Tags) > 0 {
-					tagStr = " [" + strings.Join(s.Tags, ", ") + "]"
+					b.WriteString(fmt.Sprintf("    Tags: %s\n", strings.Join(s.Tags, ", ")))
 				}
-				b.WriteString(fmt.Sprintf("  %s — %s%s\n", s.Name, s.Description, tagStr))
+				if s.License != "" {
+					b.WriteString(fmt.Sprintf("    License: %s\n", s.License))
+				}
+				if s.Compatibility != "" {
+					b.WriteString(fmt.Sprintf("    Compatibility: %s\n", s.Compatibility))
+				}
+				if len(s.Metadata) > 0 {
+					for k, v := range s.Metadata {
+						b.WriteString(fmt.Sprintf("    %s: %s\n", k, v))
+					}
+				}
+				if s.AllowedTools != "" {
+					b.WriteString(fmt.Sprintf("    Allowed tools: %s\n", s.AllowedTools))
+				}
+				b.WriteString("\n")
 			}
-			return b.String(), nil
-		}).
-		Build()
-}
-
-// ---------------------------------------------------------------------------
-// inspect_skill — show full content preview of a skill
-// ---------------------------------------------------------------------------
-
-type inspectSkillArgs struct {
-	Name string `json:"name"`
-}
-
-// InspectSkill returns a tool that shows the full content of a registered
-// skill without loading it into the session.
-func InspectSkill(sr *agent.SkillRegistry) agent.Tool {
-	return NewTool("inspect_skill", "Show full content of a registered skill without loading it. Read before loading to decide if you need it.").
-		StringParam("name", "Name of the skill to inspect", true).
-		Tags("skill", "all").
-		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
-			var args inspectSkillArgs
-			if err := json.Unmarshal(raw, &args); err != nil {
-				return "", fmt.Errorf("inspect_skill: %w", err)
-			}
-			if args.Name == "" {
-				return "Error: name is required", nil
-			}
-
-			skill := sr.Get(args.Name)
-			if skill == nil {
-				return fmt.Sprintf("Error: skill %q not found. Use search_skills to discover available skills.", args.Name), nil
-			}
-
-			content, err := sr.ReadContent(args.Name)
-			if err != nil {
-				return "", fmt.Errorf("inspect_skill: %w", err)
-			}
-
-			var b strings.Builder
-			b.WriteString(fmt.Sprintf("Skill: %s\n", skill.Name))
-			b.WriteString(fmt.Sprintf("Description: %s\n", skill.Description))
-			if len(skill.Tags) > 0 {
-				b.WriteString(fmt.Sprintf("Tags: %s\n", strings.Join(skill.Tags, ", ")))
-			}
-			b.WriteString(fmt.Sprintf("Path: %s\n", skill.Path))
-			b.WriteString("\n--- Content ---\n")
-			b.WriteString(content)
+			b.WriteString("Use load_skill <name> to activate a skill.")
 			return b.String(), nil
 		}).
 		Build()
@@ -200,18 +166,23 @@ func UnloadSkill(sr *agent.SkillRegistry) agent.Tool {
 }
 
 // ---------------------------------------------------------------------------
-// import_skill — load an ad-hoc skill from any file path
+// import_skill — load skill(s) from a path
 // ---------------------------------------------------------------------------
 
 type importSkillArgs struct {
 	Path string `json:"path"`
 }
 
-// ImportSkill returns a tool that loads a skill from any file path,
-// registering it on-the-fly and loading it into the session.
+// ImportSkill returns a tool that registers skills from a path into the
+// registry. It never loads skills into the session — use load_skill for that.
+//
+// Three forms are accepted:
+//  1. A SKILL.md file → registers that single skill.
+//  2. A skill directory (containing SKILL.md) → registers that single skill.
+//  3. A registry directory (subdirs each with SKILL.md) → registers all skills.
 func ImportSkill(sr *agent.SkillRegistry) agent.Tool {
-	return NewTool("import_skill", "Load a skill from any file path. The file is registered and loaded into the current session. Use this for one-off skills not in the registry.").
-		StringParam("path", "Absolute or relative path to the skill file", true).
+	return NewTool("import_skill", "Register skill(s) from a path into the registry. Does NOT load into session — use load_skill to activate. Accepts: a SKILL.md file, a single skill directory, or a registry directory (multiple skills).").
+		StringParam("path", "Path to a SKILL.md file, a skill directory, or a registry directory", true).
 		Tags("skill", "all").
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args importSkillArgs
@@ -235,32 +206,89 @@ func ImportSkill(sr *agent.SkillRegistry) agent.Tool {
 				return "", fmt.Errorf("import_skill: %w", err)
 			}
 
-			if _, err := os.Stat(absPath); os.IsNotExist(err) {
-				return fmt.Sprintf("Error: file %q does not exist.", absPath), nil
+			info, err := os.Stat(absPath)
+			if os.IsNotExist(err) {
+				return fmt.Sprintf("Error: path %q does not exist.", args.Path), nil
 			}
-
-			// Read the skill name from the file
-			data, err := os.ReadFile(absPath)
 			if err != nil {
 				return "", fmt.Errorf("import_skill: %w", err)
 			}
 
-			name, _, _ := agent.ParseSkillFile(absPath, string(data))
-			if name == "" {
-				name = strings.TrimSuffix(filepath.Base(absPath), filepath.Ext(absPath))
+			// Case 1: path is a file → must be SKILL.md → register one
+			if !info.IsDir() {
+				return registerOneSkill(sr, absPath)
 			}
 
-			// Register the skill (allow overwriting existing — the import is a one-off)
-			_ = sr.Add(absPath) // ignore duplicate errors
-
-			// Load into session
-			session, ok := event.SessionViewFromContext(ctx).(agent.SessionView)
-			if !ok || session == nil {
-				return "", fmt.Errorf("import_skill: session not available in context")
+			// Case 2: directory contains SKILL.md → single skill dir → register one
+			skillMDPath := filepath.Join(absPath, "SKILL.md")
+			if _, err := os.Stat(skillMDPath); err == nil {
+				return registerOneSkill(sr, skillMDPath)
 			}
 
-			session.AddActiveSkill(name)
-			return fmt.Sprintf("Imported and loaded skill %q from %s. It is now part of your system prompt. Use unload_skill %q to remove it.", name, absPath, name), nil
+			// Case 3: registry directory → scan for subdirs with SKILL.md → register all
+			entries, err := os.ReadDir(absPath)
+			if err != nil {
+				return "", fmt.Errorf("import_skill: read dir: %w", err)
+			}
+
+			var registered []string
+			var errors []string
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				sp := filepath.Join(absPath, entry.Name(), "SKILL.md")
+				if _, err := os.Stat(sp); err != nil {
+					continue
+				}
+				if err := sr.Add(sp); err != nil {
+					errors = append(errors, fmt.Sprintf("%s: %v", entry.Name(), err))
+					continue
+				}
+				skill := sr.Get(entry.Name())
+				name := entry.Name()
+				if skill != nil {
+					name = skill.Name
+				}
+				registered = append(registered, name)
+			}
+
+			if len(registered) == 0 {
+				if len(errors) > 0 {
+					return fmt.Sprintf("Error: no skills registered. Errors: %s", strings.Join(errors, "; ")), nil
+				}
+				return fmt.Sprintf("Error: no skill subdirectories with SKILL.md found in %q.", args.Path), nil
+			}
+
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("Registered %d skill(s) from %s:\n", len(registered), absPath))
+			for _, name := range registered {
+				b.WriteString(fmt.Sprintf("  %s\n", name))
+			}
+			b.WriteString("Use load_skill to activate the ones you need.")
+			if len(errors) > 0 {
+				b.WriteString(fmt.Sprintf("\nErrors: %s", strings.Join(errors, "; ")))
+			}
+			return b.String(), nil
 		}).
 		Build()
+}
+
+// registerOneSkill registers a single skill from a SKILL.md path.
+func registerOneSkill(sr *agent.SkillRegistry, skillPath string) (string, error) {
+	if err := sr.Add(skillPath); err != nil {
+		if strings.Contains(err.Error(), "duplicate name") {
+			return fmt.Sprintf("Skill at %q is already registered.", skillPath), nil
+		}
+		return "", fmt.Errorf("import_skill: %w", err)
+	}
+
+	// Resolve the registered name
+	dirName := filepath.Base(filepath.Dir(skillPath))
+	skill := sr.Get(dirName)
+	name := dirName
+	if skill != nil {
+		name = skill.Name
+	}
+	return fmt.Sprintf("Registered skill %q from %s. Use load_skill %q to activate it.", name, skillPath, name), nil
 }

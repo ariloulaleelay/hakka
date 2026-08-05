@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/google/uuid"
-
 	"github.com/ariloulaleelay/hakka/agent"
 )
 
@@ -235,7 +233,7 @@ func (ad *GeminiAdapter) appendGeminiResponse(out *agent.LLMResponse, resp gemin
 				args = []byte("{}")
 			}
 			out.Message.ToolCalls = append(out.Message.ToolCalls, agent.ToolCall{
-				ID:        uuid.NewString(),
+				ID:        agent.MakeUniqueID(),
 				Name:      part.FunctionCall.Name,
 				Arguments: string(args),
 			})

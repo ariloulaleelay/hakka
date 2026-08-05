@@ -114,3 +114,31 @@ func TestOpenAIExtraWithoutSessionID(t *testing.T) {
 		t.Errorf("expected session_id='' (empty, unresolved) in body, got %v", captured["session_id"])
 	}
 }
+
+// TestInstrumentedTransportGETNoBody verifies that GET requests (which have nil
+// body) do not panic in instrumentedTransport.RoundTrip. This reproduces a
+// panic caused by io.ReadAll(nil) when the quota fetcher makes a GET request
+// through the wrapped transport.
+func TestInstrumentedTransportGETNoBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	// Wrap transport with instrumentedTransport (exactly like the quota fetch path).
+	client := &http.Client{Transport: WrapTransport(http.DefaultTransport, nil, "")}
+
+	resp, err := client.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+}

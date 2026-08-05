@@ -91,7 +91,6 @@ func RegisterSubagentTools(r *agent.ToolRegistry, sessions *agent.SessionManager
 // The sr parameter is the SkillRegistry that holds the available skills.
 func RegisterSkillTools(r *agent.ToolRegistry, sr *agent.SkillRegistry) {
 	r.Register(SearchSkills(sr))
-	r.Register(InspectSkill(sr))
 	r.Register(LoadSkill(sr))
 	r.Register(UnloadSkill(sr))
 	r.Register(ImportSkill(sr))

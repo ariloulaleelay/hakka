@@ -491,3 +491,44 @@ func TestForkData_PreservesTextContentWhenStripping(t *testing.T) {
 		t.Fatalf("expected tool calls to be stripped, got: %+v", child.Messages[1].ToolCalls)
 	}
 }
+
+func TestNewSessionData_UsesShortID(t *testing.T) {
+	sd := NewSessionData("ns", "prompt")
+
+	// Session ID must be non-empty.
+	if sd.ID == "" {
+		t.Fatal("session ID must not be empty")
+	}
+
+	// Session ID must NOT be a UUID (no dashes, shorter than 20 chars).
+	if len(sd.ID) > 20 {
+		t.Fatalf("session ID too long for a short ID: %q (len=%d)", sd.ID, len(sd.ID))
+	}
+
+	// UUIDs have dashes; short IDs don't.
+	if len(sd.ID) >= 36 || containsDashHelper(sd.ID) {
+		t.Fatalf("session ID looks like a UUID, want a short base62 ID: %q", sd.ID)
+	}
+
+	// All characters must be valid base62 (0-9A-Za-z).
+	for _, c := range sd.ID {
+		if !((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+			t.Fatalf("session ID %q contains invalid char %q (not base62)", sd.ID, c)
+		}
+	}
+
+	// Generate a second session; IDs must be different.
+	sd2 := NewSessionData("ns", "prompt2")
+	if sd.ID == sd2.ID {
+		t.Fatalf("two sessions got the same ID: %q", sd.ID)
+	}
+}
+
+func containsDashHelper(s string) bool {
+	for _, c := range s {
+		if c == '-' {
+			return true
+		}
+	}
+	return false
+}

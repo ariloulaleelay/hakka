@@ -66,7 +66,7 @@ type FrameResponse struct {
 
 	// --- "tool" fields ---
 	Tool       string          `json:"tool,omitempty"`
-	ID         string          `json:"id,omitempty"`         // tool call ID (correlates start↔ok/err)
+	ID         string          `json:"id,omitempty"`         // tool call ID (tool frames) or message ID (delta/done/chat frames)
 	Status     string          `json:"status,omitempty"`     // "start", "ok", "err"
 	Args       json.RawMessage `json:"args,omitempty"`       // tool arguments (on "start")
 	Snippet    string          `json:"snippet,omitempty"`    // human-readable summary
@@ -91,7 +91,8 @@ type FrameResponse struct {
 
 	// --- "session" / "welcome" fields ---
 	// Sessions list (welcome) / session object (session events) are at top level, not nested in "data".
-	Sessions []map[string]any `json:"sessions"`
+	// Pointer + omitempty so only welcome frames include the field; all other frames omit it entirely.
+	Sessions *[]map[string]any `json:"sessions,omitempty"`
 	Session  map[string]any   `json:"session,omitempty"`
 	// Events is a replay-friendly sequence of typed events (chat, delta, tool,
 	// usage, done) that mirrors the live wire protocol. Returned alongside
@@ -105,4 +106,9 @@ type FrameResponse struct {
 	Event   string `json:"event,omitempty"`
 	OldName string `json:"old_name,omitempty"`
 	Name    string `json:"name,omitempty"`
+
+	// --- "quota" fields ---
+	Provider string   `json:"provider,omitempty"`
+	Balance  *float64 `json:"balance,omitempty"`
+	Currency string   `json:"currency,omitempty"`
 }

@@ -50,7 +50,10 @@ func (r *turnRunner) executeTurn(
 	go func() {
 		defer close(eventCh)
 
-		reply, err := r.runLoop(ctx, session, eventCh, saveFn)
+		reply, msgID, err := r.runLoop(ctx, session, eventCh, saveFn)
+
+		// Fetch quota from the provider after the turn (best-effort).
+		r.fetchAndEmitQuota(ctx, session, eventCh)
 
 		if err == nil {
 			renameFn(ctx, session, eventCh)
@@ -65,6 +68,7 @@ func (r *turnRunner) executeTurn(
 			MessageCount:           len(session.Messages()),
 			EstimatedContextTokens: session.GetEstimatedContextTokens(),
 			Model:                  session.GetModel(),
+			MessageID:              msgID,
 		}
 	}()
 	return eventCh
@@ -77,12 +81,17 @@ func (r *turnRunner) runLoop(
 	session SessionView,
 	events eventSender,
 	saveFn func(context.Context, SessionView) error,
-) (string, error) {
+) (string, string, error) {
 	const maxAutoContinue = 3
 
 	var turnMu sync.Mutex
 	hooks := r.toolExec.SerialisedHooks(&turnMu)
 	autoContinueCount := 0
+
+	// msgID is captured by onDelta and updated each iteration before
+	// calling Complete. This way streaming deltas and the final TurnFinished
+	// event all carry the same message ID.
+	var msgID string
 
 	// onDelta is a sidecar progress channel.
 	// adapters that support streaming call it, others ignore it.
@@ -90,7 +99,7 @@ func (r *turnRunner) runLoop(
 	onDelta := func(delta string) {
 		select {
 		case <-ctx.Done():
-		case events <- event.TextDelta{SessionID: session.SessionID(), Delta: delta}:
+		case events <- event.TextDelta{SessionID: session.SessionID(), Delta: delta, MessageID: msgID}:
 		}
 	}
 
@@ -107,13 +116,18 @@ func (r *turnRunner) runLoop(
 		opts := r.config.Options
 		opts.SessionID = session.SessionID()
 
+		// Generate the message ID before calling Complete so that
+		// streaming deltas and the final TurnFinished event all
+		// carry the same ID.
+		msgID = MakeUniqueID()
+
 		resp, err := adapter.Complete(ctx, msgs, schemas, opts, onDelta)
 		if err != nil {
 			notifyError(session.SessionID(), err, hooks, r.logger)
-			return "", err
+			return "", msgID, err
 		}
 		if err := r.validateResponse(resp); err != nil {
-			return "", notifyError(session.SessionID(), err, hooks, r.logger)
+			return "", msgID, notifyError(session.SessionID(), err, hooks, r.logger)
 		}
 
 		if resp.Usage != nil {
@@ -129,7 +143,7 @@ func (r *turnRunner) runLoop(
 
 		r.reportUsage(session, resp, events)
 		assistantMessage := Message{
-			ID:               MakeUniqueID(),
+			ID:               msgID,
 			Role:             RoleAssistant,
 			Content:          resp.Message.Content,
 			ToolCalls:        resp.Message.ToolCalls,
@@ -150,7 +164,7 @@ func (r *turnRunner) runLoop(
 		}
 		if err := saveFn(ctx, session); err != nil {
 			r.logger.Error("failed to save session mid-turn", "session", session.SessionID(), "iteration", i, "error", err)
-			return "", fmt.Errorf("save session: %w", err)
+			return "", msgID, fmt.Errorf("save session: %w", err)
 		}
 
 		if r.isEmptyStopResponse(resp) && r.isIgnoreStopOnNoContent(session) {
@@ -164,18 +178,18 @@ func (r *turnRunner) runLoop(
 				r.logger.Warn("autocontinue: exhausted rounds, finishing",
 					"session", session.SessionID(), "iteration", i,
 					"auto_continue_round", autoContinueCount)
-				return resp.Message.Content, nil
+				return resp.Message.Content, msgID, nil
 			}
 		}
 
 		if r.isFinalResponse(resp) {
-			return resp.Message.Content, nil
+			return resp.Message.Content, msgID, nil
 		}
 	}
 
 	r.logger.Warn("tool-iteration-loop: max iterations reached",
 		"session", session.SessionID(), "max_iterations", r.config.MaxToolIterations)
-	return "", ErrMaxIterations
+	return "", msgID, ErrMaxIterations
 }
 
 // buildLLMContext compacts history, injects tool list, and returns messages,
@@ -311,4 +325,38 @@ func (r *turnRunner) augmentSchemasWithCompactify(schemas []ToolSchema) []ToolSc
 		}
 	}
 	return append(schemas, contextCompactifySchema)
+}
+
+// fetchAndEmitQuota attempts to fetch quota info from the provider after a
+// turn. Non-blocking best-effort — errors are logged but not surfaced.
+func (r *turnRunner) fetchAndEmitQuota(ctx context.Context, session SessionView, events eventSender) {
+	if events == nil {
+		return
+	}
+	adapter := r.router.Adapter(session)
+	qf, ok := adapter.(QuotaFetcher)
+	if !ok {
+		return
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	info, err := qf.FetchQuota(fetchCtx)
+	if err != nil {
+		r.logger.Warn("quota fetch failed",
+			"session", session.SessionID(),
+			"model", session.GetModel(),
+			"error", err,
+		)
+		return
+	}
+	if info == nil {
+		return
+	}
+
+	events <- event.QuotaUpdated{
+		Provider: session.GetModel(),
+		Balance:  info.Balance,
+		Currency: info.Currency,
+	}
 }

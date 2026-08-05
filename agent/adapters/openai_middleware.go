@@ -64,15 +64,28 @@ func (b *usageCaptureBody) Read(p []byte) (int, error) {
 }
 
 func (t *instrumentedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Only inject extra body fields for requests that actually carry JSON
+	// bodies (POST/PUT/PATCH). GET/HEAD requests (e.g. quota fetch) pass
+	// through unchanged — injecting a body on a GET is malformed and
+	// causes proxies like CloudFront to reject them with 403.
+	if req.Method == http.MethodGet || req.Method == http.MethodHead {
+		resp, err := t.base.RoundTrip(req)
+		return t.handleResponse(req, resp, err)
+	}
+
 	perReqExtra, _ := req.Context().Value(ctxExtraPerReq).(map[string]any)
 	sessionID, _ := req.Context().Value(ctxSessionID).(string)
 	merged := mergeExtra(t.extra, perReqExtra, sessionID)
 
-	body, err := io.ReadAll(req.Body)
-	if err != nil {
-		return nil, err
+	var body []byte
+	var err error
+	if req.Body != nil {
+		body, err = io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		req.Body.Close()
 	}
-	req.Body.Close()
 
 	if len(merged) == 0 && t.debugDir == "" {
 		req.Body = io.NopCloser(bytes.NewReader(body))
@@ -83,8 +96,12 @@ func (t *instrumentedTransport) RoundTrip(req *http.Request) (*http.Response, er
 	var newBody []byte
 	if len(merged) > 0 {
 		var bodyMap map[string]any
-		if err := json.Unmarshal(body, &bodyMap); err != nil {
-			return nil, err
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, &bodyMap); err != nil {
+				return nil, err
+			}
+		} else {
+			bodyMap = make(map[string]any)
 		}
 		for k, v := range merged {
 			bodyMap[k] = v

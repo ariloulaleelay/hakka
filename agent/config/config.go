@@ -37,6 +37,7 @@ type ModelConfig struct {
 	CompactSoftLimit int               `json:"compact_soft_limit,omitempty"` // per-provider compact soft limit (0 = use engine default)
 	Hacks            agent.Hacks       `json:"hacks,omitempty"`              // per-provider workarounds
 	RetryConfig      *RetryConfigRaw   `json:"retry_config,omitempty"`       // per-provider retry policy
+	Quota            *agent.QuotaConfig `json:"quota,omitempty"`              // per-provider quota/balance API
 }
 
 type File struct {
@@ -289,6 +290,8 @@ func buildAdapter(name string, modelCfg ModelConfig, client *http.Client, llmDeb
 		client.Transport = adapters.WrapTransport(client.Transport, modelCfg.Extra, llmDebugDir)
 		cfg.HTTPClient = client
 		adCfg := adapters.NewOpenAIConfig(llmDebugDir, retryCfg, pricing, modelCfg.Extra)
+		adCfg.HTTPClient = client
+		adCfg.Quota = modelCfg.Quota
 		adapter := adapters.NewOpenAIAdapter(openai.NewClientWithConfig(cfg), modelCfg.Model, adCfg)
 		return adapter, nil
 	case "anthropic":
@@ -301,19 +304,23 @@ func buildAdapter(name string, modelCfg ModelConfig, client *http.Client, llmDeb
 			maxTokens = int(v)
 		}
 		adCfg := adapters.NewAnthropicConfig(llmDebugDir, retryCfg, pricing, version, maxTokens)
+		adCfg.Quota = modelCfg.Quota
 		adapter := adapters.NewAnthropicAdapter(client, modelCfg.BaseURL, modelCfg.Model, adCfg)
 		return adapter, nil
 	case "gemini", "google":
 		adCfg := adapters.NewGeminiConfig(llmDebugDir, retryCfg, pricing)
+		adCfg.Quota = modelCfg.Quota
 		adapter := adapters.NewGeminiAdapter(client, modelCfg.BaseURL, modelCfg.Model, adCfg)
 		return adapter, nil
 	case "deepseek":
 		client.Transport = adapters.WrapTransport(client.Transport, modelCfg.Extra, llmDebugDir)
 		adCfg := adapters.NewDeepSeekConfig(llmDebugDir, retryCfg, pricing, modelCfg.Extra)
+		adCfg.Quota = modelCfg.Quota
 		adapter := adapters.NewDeepSeekAdapter(client, modelCfg.BaseURL, modelCfg.Model, adCfg)
 		return adapter, nil
 	case "openai-responses":
 		adCfg := adapters.NewOpenAIResponsesConfig(llmDebugDir, retryCfg, pricing)
+		adCfg.Quota = modelCfg.Quota
 		adapter := adapters.NewOpenAIResponsesAdapter(client, modelCfg.BaseURL, modelCfg.Model, adCfg)
 		return adapter, nil
 	default:

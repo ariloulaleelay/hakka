@@ -123,13 +123,14 @@ Each session entry in `sessions`:
 #### `type:"delta"` — Streaming text chunk
 
 ```json
-{"type":"delta", "session_id":"<uuid>", "text":"chunk", "ts": 1700000000123}
+{"type":"delta", "session_id":"<uuid>", "id":"<msg-id>", "text":"chunk", "ts": 1700000000123}
 ```
 
 | Field | Required | Description |
 |-------|----------|-------------|
 | `type` | ✓ | Always `"delta"` |
 | `session_id` | ✓ | Session UUID |
+| `id` | | Message ID of the assistant message being streamed |
 | `text` | ✓ | Content chunk (may be partial word) |
 | `ts` | | Unix timestamp in milliseconds when the event was generated |
 
@@ -141,6 +142,7 @@ Multiple `delta` frames are sent during streaming, one per chunk.
 {
   "type": "done",
   "session_id": "<uuid>",
+  "id": "<msg-id>",
   "text": "final reply",
   "ts": 1700000000123,
   "stats": {
@@ -157,6 +159,7 @@ Multiple `delta` frames are sent during streaming, one per chunk.
 |-------|----------|-------------|
 | `type` | ✓ | Always `"done"` |
 | `session_id` | ✓ | Session UUID |
+| `id` | | Message ID of the final assistant message |
 | `text` | | Final assistant reply (omitted on cancellation) |
 | `error` | | Error message if turn failed |
 | `cancelled` | | `true` if turn was cancelled by client |
@@ -220,6 +223,55 @@ Tool lifecycle:
 | `total_cost` | ✓ | Accumulated cost across the entire session |
 | `ts` | | Unix timestamp in milliseconds |
 
+#### `type:"quota"` — Provider balance info
+
+```json
+{
+  "type": "quota",
+  "provider": "ds-pro",
+  "balance": 50.0,
+  "currency": "USD",
+  "ts": 1700000000123
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | ✓ | Always `"quota"` |
+| `provider` | ✓ | Model name (e.g. `"deepseek"`, `"claude"`) — matches the model config key |
+| `balance` | | Money left / remaining balance |
+| `currency` | | Currency code (e.g. `"CNY"`, `"USD"`) |
+| `ts` | | Unix timestamp in milliseconds |
+
+Emitted after each turn (best-effort) and on `get_session` / `model_switch`,
+when the provider adapter is configured with a `quota` block in `hakka.json`.
+
+**Configuration** (in `hakka.json`):
+
+```json
+{
+  "ds-pro": {
+    "quota": {
+      "url": "https://api.deepseek.com/user/balance",
+      "balance": ".balance_infos[currency=USD].total_balance",
+      "currency": ".balance_infos[currency=USD].currency"
+    }
+  }
+}
+```
+
+The `balance` and `currency` fields use simple dot+bracket path expressions
+to extract values from the JSON response. Supported syntax:
+
+| Syntax | Meaning |
+|--------|---------|
+| `.field` | Navigate into an object field |
+| `.arr[0]` | Numeric array index |
+| `.arr[f=v]` | Filter: find the first object where field `f` equals `v` |
+
+If `currency` contains no dots or brackets, it is treated as a static literal
+(e.g. `"USD"`).
+
 #### `type:"req"` — Server request to client
 
 ```json
@@ -266,7 +318,7 @@ The client **must** reply with a `type:"resp"` frame with the matching `request_
 |-------|----------|-------------|
 | `type` | ✓ | Always `"session"` |
 | `session_id` | ✓ | Session UUID |
-| `event` | ✓ | One of `"get_session"`, `"session_create"`, `"renamed"`, `"session_delete"`, `"turn_started"`, `"turn_finished"` |
+| `event` | ✓ | One of `"get_session"`, `"session_create"`, `"session_fork"`, `"renamed"`, `"session_delete"`, `"turn_started"`, `"turn_finished"` |
 | `session` | | Session metadata map (present for `get_session`, `session_create`, `renamed`; absent for `session_delete`, `turn_started`, `turn_finished`) |
 | `old_name` | | Previous session name (present on `"renamed"`) |
 | `name` | | New session name (present on `"renamed"`) |
@@ -404,8 +456,8 @@ Client                     Server
 ```
 
 The `events` array replays the session history as typed events:
-- `{"type":"chat", "text":"...", "ts":...}` for user messages
-- `{"type":"delta", "text":"...", "ts":...}` for assistant messages
+- `{"type":"chat", "id":"...", "text":"...", "ts":...}` for user messages
+- `{"type":"delta", "id":"...", "text":"...", "ts":...}` for assistant messages
 - `{"type":"tool", "id":"...", "status":"start", ..., "ts":...}` for tool call starts
 - `{"type":"usage", "total_tokens":..., "ts":...}` for usage reports
 - `{"type":"tool", "id":"...", "status":"ok", ..., "ts":...}` for tool results

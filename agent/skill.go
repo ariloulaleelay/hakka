@@ -5,21 +5,41 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
 
 // Skill represents a reusable skill/knowledge that can be loaded into a
-// session's context. Skills are just markdown files with optional YAML
-// frontmatter that describe how to do something.
+// session's context. Skills follow the Agent Skills specification:
+// https://agentskills.io
 //
-// The registry stores metadata only (name, description, tags, file path).
-// Content is read from disk on-demand when a skill is loaded into a session.
+// A skill is a directory containing, at minimum, a SKILL.md file with
+// YAML frontmatter and optional scripts/, references/, assets/ subdirs.
+//
+// Skill registries are directories that contain multiple skill
+// subdirectories. Use AddDir to scan a registry directory.
 type Skill struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Tags        []string `json:"tags,omitempty"`
-	Path        string   `json:"-"` // absolute path to the skill file
+	Name          string            `json:"name"`
+	Description   string            `json:"description"`
+	Tags          []string          `json:"tags,omitempty"`
+	License       string            `json:"license,omitempty"`
+	Compatibility string            `json:"compatibility,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
+	AllowedTools  string            `json:"allowed_tools,omitempty"`
+	Path          string            `json:"-"` // path to SKILL.md file
+	DirPath       string            `json:"-"` // skill root directory
+}
+
+// SkillFrontmatter holds the parsed YAML frontmatter from a SKILL.md file.
+type SkillFrontmatter struct {
+	Name          string
+	Description   string
+	Tags          []string
+	License       string
+	Compatibility string
+	Metadata      map[string]string
+	AllowedTools  string
 }
 
 // SkillIndex holds the sorted list of all skill names currently loaded
@@ -28,8 +48,6 @@ type SkillIndex []string
 
 // SkillRegistry is a read-only registry of all available skills. Skills
 // are indexed at startup by scanning configured directories.
-//
-// The registry is goroutine-safe for concurrent reads.
 type SkillRegistry struct {
 	skills map[string]*Skill // name → Skill
 	dirs   []string          // directories scanned for skills
@@ -41,31 +59,83 @@ func NewSkillRegistry() *SkillRegistry {
 	}
 }
 
-// Add registers a single skill by its file path. It reads the file,
-// parses YAML frontmatter (if present), and indexes it by name.
-// Returns an error if the file cannot be read or parsed.
+// skillNameRegexp validates skill names per the Agent Skills spec:
+//   - 1-64 characters
+//   - Lowercase alphanumeric (a-z, 0-9) and hyphens only
+//   - Must not start or end with hyphen
+//   - Must not contain consecutive hyphens
+var skillNameRegexp = regexp.MustCompile(`^[a-z0-9]$|^[a-z0-9][a-z0-9-]*[a-z0-9]$`)
+
+// ValidateSkillName checks whether the given name conforms to the
+// Agent Skills specification.
+func ValidateSkillName(name string) error {
+	if len(name) == 0 {
+		return fmt.Errorf("skill name must not be empty")
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("skill name must be 1-64 characters, got %d", len(name))
+	}
+	if !skillNameRegexp.MatchString(name) {
+		return fmt.Errorf("skill name %q must contain only lowercase letters, numbers, and hyphens; must not start or end with hyphen; must not contain consecutive hyphens", name)
+	}
+	if strings.Contains(name, "--") {
+		return fmt.Errorf("skill name %q must not contain consecutive hyphens", name)
+	}
+	return nil
+}
+
+// Add registers a single skill from a path to its SKILL.md file.
+// The parent directory becomes the skill root. The skill name from
+// the frontmatter must match the parent directory name (per spec).
 func (sr *SkillRegistry) Add(path string) error {
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("skill: resolve path %q: %w", path, err)
 	}
 
+	// Must be a SKILL.md file
+	base := filepath.Base(path)
+	if !strings.EqualFold(base, "skill.md") {
+		return fmt.Errorf("skill: path %q must be a SKILL.md file", path)
+	}
+
+	dirPath := filepath.Dir(path)
+	dirName := filepath.Base(dirPath)
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("skill: read %q: %w", path, err)
 	}
 
-	name, desc, tags := ParseSkillFile(path, string(data))
+	fm := ParseSkillFile(path, string(data))
+
+	// Determine skill name: frontmatter name takes precedence,
+	// fall back to directory name.
+	name := fm.Name
 	if name == "" {
-		// Fall back to filename without extension
-		name = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		name = dirName
+	}
+
+	// Per spec: name must match parent directory name
+	if name != dirName {
+		return fmt.Errorf("skill: name %q does not match directory name %q", name, dirName)
+	}
+
+	// Validate name format
+	if err := ValidateSkillName(name); err != nil {
+		return fmt.Errorf("skill: %w", err)
 	}
 
 	skill := &Skill{
-		Name:        name,
-		Description: desc,
-		Tags:        tags,
-		Path:        path,
+		Name:          name,
+		Description:   fm.Description,
+		Tags:          fm.Tags,
+		License:       fm.License,
+		Compatibility: fm.Compatibility,
+		Metadata:      fm.Metadata,
+		AllowedTools:  fm.AllowedTools,
+		Path:          path,
+		DirPath:       dirPath,
 	}
 
 	if _, exists := sr.skills[name]; exists {
@@ -77,10 +147,13 @@ func (sr *SkillRegistry) Add(path string) error {
 	return nil
 }
 
-// AddDir scans a directory for skill files (*.md) and registers them.
-// By default it looks for any *.md file. If the directory contains a
-// `skills.json` or `skills.yaml` index, that can be used as an alternative.
-// Returns the count of skills registered and the first error encountered.
+// AddDir scans a directory for skill subdirectories and registers them.
+//
+// The directory is treated as a skill registry: each subdirectory that
+// contains a SKILL.md file is registered as a skill.
+//
+// Returns the count of skills registered and the first error encountered
+// (non-fatal errors like a single malformed skill are skipped).
 func (sr *SkillRegistry) AddDir(dir string) (int, error) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
@@ -100,18 +173,17 @@ func (sr *SkillRegistry) AddDir(dir string) (int, error) {
 	count := 0
 
 	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		if !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") &&
-			!strings.HasSuffix(strings.ToLower(entry.Name()), ".markdown") {
+		if !entry.IsDir() {
 			continue
 		}
 
-		fpath := filepath.Join(dir, entry.Name())
-		if err := sr.Add(fpath); err != nil {
-			// Log but continue — don't fail on one bad file
-			continue
+		skillPath := filepath.Join(dir, entry.Name(), "SKILL.md")
+		if _, err := os.Stat(skillPath); err != nil {
+			continue // no SKILL.md, skip
+		}
+
+		if err := sr.Add(skillPath); err != nil {
+			continue // skip malformed skills
 		}
 		count++
 	}
@@ -165,9 +237,8 @@ func (sr *SkillRegistry) List() []*Skill {
 	return out
 }
 
-// ReadContent reads and returns the full text content of a skill file.
-// Returns the raw markdown (without frontmatter) and the raw markdown
-// (with frontmatter) if available.
+// ReadContent reads and returns the body content of a skill's SKILL.md
+// (without YAML frontmatter).
 func (sr *SkillRegistry) ReadContent(name string) (string, error) {
 	s := sr.skills[name]
 	if s == nil {
@@ -182,55 +253,147 @@ func (sr *SkillRegistry) ReadContent(name string) (string, error) {
 	return parseSkillBody(string(data)), nil
 }
 
-// ParseSkillFile extracts name, description, and tags from a skill file.
-// It supports a simple frontmatter format:
+// ReadSkillFile reads a file relative to the skill's root directory.
+// The relPath must be a relative path (e.g. "references/REFERENCE.md").
+func (sr *SkillRegistry) ReadSkillFile(name, relPath string) (string, error) {
+	s := sr.skills[name]
+	if s == nil {
+		return "", fmt.Errorf("skill %q not found in registry", name)
+	}
+	if s.DirPath == "" {
+		return "", fmt.Errorf("skill %q has no directory", name)
+	}
+
+	// Security: only allow relative paths, no traversal
+	clean := filepath.Clean(relPath)
+	if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
+		return "", fmt.Errorf("skill %q: invalid relative path %q", name, relPath)
+	}
+
+	fullPath := filepath.Join(s.DirPath, clean)
+	// Verify the resolved path is still within the skill dir
+	if !strings.HasPrefix(filepath.Clean(fullPath), filepath.Clean(s.DirPath)+string(os.PathSeparator)) {
+		return "", fmt.Errorf("skill %q: path %q escapes skill directory", name, relPath)
+	}
+
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return "", fmt.Errorf("read skill file %q: %w", name, err)
+	}
+	return string(data), nil
+}
+
+// ParseSkillFile extracts frontmatter fields from a SKILL.md file.
 //
-//	---
-//	name: my-skill
-//	description: Does something
-//	tags: go, testing, conventions
-//	---
+// Supported frontmatter fields (YAML-like between --- markers):
 //
-//	Actual skill content here...
-func ParseSkillFile(path, content string) (name, description string, tags []string) {
+//	name:          Required. Skill name (must match parent directory).
+//	description:   Required. What the skill does.
+//	license:       Optional. License name.
+//	compatibility: Optional. Environment requirements.
+//	metadata:      Optional. Indented key-value pairs under "metadata:".
+//	allowed-tools: Optional. Space-separated pre-approved tools.
+//	tags:          Optional. Comma-separated tags (Hakka extension).
+//
+// Returns a SkillFrontmatter with parsed values. Empty fields are zero-valued.
+func ParseSkillFile(path, content string) *SkillFrontmatter {
+	fm := &SkillFrontmatter{}
+
 	content = strings.TrimSpace(content)
 
-	// Try to parse YAML-like frontmatter between --- markers
-	if strings.HasPrefix(content, "---") {
-		rest := content[3:]
-		idx := strings.Index(rest, "\n---")
-		if idx > 0 {
-			frontmatter := strings.TrimSpace(rest[:idx])
-			body := strings.TrimSpace(rest[idx+4:])
+	if !strings.HasPrefix(content, "---") {
+		return fm
+	}
 
-			// Simple line-by-line parsing (no full YAML dependency)
-			for _, line := range strings.Split(frontmatter, "\n") {
-				line = strings.TrimSpace(line)
-				if strings.HasPrefix(line, "name:") {
-					name = strings.TrimSpace(line[5:])
-				} else if strings.HasPrefix(line, "description:") {
-					description = strings.TrimSpace(line[12:])
-				} else if strings.HasPrefix(line, "tags:") {
-					tagStr := strings.TrimSpace(line[5:])
-					for _, t := range strings.Split(tagStr, ",") {
-						t = strings.TrimSpace(t)
-						if t != "" {
-							tags = append(tags, t)
-						}
+	rest := content[3:]
+	idx := strings.Index(rest, "\n---")
+	if idx < 0 {
+		return fm
+	}
+
+	frontmatter := strings.TrimSpace(rest[:idx])
+
+	lines := strings.Split(frontmatter, "\n")
+
+	// Handle multi-line metadata block specially
+	var metadataLines []string
+	inMetadata := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+
+		// If in metadata block, check for continued indented lines
+		if inMetadata {
+			if strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t") {
+				metadataLines = append(metadataLines, trimmed)
+				continue
+			}
+			// End of metadata block
+			fm.Metadata = parseMetadataLines(metadataLines)
+			metadataLines = nil
+			inMetadata = false
+		}
+
+		// Parse simple key: value lines
+		if colonIdx := strings.Index(trimmed, ":"); colonIdx > 0 {
+			key := strings.TrimSpace(trimmed[:colonIdx])
+			value := strings.TrimSpace(trimmed[colonIdx+1:])
+
+			switch strings.ToLower(key) {
+			case "name":
+				fm.Name = value
+			case "description":
+				fm.Description = value
+			case "license":
+				fm.License = value
+			case "compatibility":
+				fm.Compatibility = value
+			case "allowed-tools":
+				fm.AllowedTools = value
+			case "tags":
+				for _, t := range strings.Split(value, ",") {
+					t = strings.TrimSpace(t)
+					if t != "" {
+						fm.Tags = append(fm.Tags, t)
 					}
 				}
+			case "metadata":
+				// Next indented lines are metadata key-value pairs
+				if value == "" {
+					inMetadata = true
+				}
 			}
-
-			_ = body // body is available for content extraction
 		}
 	}
 
-	// If no frontmatter name, use filename
-	if name == "" {
-		name = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	// Finalize metadata if still in block
+	if inMetadata && len(metadataLines) > 0 {
+		fm.Metadata = parseMetadataLines(metadataLines)
 	}
 
-	return name, description, tags
+	return fm
+}
+
+// parseMetadataLines parses indented key: value pairs from a metadata block.
+func parseMetadataLines(lines []string) map[string]string {
+	meta := make(map[string]string)
+	for _, line := range lines {
+		if colonIdx := strings.Index(line, ":"); colonIdx > 0 {
+			key := strings.TrimSpace(line[:colonIdx])
+			value := strings.TrimSpace(line[colonIdx+1:])
+			if len(value) >= 2 && (value[0] == '"' && value[len(value)-1] == '"') {
+				value = value[1 : len(value)-1]
+			}
+			meta[key] = value
+		}
+	}
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
 }
 
 // parseSkillBody returns the skill content without frontmatter.
@@ -259,7 +422,7 @@ func (si *SkillIndex) UnmarshalJSON(data []byte) error {
 	var s []string
 	if err := json.Unmarshal(data, &s); err != nil {
 		*si = nil
-		return nil // don't fail on empty/missing data
+		return nil
 	}
 	*si = SkillIndex(s)
 	return nil

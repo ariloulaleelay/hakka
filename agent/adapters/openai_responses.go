@@ -36,6 +36,7 @@ type OpenAIResponsesConfig struct {
 	debugDir string
 	retryCfg agent.RetryConfig
 	pricing  agent.Pricing
+	Quota    *agent.QuotaConfig
 }
 
 func NewOpenAIResponsesConfig(debugDir string, retryCfg agent.RetryConfig, pricing agent.Pricing) OpenAIResponsesConfig {

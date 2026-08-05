@@ -614,7 +614,7 @@ func TestSubagentRun_ChildSessionGetsSubagentNotice(t *testing.T) {
 	}
 	// The notice should reference the parent session so the child knows
 	// where it came from.
-	if !strings.Contains(notice.Content, parent.SessionID()[:8]) {
+	if !strings.Contains(notice.Content, agent.TruncateID(parent.SessionID(), 8)) {
 		t.Fatalf("expected notice to reference parent session, got: %q", notice.Content)
 	}
 

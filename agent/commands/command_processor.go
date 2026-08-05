@@ -35,6 +35,7 @@ const (
 	ActionClearSession                // active session was deleted
 	ActionGetSession                  // session was fetched and made active
 	ActionSessionCreate               // a new session was created
+	ActionSessionFork                 // a session was forked from a parent
 	ActionContinue                    // trigger LLM without adding a user message
 )
 
@@ -47,6 +48,7 @@ type SessionEventType string
 
 const (
 	SessionCreated SessionEventType = "session_create"
+	SessionForked  SessionEventType = "session_fork"
 	SessionRenamed SessionEventType = "renamed"
 	SessionDeleted SessionEventType = "session_delete"
 )

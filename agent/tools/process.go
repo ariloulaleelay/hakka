@@ -15,7 +15,6 @@ import (
 
 	"github.com/ariloulaleelay/hakka/agent"
 	"github.com/ariloulaleelay/hakka/agent/event"
-	"github.com/google/uuid"
 )
 
 // ---------------------------------------------------------------------------
@@ -148,7 +147,7 @@ func (pm *ProcessManager) Spawn(ctx context.Context, command string, args []stri
 		cwd = event.CWDFromContext(ctx)
 	}
 
-	procID := uuid.New().String()
+	procID := agent.MakeUniqueID()
 
 	cmd := exec.CommandContext(context.Background(), command, args...)
 

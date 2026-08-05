@@ -7,6 +7,7 @@ import (
 	"testing"
 	
 	"github.com/ariloulaleelay/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // fakeAdapter is a minimal adapter for command tests.
@@ -1274,8 +1275,8 @@ func TestSessionFork_BlankChild(t *testing.T) {
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	if res.Action != ActionSessionCreate {
-		t.Fatalf("expected ActionSessionCreate, got %v", res.Action)
+	if res.Action != ActionSessionFork {
+		t.Fatalf("expected ActionSessionFork, got %v", res.Action)
 	}
 	if res.Session == nil {
 		t.Fatal("expected a child session")
@@ -1366,4 +1367,64 @@ func TestSessionFork_MetadataHasLineage(t *testing.T) {
 	if meta["fork_point"] != "m1" {
 		t.Fatalf("expected fork_point in metadata, got %v", meta["fork_point"])
 	}
+}
+
+func TestSessionFork_LastAssistantMessage(t *testing.T) {
+	_, cmd, sm, _ := newCommandComponentsWithTools(t)
+
+	parent, _ := sm.GetOrCreate(context.Background(), "testns", "")
+	parent.Append(agent.Message{ID: "91c", Role: agent.RoleUser, Content: "what is 2+2?"})
+	parent.Append(agent.Message{ID: "91d", Role: agent.RoleAssistant, Content: "4"})
+
+	// Fork at the last assistant message.
+	ctx := event.ContextWithNamespace(context.Background(), "testns")
+	res := cmd.ExecuteJSON(ctx, parent.SessionID(), "session_fork",
+		params(map[string]any{"id": parent.SessionID(), "fork_point": "91d"}))
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+	if res.Reply != "" && strings.HasPrefix(res.Reply, "fork failed") {
+		t.Fatalf("fork failed: %s", res.Reply)
+	}
+
+	childData := res.Session.Read()
+	if len(childData.Messages) != 2 {
+		t.Fatalf("expected 2 messages in child, got %d; messages: %+v", len(childData.Messages), childData.Messages)
+	}
+	// The last message should be the fork point.
+	lastMsg := childData.Messages[len(childData.Messages)-1]
+	if lastMsg.ID != "91d" {
+		t.Fatalf("expected last message ID '91d', got %q", lastMsg.ID)
+	}
+	if lastMsg.Content != "4" {
+		t.Fatalf("expected content '4', got %q", lastMsg.Content)
+	}
+
+	// Now fetch the child via get_session and check the events include message IDs.
+	getRes := cmd.ExecuteJSON(ctx, "", "get_session",
+		params(map[string]any{"id": childData.ID}))
+	if getRes.Error != nil {
+		t.Fatalf("get_session error: %v", getRes.Error)
+	}
+	if getRes.Session == nil {
+		t.Fatal("get_session returned nil session")
+	}
+
+	// The session_create doesn't include events replay. Check that the
+	// child session has the right message_count.
+	childMeta := getRes.Session.Metadata()
+	if childMeta["message_count"].(int) != 2 {
+		t.Fatalf("expected message_count 2, got %v", childMeta["message_count"])
+	}
+
+	// Also check session_create response: it should also include events.
+	// Currently it does NOT — this is the bug.
+	if res.Action != ActionSessionFork {
+		t.Fatalf("expected ActionSessionFork, got %v", res.Action)
+	}
+	// ActionSessionCreate currently does NOT include events in the wire
+	// response (see writeCommandResult). The client must call get_session
+	// separately. This test verifies the data is correct; the protocol
+	// gap (no events on session_create) is a separate issue.
 }

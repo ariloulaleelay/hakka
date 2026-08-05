@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 )
@@ -37,6 +38,10 @@ func (sm *SessionManager) GetOrCreate(ctx context.Context, namespace, id string)
 		} else if ok {
 			return session, nil
 		}
+		// Session with this ID does not exist — we are about to create it.
+		// This is a side-effect that can silently resurrect deleted sessions.
+		slog.WarnContext(ctx, "GetOrCreate: session not found, creating with explicit ID",
+			"ns", namespace, "id", id)
 	}
 	session := NewSession(namespace, sm.SystemPrompt)
 	if id != "" {
@@ -45,6 +50,8 @@ func (sm *SessionManager) GetOrCreate(ctx context.Context, namespace, id string)
 	if err := sm.Store.Put(ctx, namespace, session); err != nil {
 		return nil, err
 	}
+	slog.InfoContext(ctx, "session created", "ns", namespace, "id", session.SessionID(),
+		"explicit_id", id != "")
 	return session, nil
 }
 
@@ -57,7 +64,13 @@ func (sm *SessionManager) Save(ctx context.Context, namespace string, session Se
 }
 
 func (sm *SessionManager) Drop(ctx context.Context, namespace, id string) error {
-	return sm.Store.Delete(ctx, namespace, id)
+	err := sm.Store.Delete(ctx, namespace, id)
+	if err != nil {
+		slog.ErrorContext(ctx, "session delete failed", "ns", namespace, "id", id, "err", err)
+		return err
+	}
+	slog.InfoContext(ctx, "session deleted", "ns", namespace, "id", id)
+	return nil
 }
 
 func (sm *SessionManager) List(ctx context.Context, namespace string) ([]*Session, error) {

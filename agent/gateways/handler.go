@@ -2,6 +2,8 @@ package gateways
 
 import (
 	"context"
+	"log/slog"
+	"time"
 
 	"github.com/ariloulaleelay/hakka/agent"
 	"github.com/ariloulaleelay/hakka/agent/commands"
@@ -176,6 +178,11 @@ func (h *TurnHandler) handleJSONCommand(ctx context.Context, req FrameRequest, w
 		fr := sessionEventFrame(*cmdRes.SessionEvent)
 		h.hub.BroadcastExcept(fr, w) // requester already got direct response
 	}
+
+	// Fetch and broadcast provider quota after session/model commands.
+	if cmdRes.Session != nil && (cmdReq.Cmd == "get_session" || cmdReq.Cmd == "model_switch") {
+		h.fetchAndBroadcastQuota(ctx, cmdRes.Session)
+	}
 }
 
 // handleWithEngine runs a turn using the Conversation, registers it
@@ -193,4 +200,42 @@ func (h *TurnHandler) handleWithEngine(ctx context.Context, w frameWriter, sessi
 	// goroutine broadcasts all events to the hub; no per-client
 	// subscription needed.
 	_ = h.hub.Turns().Start(sessionID, eventCh, cancel)
+}
+
+// fetchAndBroadcastQuota fetches quota info for the session's current
+// model and broadcasts it as a type:"quota" frame to all clients in
+// the namespace.
+func (h *TurnHandler) fetchAndBroadcastQuota(ctx context.Context, session *agent.Session) {
+	if h.Conv == nil || h.Conv.Router() == nil || session == nil {
+		return
+	}
+	adapter := h.Conv.Router().Adapter(session)
+	qf, ok := adapter.(agent.QuotaFetcher)
+	if !ok {
+		slog.Debug("quota: adapter does not implement QuotaFetcher", "model", session.GetModel())
+		return
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	slog.Debug("quota: fetching", "model", session.GetModel())
+	info, err := qf.FetchQuota(fetchCtx)
+	if err != nil {
+		slog.Warn("quota: fetch failed", "model", session.GetModel(), "error", err)
+		return
+	}
+	if info == nil {
+		slog.Debug("quota: no quota info returned (config missing?)", "model", session.GetModel())
+		return
+	}
+
+	slog.Debug("quota: broadcasting", "model", session.GetModel(),
+		"balance", info.Balance, "currency", info.Currency)
+	fr := FrameResponse{
+		Type:      "quota",
+		Provider:  session.GetModel(),
+		Balance:   info.Balance,
+		Currency:  info.Currency,
+	}
+	h.hub.Broadcast(fr)
 }
