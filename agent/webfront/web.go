@@ -85,10 +85,10 @@ func (gw *Gateway) Start(ctx context.Context) error {
 	}
 	mux.HandleFunc("/ws", wsGw.HandleWSConnection)
 
-	// Static SPA — serve embedded webfront files.
+	// Static SPA — serve embedded webfront files with ETag + gzip.
 	fsys := webfrontFileSystem{inner: embeddedFiles}
 	fileServer := http.FileServer(http.FS(fsys))
-	mux.Handle("/", fileServer)
+	mux.Handle("/", etagHandler(fsys, gzipHandler(fileServer)))
 
 	gw.server = &http.Server{
 		Addr:              gw.addr,
