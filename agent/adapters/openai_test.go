@@ -139,10 +139,6 @@ func TestOpenAIMessagesSkipsEmptyAssistant(t *testing.T) {
 	}
 }
 
-func TestOpenAIStream(t *testing.T) {
-	t.Skip("Stream API merged into Complete with onDelta")
-}
-
 func TestOpenAICompleteRetriesCustomConfig(t *testing.T) {
 	var requests int32
 	adapter, _ := newOpenAITestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
@@ -184,12 +180,4 @@ func TestOpenAICompleteRetriesCustomConfig(t *testing.T) {
 	if got := atomic.LoadInt32(&requests); got != 3 {
 		t.Fatalf("expected 3 requests (max_attempts=3), got %d", got)
 	}
-}
-
-func TestOpenAIStreamRetries429(t *testing.T) {
-	t.Skip("Stream API merged into Complete with onDelta")
-}
-
-func TestOpenAIStreamToolCall(t *testing.T) {
-	t.Skip("Stream API merged into Complete with onDelta")
 }

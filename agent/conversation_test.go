@@ -88,7 +88,7 @@ func TestHooksSerialisedWithinTurn(t *testing.T) {
 	}
 
 	if s.concurrent {
-		t.Error("BUG CONFIRMED: two tool goroutines were inside OnToolCall simultaneously — per-turn mutex is not serialising")
+		t.Error("two tool goroutines were inside OnToolCall simultaneously — per-turn mutex is not serialising")
 	} else {
 		t.Log("OK: no concurrent hook access detected within a turn — hooks are correctly serialised")
 	}
@@ -192,7 +192,6 @@ func (a *simpleAdapter) Complete(ctx context.Context, msgs []Message, tools []To
 	return &LLMResponse{Message: r.msg}, nil
 }
 
-
 // ---------------------------------------------------------------------------
 // Auto-rename tests
 // ---------------------------------------------------------------------------
@@ -228,7 +227,6 @@ func (a *namingTestAdapter) Complete(ctx context.Context, msgs []Message, tools 
 	return &LLMResponse{Message: r.msg}, nil
 }
 
-
 func TestAutoRename_NamesSessionAfterTwoUserMessages(t *testing.T) {
 	adapter := &namingTestAdapter{
 		responses: []response{
@@ -261,7 +259,7 @@ func TestAutoRename_NamesSessionAfterTwoUserMessages(t *testing.T) {
 	}
 
 	// Verify the session was renamed
-	session, _ = sm.CreateWithID(context.Background(), "testns", "auto-session")
+	session, _ = sm.Get(context.Background(), "testns", "auto-session")
 	if session.SessionName() != "My Test Session" {
 		t.Fatalf("expected session.SessionName() = %q after auto-rename, got %q", "My Test Session", session.SessionName())
 	}
@@ -300,7 +298,7 @@ func TestAutoRename_DoesNotRenameAlreadyNamedSession(t *testing.T) {
 	if adapter.NamingRequested {
 		t.Fatal("expected no naming LLM call for already-named session")
 	}
-	session, _ = sm.CreateWithID(context.Background(), "testns", "named-session")
+	session, _ = sm.Get(context.Background(), "testns", "named-session")
 	if session.SessionName() != "Already Named" {
 		t.Fatalf("expected name to remain %q, got %q", "Already Named", session.SessionName())
 	}
@@ -492,7 +490,6 @@ func (a *capturingAdapter) Complete(ctx context.Context, msgs []Message, tools [
 	return &LLMResponse{Message: Message{Role: RoleAssistant, Content: "done"}}, nil
 }
 
-
 // TestConversation_SomeToolsEnabled_LLMGetsThoseSchemas verifies that when
 // some tools are enabled and others disabled, only the enabled schemas
 // reach the LLM.
@@ -594,7 +591,7 @@ func TestConversation_DefenseInDepth_DeniedToolReturnsError(t *testing.T) {
 	}
 
 	// The tool result should be in the session messages and contain "denied"
-	session, _ = sm.CreateWithID(context.Background(), "testns", "defense-session")
+	session, _ = sm.Get(context.Background(), "testns", "defense-session")
 	foundDeniedErr := false
 	for _, m := range session.Messages() {
 		if m.Role == RoleTool && strings.Contains(m.Content, "denied") {

@@ -118,6 +118,9 @@ func TestContinueCommand_TriggersLLM(t *testing.T) {
 	responseReader := NewInProcessResponseReader()
 	defer responseReader.Stop()
 
+	if _, err := sm.CreateWithID(context.Background(), ns, "test-session"); err != nil {
+		t.Fatal(err)
+	}
 	// ── Step 1: Send a normal chat message ─────────────────────────────
 	chatReq := FrameRequest{
 		SessionID: "test-session",
@@ -209,6 +212,9 @@ func TestContinueCommand_SurvivesClientDisconnect(t *testing.T) {
 	defer responseReader.Stop()
 
 	// First, establish a session with a conversation
+	if _, err := sm.CreateWithID(context.Background(), ns, "test-disco"); err != nil {
+		t.Fatal(err)
+	}
 	chatReq := FrameRequest{
 		SessionID: "test-disco",
 		Input:     "hello",
@@ -322,7 +328,12 @@ func TestContinueCommand_Integration(t *testing.T) {
 	responseReader := NewInProcessResponseReader()
 	defer responseReader.Stop()
 
-	// ── Step 1: Chat ──────────────────────────────────────────────────
+	if _, err := sm.CreateWithID(context.Background(), ns, "integration-session"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sm.CreateWithID(context.Background(), ns, "integration-session"); err != nil {
+		t.Fatal(err)
+	}
 	handler.HandleRequest(context.Background(), FrameRequest{
 		SessionID: "integration-session",
 		Input:     "tell me a story",

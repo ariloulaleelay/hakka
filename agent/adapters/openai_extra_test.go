@@ -130,10 +130,6 @@ func TestOpenAIPerRequestExtra(t *testing.T) {
 	}
 }
 
-func TestOpenAIExtraStream(t *testing.T) {
-	t.Skip("Stream API merged into Complete with onDelta")
-}
-
 func TestOpenAIExtraEmpty(t *testing.T) {
 	// When no extras are configured, the body should be unchanged.
 	var captured map[string]any

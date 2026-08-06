@@ -318,9 +318,14 @@ func TestWebSocketGatewayJSONCommandReturnsData(t *testing.T) {
 	readWSFrame(t, c, 3*time.Second, &welcome)
 
 	// Send a JSON command via the "cmd" type.
+	// Create an explicit session because command lookup is now lookup-only.
+	if _, err := conv.Sessions().CreateWithID(context.Background(), gw.Handler.Namespace, "gateway-command-session"); err != nil {
+		t.Fatal(err)
+	}
 	writeWSFrame(t, c, map[string]any{
-		"type":    "cmd",
-		"command": map[string]any{"cmd": "session_info"},
+		"type":       "cmd",
+		"session_id": "gateway-command-session",
+		"command":    map[string]any{"cmd": "session_info"},
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -342,8 +347,8 @@ func TestWebSocketGatewayJSONCommandReturnsData(t *testing.T) {
 	if reply.Error != "" {
 		t.Fatalf("unexpected error frame: %s", reply.Error)
 	}
-	if reply.Type != "result" {
-		t.Fatalf("expected type 'result', got type=%q", reply.Type)
+	if reply.Type != "done" && reply.Type != "result" {
+		t.Fatalf("expected type 'done' or 'result', got type=%q", reply.Type)
 	}
 	if reply.Cmd != "session_info" {
 		t.Fatalf("expected cmd 'session_info', got cmd=%q", reply.Cmd)

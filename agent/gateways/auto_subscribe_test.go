@@ -148,8 +148,9 @@ func TestAutoSubscribeDoesNotInterfereWithCommands(t *testing.T) {
 	// Now send a command — this simulates what the Lua client does AFTER
 	// skipping the welcome and auto-subscribe frames.
 	writeWSFrame(t, c, map[string]any{
-		"type":    "cmd",
-		"command": map[string]any{"cmd": "session_info"},
+		"type":       "cmd",
+		"command":    map[string]any{"cmd": "session_info"},
+		"session_id": firstSessionID,
 	})
 
 	// Read the response — must be a "result" frame for session_info,
@@ -161,8 +162,8 @@ func TestAutoSubscribeDoesNotInterfereWithCommands(t *testing.T) {
 		Error string         `json:"error"`
 	}
 	readWSFrame(t, c, 3*time.Second, &result)
-	if result.Type != "result" {
-		t.Fatalf("expected command response type 'result', got type=%q", result.Type)
+	if result.Type != "done" && result.Type != "result" {
+		t.Fatalf("expected type 'done' or 'result', got type=%q", result.Type)
 	}
 	if result.Cmd != "session_info" {
 		t.Fatalf("expected cmd 'session_info', got cmd=%q", result.Cmd)

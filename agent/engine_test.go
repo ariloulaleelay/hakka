@@ -49,10 +49,10 @@ func TestUsageDurationIsMeasured(t *testing.T) {
 		if m.Role == RoleAssistant && m.Content == "measured reply" {
 			found = true
 			if m.Usage == nil {
-				t.Fatal("BUG CONFIRMED: assistant message has nil Usage — duration not stored")
+				t.Fatal("assistant message has nil Usage — duration not stored")
 			}
 			if m.Usage.Duration <= 0 {
-				t.Fatalf("BUG CONFIRMED: expected Duration > 0, got %v", m.Usage.Duration)
+				t.Fatalf("expected Duration > 0, got %v", m.Usage.Duration)
 			}
 			t.Logf("OK: Duration = %v", m.Usage.Duration)
 			break
@@ -73,6 +73,9 @@ func TestUsageDurationTrackedInEvent(t *testing.T) {
 			Usage:        &Usage{PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5},
 		},
 	})
+	if _, err := conv.sessions.CreateWithID(context.Background(), "testns", "duration-event-test"); err != nil {
+		t.Fatal(err)
+	}
 	eventCh, err := conv.Execute(context.Background(), "duration-event-test", "hello")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -83,13 +86,13 @@ func TestUsageDurationTrackedInEvent(t *testing.T) {
 		if ur, ok := evt.(event.UsageReported); ok {
 			foundUsage = true
 			if ur.Usage.Duration <= 0 {
-				t.Fatalf("BUG CONFIRMED: expected Duration > 0 in UsageReported event, got %v", ur.Usage.Duration)
+				t.Fatalf("expected Duration > 0 in UsageReported event, got %v", ur.Usage.Duration)
 			}
 			t.Logf("OK: UsageReported Duration = %v", ur.Usage.Duration)
 		}
 	}
 	if !foundUsage {
-		t.Fatal("BUG CONFIRMED: expected UsageReported event to be emitted")
+		t.Fatal("expected UsageReported event to be emitted")
 	}
 }
 
@@ -110,7 +113,7 @@ func TestUsageDurationJSONRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if restored.Usage == nil {
-		t.Fatal("BUG CONFIRMED: Usage lost after JSON round-trip")
+		t.Fatal("Usage lost after JSON round-trip")
 	}
 	if restored.Usage.Duration != 1234567890 {
 		t.Fatalf("expected Duration=1234567890, got %v", restored.Usage.Duration)
@@ -127,6 +130,9 @@ func TestUsageDurationViaStream(t *testing.T) {
 			Usage:        &Usage{PromptTokens: 7, CompletionTokens: 4, TotalTokens: 11},
 		},
 	})
+	if _, err := conv.sessions.CreateWithID(context.Background(), "testns", "stream-duration"); err != nil {
+		t.Fatal(err)
+	}
 	eventCh, err := conv.Execute(context.Background(), "stream-duration", "hi")
 	if err != nil {
 		t.Fatalf("conv.Execute: %v", err)
@@ -141,19 +147,19 @@ func TestUsageDurationViaStream(t *testing.T) {
 
 	// Retrieve the session and check the assistant message has duration set.
 	sm := conv.sessions
-	session, err := sm.CreateWithID(context.Background(), "testns", "stream-duration")
+	session, err := sm.Get(context.Background(), "testns", "stream-duration")
 	if err != nil {
-		t.Fatalf("CreateWithID: %v", err)
+		t.Fatalf("Get: %v", err)
 	}
 	var found bool
 	for _, m := range session.Messages() {
 		if m.Role == RoleAssistant && m.Content == "stream duration" {
 			found = true
 			if m.Usage == nil {
-				t.Fatal("BUG CONFIRMED: streaming assistant message has nil Usage")
+				t.Fatal("streaming assistant message has nil Usage")
 			}
 			if m.Usage.Duration <= 0 {
-				t.Fatalf("BUG CONFIRMED: expected Duration > 0 for streaming path, got %v", m.Usage.Duration)
+				t.Fatalf("expected Duration > 0 for streaming path, got %v", m.Usage.Duration)
 			}
 			t.Logf("OK: Stream Duration = %v", m.Usage.Duration)
 			break
@@ -284,7 +290,6 @@ func (c *copyBackStore) PatchMeta(_ context.Context, namespace, id string, patch
 	return nil
 }
 
-
 func newTestComponents(t *testing.T, responses []LLMResponse) (*Conversation, *fakeAdapter, *ToolRegistry) {
 	t.Helper()
 	adapter := &fakeAdapter{responses: responses}
@@ -300,6 +305,16 @@ func newTestComponents(t *testing.T, responses []LLMResponse) (*Conversation, *f
 }
 
 func executeSync(conv *Conversation, ctx context.Context, sessionID, input string) (*Session, string, error) {
+	// Execute now performs lookup-only for an explicit session ID. Create the
+	// deterministic fixture before starting the turn; an empty ID retains the
+	// production behavior of creating a fresh session from the input.
+	if sessionID != "" {
+		if _, err := conv.sessions.Get(ctx, conv.namespace, sessionID); err != nil {
+			if _, createErr := conv.sessions.CreateWithID(ctx, conv.namespace, sessionID); createErr != nil {
+				return nil, "", createErr
+			}
+		}
+	}
 	eventCh, err := conv.Execute(ctx, sessionID, input)
 	if err != nil {
 		return nil, "", err
@@ -318,7 +333,10 @@ func executeSync(conv *Conversation, ctx context.Context, sessionID, input strin
 	if returnedSessionID == "" {
 		returnedSessionID = sessionID
 	}
-	session, lookupErr := conv.sessions.CreateWithID(ctx, conv.namespace, returnedSessionID)
+	if returnedSessionID == "" {
+		return nil, reply, fmt.Errorf("turn finished without a session ID")
+	}
+	session, lookupErr := conv.sessions.Get(ctx, conv.namespace, returnedSessionID)
 	if lookupErr != nil {
 		return nil, reply, lookupErr
 	}
@@ -416,6 +434,9 @@ func TestExecute_WithStream(t *testing.T) {
 	conv, adapter, _ := newTestComponents(t, []LLMResponse{
 		{Message: Message{Role: RoleAssistant, Content: "streamed hello"}, FinishReason: "stop"},
 	})
+	if _, err := conv.sessions.CreateWithID(context.Background(), "testns", "stream-test"); err != nil {
+		t.Fatal(err)
+	}
 	eventCh, err := conv.Execute(context.Background(), "stream-test", "hi")
 	if err != nil {
 		t.Fatalf("conv.Execute: %v", err)
@@ -495,7 +516,7 @@ func TestMessageUsageStored(t *testing.T) {
 		if m.Role == RoleAssistant && m.Content == "hi there" {
 			found = true
 			if m.Usage == nil {
-				t.Fatal("BUG CONFIRMED: assistant message has nil Usage — provider-reported tokens not stored on message")
+				t.Fatal("assistant message has nil Usage — provider-reported tokens not stored on message")
 			}
 			if m.Usage.PromptTokens != 10 {
 				t.Fatalf("expected PromptTokens=10, got %d", m.Usage.PromptTokens)
@@ -534,7 +555,7 @@ func TestMessageUsageJSONRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if restored.Usage == nil {
-		t.Fatal("BUG CONFIRMED: Usage lost after JSON round-trip")
+		t.Fatal("Usage lost after JSON round-trip")
 	}
 	if restored.Usage.PromptTokens != 2 {
 		t.Fatalf("expected PromptTokens=2, got %d", restored.Usage.PromptTokens)
@@ -557,6 +578,9 @@ func TestMessageUsageViaStream(t *testing.T) {
 			Usage:        &Usage{PromptTokens: 7, CompletionTokens: 4, TotalTokens: 11},
 		},
 	})
+	if _, err := conv.sessions.CreateWithID(context.Background(), "testns", "stream-usage"); err != nil {
+		t.Fatal(err)
+	}
 	eventCh, err := conv.Execute(context.Background(), "stream-usage", "hi")
 	if err != nil {
 		t.Fatalf("conv.Execute: %v", err)
@@ -571,16 +595,16 @@ func TestMessageUsageViaStream(t *testing.T) {
 
 	// Retrieve the session and check the assistant message has usage.
 	sm := conv.sessions
-	session, err := sm.CreateWithID(context.Background(), "testns", "stream-usage")
+	session, err := sm.Get(context.Background(), "testns", "stream-usage")
 	if err != nil {
-		t.Fatalf("CreateWithID: %v", err)
+		t.Fatalf("Get: %v", err)
 	}
 	var found bool
 	for _, m := range session.Messages() {
 		if m.Role == RoleAssistant && m.Content == "streamed reply" {
 			found = true
 			if m.Usage == nil {
-				t.Fatal("BUG CONFIRMED: streaming assistant message has nil Usage")
+				t.Fatal("streaming assistant message has nil Usage")
 			}
 			if m.Usage.TotalTokens != 11 {
 				t.Fatalf("expected TotalTokens=11 via stream, got %d", m.Usage.TotalTokens)
@@ -631,12 +655,12 @@ func TestExecute_AutoRenameViaStream(t *testing.T) {
 	}
 
 	// Verify the session was renamed.
-	session, _ = sm.CreateWithID(context.Background(), "testns", "stream-auto")
+	session, _ = sm.Get(context.Background(), "testns", "stream-auto")
 	if session.SessionName() != "My Test Session" {
-		t.Fatalf("BUG CONFIRMED: expected session.SessionName() = %q after auto-rename via stream, got %q", "My Test Session", session.SessionName())
+		t.Fatalf("expected session.SessionName() = %q after auto-rename via stream, got %q", "My Test Session", session.SessionName())
 	}
 	if !adapter.NamingRequested {
-		t.Fatal("BUG CONFIRMED: expected naming LLM call to have been made during streaming turn, but it was not")
+		t.Fatal("expected naming LLM call to have been made during streaming turn, but it was not")
 	}
 }
 
@@ -649,9 +673,9 @@ func TestExecute_AutoRenameViaStream(t *testing.T) {
 // PatchMeta as well as Put.
 type errStore struct {
 	SessionStore
-	failCount    int // number of calls that should succeed first (0 = fail immediately)
-	callCount    int
-	mu           sync.Mutex
+	failCount int // number of calls that should succeed first (0 = fail immediately)
+	callCount int
+	mu        sync.Mutex
 }
 
 func (es *errStore) count() int {
@@ -726,7 +750,7 @@ func TestEngineChat_SaveFailurePropagatesToTurnFinished(t *testing.T) {
 	}
 
 	if turnErr == nil {
-		t.Fatal("BUG CONFIRMED: TurnFinished.Err is nil — save failure was silently swallowed")
+		t.Fatal("TurnFinished.Err is nil — save failure was silently swallowed")
 	}
 	if !strings.Contains(turnErr.Error(), "disk full") {
 		t.Fatalf("expected error containing 'disk full', got: %v", turnErr)
@@ -774,7 +798,7 @@ func TestEngineChat_SaveFailureBeforeAutoRename(t *testing.T) {
 		}
 	}
 	if turnErr == nil {
-		t.Fatal("BUG CONFIRMED: TurnFinished.Err is nil — save failure was silently swallowed")
+		t.Fatal("TurnFinished.Err is nil — save failure was silently swallowed")
 	}
 	if !strings.Contains(turnErr.Error(), "disk full") {
 		t.Fatalf("expected error containing 'disk full', got: %v", turnErr)
@@ -825,7 +849,7 @@ func TestConversationExecuteEmptyInput(t *testing.T) {
 	}
 
 	// Verify no new user message was appended.
-	session, _ = conv.sessions.CreateWithID(context.Background(), "testns", "resume-test")
+	session, _ = conv.sessions.Get(context.Background(), "testns", "resume-test")
 	if len(session.Messages()) != initialMsgCount+1 {
 		t.Fatalf("expected %d messages (initial + new assistant reply), got %d", initialMsgCount+1, len(session.Messages()))
 	}
@@ -1085,13 +1109,12 @@ func TestExecute_EstimatedContextStored(t *testing.T) {
 		t.Fatalf("Execute: %v", err2)
 	}
 
-	session, _ = sm.CreateWithID(context.Background(), "testns", "ect-test")
+	session, _ = sm.Get(context.Background(), "testns", "ect-test")
 	estimated := session.GetEstimatedContextTokens()
 	if estimated <= 0 {
 		t.Fatalf("expected positive estimated context tokens, got %d", estimated)
 	}
 }
-
 
 func TestExecute_EmptyInputViaStream(t *testing.T) {
 	conv, adapter, _ := newTestComponents(t, []LLMResponse{
@@ -1100,6 +1123,9 @@ func TestExecute_EmptyInputViaStream(t *testing.T) {
 	})
 
 	// First, execute a normal turn to create the session.
+	if _, err := conv.sessions.CreateWithID(context.Background(), "testns", "stream-empty-test"); err != nil {
+		t.Fatal(err)
+	}
 	eventCh, err := conv.Execute(context.Background(), "stream-empty-test", "hello")
 	if err != nil {
 		t.Fatalf("first conv.Execute: %v", err)
@@ -1114,7 +1140,7 @@ func TestExecute_EmptyInputViaStream(t *testing.T) {
 
 	// Count existing messages.
 	sm := conv.sessions
-	session, _ := sm.CreateWithID(context.Background(), "testns", "stream-empty-test")
+	session, _ := sm.Get(context.Background(), "testns", "stream-empty-test")
 	initialMsgCount := len(session.Messages())
 
 	// Now execute with empty input — should NOT add a user message.
@@ -1139,7 +1165,7 @@ func TestExecute_EmptyInputViaStream(t *testing.T) {
 	}
 
 	// Verify no new user message was appended.
-	session, _ = sm.CreateWithID(context.Background(), "testns", "stream-empty-test")
+	session, _ = sm.Get(context.Background(), "testns", "stream-empty-test")
 	if len(session.Messages()) != initialMsgCount+1 {
 		t.Fatalf("expected %d messages (initial + new assistant reply), got %d", initialMsgCount+1, len(session.Messages()))
 	}
@@ -1148,4 +1174,3 @@ func TestExecute_EmptyInputViaStream(t *testing.T) {
 		t.Fatalf("expected last message to be assistant, got %s", lastMsg.Role)
 	}
 }
-

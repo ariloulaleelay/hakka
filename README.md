@@ -205,7 +205,7 @@ Slash commands are converted to JSON commands **client-side**. Clients (like the
 | `/tool deny <name>` | `{"cmd":"tool_deny","params":{"name":"<name>"}}` |
 | `/start` | `{"cmd":"start"}` |
 
-See AGENT.md for the full list of JSON commands and protocol details.
+See AGENTS.md for the full list of JSON commands and protocol details.
 
 ### Model Switching at Runtime
 
@@ -352,7 +352,7 @@ MCP tools are automatically discovered on startup and registered in the tool reg
 {"type":"welcome", "protocol_version":"2", "data":{"sessions":[...]}}
 ```
 
-See `protocol.md` or `AGENT.md` for the full protocol specification.
+See `protocol.md` or `AGENTS.md` for the full protocol specification.
 
 ---
 

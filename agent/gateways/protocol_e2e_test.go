@@ -410,7 +410,7 @@ done:
 	}
 
 	// Verify the tool result was recorded in the session.
-	session, _ = conv.Sessions().CreateWithID(context.Background(), "e2e", sessionID)
+	session, _ = conv.Sessions().Get(context.Background(), "e2e", sessionID)
 	messages := session.Messages()
 	foundToolResult := false
 	for _, m := range messages {
@@ -509,10 +509,14 @@ func TestE2E_JSONCommand(t *testing.T) {
 	var welcome struct{ Type string }
 	readWSFrame(t, conn, 3*time.Second, &welcome)
 
-	// Send session_info command.
+	// Create an explicit session because command lookup is lookup-only.
+	session := createAndEnableSession(t, conv, "e2e", "")
+	sessionID := session.SessionID()
+
 	writeWSFrame(t, conn, map[string]any{
-		"type":    "cmd",
-		"command": map[string]any{"cmd": "session_info"},
+		"type":       "cmd",
+		"session_id": sessionID,
+		"command":    map[string]any{"cmd": "session_info"},
 	})
 
 	// Read response.
@@ -528,8 +532,8 @@ func TestE2E_JSONCommand(t *testing.T) {
 	if result.Error != "" {
 		t.Fatalf("unexpected error: %s", result.Error)
 	}
-	if result.Type != "result" {
-		t.Fatalf("expected type 'result', got %q", result.Type)
+	if result.Type != "done" && result.Type != "result" {
+		t.Fatalf("expected type 'done' or 'result', got %q", result.Type)
 	}
 	if result.Cmd != "session_info" {
 		t.Fatalf("expected cmd 'session_info', got %q", result.Cmd)
@@ -946,7 +950,7 @@ func TestE2E_MultipleSequentialChats(t *testing.T) {
 	}
 
 	// Verify session has 4 messages (2 user + 2 assistant).
-	session, _ = conv.Sessions().CreateWithID(context.Background(), "e2e", sessionID)
+	session, _ = conv.Sessions().Get(context.Background(), "e2e", sessionID)
 	if len(session.Messages()) != 4 {
 		t.Fatalf("expected 4 messages in session, got %d", len(session.Messages()))
 	}

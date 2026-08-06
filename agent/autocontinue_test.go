@@ -59,6 +59,9 @@ func TestAutoContinue_EnabledRestartsWithContent(t *testing.T) {
 	conv := NewConversation(sm, router, tools, ns, cfg)
 
 	// Test via non-streaming (Conversation.Execute).
+	if _, err := sm.CreateWithID(context.Background(), "testns", "auto-test-2"); err != nil {
+		t.Fatal(err)
+	}
 	eventCh, err := conv.Execute(context.Background(), "auto-test-2", "hello")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -102,6 +105,9 @@ func TestAutoContinue_ExhaustedRounds(t *testing.T) {
 	ns := "testns"
 	conv := NewConversation(sm, router, tools, ns, cfg)
 
+	if _, err := sm.CreateWithID(context.Background(), "testns", "auto-test-3"); err != nil {
+		t.Fatal(err)
+	}
 	eventCh, err := conv.Execute(context.Background(), "auto-test-3", "hello")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)

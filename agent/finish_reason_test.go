@@ -28,7 +28,7 @@ func TestFinishReason_StoredOnMessage(t *testing.T) {
 		t.Fatalf("expected last message to be assistant, got %s", lastMsg.Role)
 	}
 	if lastMsg.FinishReason == "" {
-		t.Fatal("BUG CONFIRMED: FinishReason is empty on assistant message — not being stored")
+		t.Fatal("FinishReason is empty on assistant message — not being stored")
 	}
 	if lastMsg.FinishReason != "stop" {
 		t.Fatalf("expected FinishReason=%q, got %q", "stop", lastMsg.FinishReason)
@@ -90,7 +90,7 @@ func TestFinishReason_ToolCallRound(t *testing.T) {
 		t.Fatal("expected first assistant message to have tool calls")
 	}
 	if toolCallMsg.FinishReason == "" {
-		t.Fatal("BUG CONFIRMED: FinishReason missing on tool-call assistant message")
+		t.Fatal("FinishReason missing on tool-call assistant message")
 	}
 	t.Logf("OK: tool-call assistant FinishReason=%q", toolCallMsg.FinishReason)
 
@@ -100,7 +100,7 @@ func TestFinishReason_ToolCallRound(t *testing.T) {
 		t.Fatal("expected second assistant message to have content")
 	}
 	if textMsg.FinishReason == "" {
-		t.Fatal("BUG CONFIRMED: FinishReason missing on text-response assistant message")
+		t.Fatal("FinishReason missing on text-response assistant message")
 	}
 	t.Logf("OK: text-response assistant FinishReason=%q", textMsg.FinishReason)
 }
@@ -114,6 +114,9 @@ func TestFinishReason_StreamPath(t *testing.T) {
 			FinishReason: "stop",
 		},
 	})
+	if _, err := conv.sessions.CreateWithID(context.Background(), "testns", "fr-stream-test"); err != nil {
+		t.Fatal(err)
+	}
 	eventCh, err := conv.Execute(context.Background(), "fr-stream-test", "hi")
 	if err != nil {
 		t.Fatalf("conv.Execute: %v", err)
@@ -126,16 +129,16 @@ func TestFinishReason_StreamPath(t *testing.T) {
 		}
 	}
 
-	session, err := conv.sessions.CreateWithID(context.Background(), "testns", "fr-stream-test")
+	session, err := conv.sessions.Get(context.Background(), "testns", "fr-stream-test")
 	if err != nil {
-		t.Fatalf("CreateWithID: %v", err)
+		t.Fatalf("Get: %v", err)
 	}
 	lastMsg := session.Messages()[len(session.Messages())-1]
 	if lastMsg.Role != RoleAssistant {
 		t.Fatalf("expected last message to be assistant, got %s", lastMsg.Role)
 	}
 	if lastMsg.FinishReason == "" {
-		t.Fatal("BUG CONFIRMED: FinishReason is empty on streaming assistant message")
+		t.Fatal("FinishReason is empty on streaming assistant message")
 	}
 	t.Logf("OK: streaming FinishReason=%q", lastMsg.FinishReason)
 }

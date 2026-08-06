@@ -555,7 +555,7 @@ func TestSessionRename_SetsName(t *testing.T) {
 		t.Fatalf("expected session.Name = %q, got %q", "My Chat", res.Session.SessionName())
 	}
 
-	session, _ := sm.CreateWithID(context.Background(), "testns", "session1")
+	session, _ := sm.Get(context.Background(), "testns", "session1")
 	if session.SessionName() != "My Chat" {
 		t.Fatalf("expected persisted Name = %q, got %q", "My Chat", session.SessionName())
 	}
@@ -623,7 +623,10 @@ func TestModelList_ReturnsModels(t *testing.T) {
 }
 
 func TestModelSwitch_SetsModel(t *testing.T) {
-	conv, cmd, _ := newCommandComponents(t)
+	conv, cmd, sm := newCommandComponents(t)
+	if _, err := sm.CreateWithID(context.Background(), "testns", "sid"); err != nil {
+		t.Fatal(err)
+	}
 	res := cmd.ExecuteJSON(context.Background(), "sid", "model_switch", params(map[string]any{"name": "beta"}))
 
 	if res.Error != nil {
@@ -839,7 +842,7 @@ func TestToolCommand_PersistsAcrossSessions(t *testing.T) {
 		t.Fatal("expected new sessions to have no tools enabled by default")
 	}
 
-	session1, _ := sm.CreateWithID(context.Background(), "testns", "s1")
+	session1, _ := sm.Get(context.Background(), "testns", "s1")
 	if !session1.IsToolEnabled("read_file") {
 		t.Fatal("expected session1 to retain its tool settings")
 	}
@@ -947,7 +950,7 @@ func TestCWDSet_SetsSessionCWD(t *testing.T) {
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	got, _ := sm.CreateWithID(context.Background(), "testns", "sid")
+	got, _ := sm.Get(context.Background(), "testns", "sid")
 	if got.Read().ClientCWD != "/new/path" {
 		t.Fatalf("expected CWD /new/path, got %q", got.Read().ClientCWD)
 	}
@@ -1003,7 +1006,7 @@ func TestCompact_SetsValue(t *testing.T) {
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	session, _ := sm.CreateWithID(context.Background(), "testns", "sid")
+	session, _ := sm.Get(context.Background(), "testns", "sid")
 	if session.GetCompactSoftLimit() != 50000 {
 		t.Fatalf("expected compact limit 50000, got %d", session.GetCompactSoftLimit())
 	}

@@ -73,10 +73,6 @@ func TestDebugDumpOpenAIWithoutExtra(t *testing.T) {
 	}
 }
 
-func TestDebugDumpOpenAIWithoutExtraStream(t *testing.T) {
-	t.Skip("Stream API merged into Complete with onDelta")
-}
-
 func TestDebugDumpAnthropic(t *testing.T) {
 	debugDir := t.TempDir()
 
@@ -113,10 +109,6 @@ func TestDebugDumpAnthropic(t *testing.T) {
 		}
 		t.Fatalf("expected at least 2 debug files for Anthropic Complete, got %d", count)
 	}
-}
-
-func TestDebugDumpAnthropicStream(t *testing.T) {
-	t.Skip("Stream API merged into Complete with onDelta")
 }
 
 func TestDebugDumpGemini(t *testing.T) {
