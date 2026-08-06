@@ -1,16 +1,10 @@
 package adapters
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log/slog"
-	"net/http"
 	"strconv"
 	"strings"
-
-	"github.com/ariloulaleelay/hakka/agent"
 )
 
 // extractJSONPath navigates a nested JSON structure (map[string]any / []any)
@@ -18,10 +12,11 @@ import (
 // found, or nil and false if any segment is missing or out of bounds.
 //
 // Supported syntax:
-//   .field
-//   .field.subfield
-//   .array[0].field        — numeric index
-//   .array[currency=USD].field  — filter: find object where field==value
+//
+//	.field
+//	.field.subfield
+//	.array[0].field        — numeric index
+//	.array[currency=USD].field  — filter: find object where field==value
 //
 // Leading dot is required.
 func extractJSONPath(root any, path string) (any, bool) {
@@ -97,9 +92,9 @@ func splitPath(path string) []string {
 // parseSegment parses a path segment that may include an array index or
 // filter. Returns:
 //
-//   "balance_infos[0]"          → field="balance_infos", idx=0, hasIdx=true
-//   "balance_infos[currency=USD]" → filterField="currency", filterValue="USD"
-//   "total_balance"             → field="total_balance"
+//	"balance_infos[0]"          → field="balance_infos", idx=0, hasIdx=true
+//	"balance_infos[currency=USD]" → filterField="currency", filterValue="USD"
+//	"total_balance"             → field="total_balance"
 func parseSegment(segment string) (field string, idx int, hasIdx bool, filterField, filterValue string) {
 	bracket := strings.IndexByte(segment, '[')
 	if bracket < 0 {
@@ -174,72 +169,13 @@ func parseNumeric(s string) (float64, error) {
 	return strconv.ParseFloat(s, 64)
 }
 
-// ---------------------------------------------------------------------------
-// QuotaFetcher — shared logic for adapters
-// ---------------------------------------------------------------------------
-
-// FetchQuotaFromURL makes a GET request to the configured quota URL using
-// the adapter's HTTP client (which carries auth headers). It parses the
-// JSON response and extracts balance and currency values.
-//
-// balancePath and currencyPath are jq-like path expressions.
-// If currencyPath is empty but staticCurrency is set, staticCurrency is used.
-func FetchQuotaFromURL(
-	ctx context.Context,
-	client *http.Client,
-	url string,
-	balancePath, currencyPath string,
-	staticCurrency string,
-) (*agent.QuotaInfo, error) {
-	if url == "" {
-		return nil, fmt.Errorf("quota: no URL configured")
-	}
-
-	slog.Debug("quota: GET", "url", url)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("quota: %w", err)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("quota: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		slog.Warn("quota: HTTP error", "status", resp.Status, "body", string(body))
-		return nil, fmt.Errorf("quota: %s: %s", resp.Status, strings.TrimSpace(string(body)))
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("quota: read body: %w", err)
-	}
-
-	slog.Debug("quota: response", "body", string(body))
-
-	var root any
-	if err := json.Unmarshal(body, &root); err != nil {
-		return nil, fmt.Errorf("quota: parse JSON: %w", err)
-	}
-
-	info := &agent.QuotaInfo{}
-
-	if balancePath != "" {
-		if v, ok := extractJSONPathFloat(root, balancePath); ok {
-			info.Balance = &v
+// isPathExpression returns true if s looks like a JSON path (contains dots
+// or brackets), as opposed to a static literal like "CNY".
+func isPathExpression(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '.' || s[i] == '[' {
+			return true
 		}
 	}
-	if currencyPath != "" {
-		if v, ok := extractJSONPathString(root, currencyPath); ok {
-			info.Currency = v
-		}
-	} else if staticCurrency != "" {
-		info.Currency = staticCurrency
-	}
-
-	return info, nil
+	return false
 }

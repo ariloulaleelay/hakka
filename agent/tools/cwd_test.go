@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/ariloulaleelay/hakka/agent"
-		"github.com/ariloulaleelay/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // runWithCWD invokes a tool handler with a context that has a CWD set.
@@ -230,17 +230,12 @@ func TestSearchRespectsCWDFromContext(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	out := runWithCWD(t, Search().Handler, map[string]any{
+	res := runWithCWDPlain(t, Search().Handler, map[string]any{
 		"pattern": "needle",
 		"path":    ".", // relative — should resolve to CWD
 	}, baseDir)
-
-	matches, ok := out["matches"].([]any)
-	if !ok {
-		t.Fatalf("expected matches array, got %T %+v", out["matches"], out)
-	}
-	if len(matches) == 0 {
-		t.Fatalf("expected at least 1 match, got %d", len(matches))
+	if res == "" {
+		t.Fatalf("expected at least 1 match")
 	}
 }
 
@@ -297,8 +292,8 @@ func TestAllToolsRespectCWD(t *testing.T) {
 	// Tools that are exempt from CWD testing because they don't deal
 	// with filesystem paths at all.
 	noPathTools := map[string]string{
-		"http_get":         "URL-based, no filesystem paths",
-		"vim_run_command":  "Lua commands in Neovim, no filesystem paths",
+		"http_get":        "URL-based, no filesystem paths",
+		"vim_run_command": "Lua commands in Neovim, no filesystem paths",
 	}
 
 	// Parameter names that indicate a tool operates on filesystem paths.
@@ -378,13 +373,9 @@ func TestAllToolsRespectCWD(t *testing.T) {
 					"pattern": "hello-cwd",
 					"path":    ".", // relative — should resolve to CWD
 				}
-				out := runWithCWD(t, tool.Handler, args, baseDir)
-				matches, ok := out["matches"].([]any)
-				if !ok {
-					t.Fatalf("expected matches array, got %T: %+v", out["matches"], out)
-				}
-				if len(matches) == 0 {
-					t.Fatalf("expected at least 1 match, got %d", len(matches))
+				res := runWithCWDPlain(t, tool.Handler, args, baseDir)
+				if res == "" {
+					t.Fatalf("expected at least 1 match")
 				}
 
 			default:

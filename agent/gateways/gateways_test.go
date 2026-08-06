@@ -235,7 +235,7 @@ func TestWebSocketGatewayStreamToolFallbackUsesStreamNotComplete(t *testing.T) {
 	conv := agent.NewConversation(sm, router, tools, ns, cfg)
 	cmd := commands.New(sm, conv, "", ns)
 
-	session, _ := sm.GetOrCreate(context.Background(), ns, "")
+	session, _ := sm.CreateWithID(context.Background(), ns, "")
 	session.EnableTool("example_tool")
 	sm.Save(context.Background(), ns, session)
 
@@ -568,7 +568,7 @@ func TestDeltaAndDoneCarrySameMessageID(t *testing.T) {
 	conv, _ := newGatewayComponents("hello from streaming")
 
 	// Create a session first.
-	sess, err := conv.Sessions().GetOrCreate(context.Background(), "tcp", "test-session-1")
+	sess, err := conv.Sessions().CreateWithID(context.Background(), "tcp", "test-session-1")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}

@@ -641,7 +641,7 @@ func SessionCreate(sm *agent.SessionManager) agent.Tool {
 				return "", err
 			}
 
-			session, err := sm.GetOrCreate(ctx, ns, "")
+			session, err := sm.Create(ctx, ns)
 			if err != nil {
 				return "", fmt.Errorf("session_create: %w", err)
 			}

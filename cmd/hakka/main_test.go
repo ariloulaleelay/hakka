@@ -195,7 +195,7 @@ func TestBatchTaskGivenNoToolEnablingWhenRunThenNoToolsAreAvailable(t *testing.T
 
 	// Verify the session has no enabled tools.
 	manager := agent.NewSessionManager(store, "")
-	session, err := manager.GetOrCreate(context.Background(), "batch", sessionID)
+	session, err := manager.CreateWithID(context.Background(), "batch", sessionID)
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}

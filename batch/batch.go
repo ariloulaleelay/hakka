@@ -29,12 +29,12 @@ import (
 type RunBatchParams struct {
 	Registry         *agent.Registry
 	Task             string
-	Tools            *agent.ToolRegistry // optional; defaults to all built-in tools
-	EnableTools      []string            // tool names or tags to enable; nil/empty means no tools enabled
-	CompactSoftLimit int                 // 0 = use engine config default
-	Logger           *slog.Logger        // optional; defaults to slog.Default()
-	Store            agent.SessionStore  // optional; defaults to in-memory store
-	Skills           *agent.SkillRegistry // optional; skill registry for skill tools and context injection
+	Tools            *agent.ToolRegistry         // optional; defaults to all built-in tools
+	EnableTools      []string                    // tool names or tags to enable; nil/empty means no tools enabled
+	CompactSoftLimit int                         // 0 = use engine config default
+	Logger           *slog.Logger                // optional; defaults to slog.Default()
+	Store            agent.SessionStore          // optional; defaults to in-memory store
+	Skills           *agent.SkillRegistry        // optional; skill registry for skill tools and context injection
 	Checkpoints      *hakkatools.CheckpointStore // optional; defaults to temp-dir store
 }
 
@@ -149,7 +149,7 @@ func RunBatchWithOutput(ctx context.Context, p RunBatchParams, output io.Writer,
 
 	// Resolve tool names/tags and enable them on the session.
 	resolved := ResolveToolsByTagOrName(tools, p.EnableTools)
-	session, err := sessions.GetOrCreate(ctx, "batch", "")
+	session, err := sessions.Create(ctx, "batch")
 	if err != nil {
 		return "", fmt.Errorf("create session: %w", err)
 	}

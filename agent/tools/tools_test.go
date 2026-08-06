@@ -8,9 +8,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
-	"sync"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ariloulaleelay/hakka/agent"
@@ -251,16 +251,58 @@ func TestHTTPGet(t *testing.T) {
 	}
 }
 
+func TestSearchPlaintext(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("rg not installed")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := runPlain(t, Search().Handler, map[string]any{"pattern": "alpha", "path": dir})
+	if res == "" || !strings.Contains(res, "a.txt:1:") {
+		t.Fatalf("expected grep-like plaintext, got %q", res)
+	}
+	if strings.HasPrefix(strings.TrimSpace(res), "{") {
+		t.Fatalf("expected non-JSON output, got %q", res)
+	}
+}
+
+func TestSearchNoMatchIsEmpty(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("rg not installed")
+	}
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("alpha\n"), 0o644)
+	res := runPlain(t, Search().Handler, map[string]any{"pattern": "missing", "path": dir})
+	if res != "" {
+		t.Fatalf("expected empty result, got %q", res)
+	}
+}
+
+func TestSearchHugeLineIsTruncated(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("rg not installed")
+	}
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "huge.txt"), []byte("TODO "+strings.Repeat("x", searchMaxLineBytes*3)+"\n"), 0o644)
+	res := runPlain(t, Search().Handler, map[string]any{"pattern": "TODO", "path": dir, "max_bytes": 100000})
+	if len(res) > 100000 {
+		t.Fatalf("result too large: %d", len(res))
+	}
+	if !strings.Contains(res, "TRUNCATED") {
+		t.Fatalf("expected line truncation marker, got %q", res[len(res)-100:])
+	}
+}
 func TestSearchSkippedWhenNoRG(t *testing.T) {
 	if _, err := exec.LookPath("rg"); err != nil {
 		t.Skip("rg not installed")
 	}
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("alpha\nbeta\n"), 0o644)
-	out := run(t, Search().Handler, map[string]any{"pattern": "alpha", "path": dir})
-	matches := out["matches"].([]any)
-	if len(matches) == 0 {
-		t.Fatalf("no matches: %+v", out)
+	res := runPlain(t, Search().Handler, map[string]any{"pattern": "alpha", "path": dir})
+	if res == "" {
+		t.Fatalf("no matches")
 	}
 }
 

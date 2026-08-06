@@ -31,7 +31,7 @@ func TestConnectPushFrames(t *testing.T) {
 		readWSFrame(t, c, 3*time.Second, &f) // welcome
 
 		writeWSFrame(t, c, map[string]any{
-			"type": "cmd",
+			"type":    "cmd",
 			"command": map[string]any{"cmd": "session_create", "params": map[string]any{}},
 		})
 		var r struct{ Type string }

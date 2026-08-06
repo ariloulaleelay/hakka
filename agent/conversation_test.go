@@ -244,7 +244,7 @@ func TestAutoRename_NamesSessionAfterTwoUserMessages(t *testing.T) {
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
 	// Seed the session with 2 user messages already (simulating past conversation)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "auto-session")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "auto-session")
 	session.Append(Message{Role: RoleUser, Content: "first message"})
 	session.Append(Message{Role: RoleAssistant, Content: "first response"})
 	session.Append(Message{Role: RoleUser, Content: "second message"})
@@ -261,7 +261,7 @@ func TestAutoRename_NamesSessionAfterTwoUserMessages(t *testing.T) {
 	}
 
 	// Verify the session was renamed
-	session, _ = sm.GetOrCreate(context.Background(), "testns", "auto-session")
+	session, _ = sm.CreateWithID(context.Background(), "testns", "auto-session")
 	if session.SessionName() != "My Test Session" {
 		t.Fatalf("expected session.SessionName() = %q after auto-rename, got %q", "My Test Session", session.SessionName())
 	}
@@ -284,7 +284,7 @@ func TestAutoRename_DoesNotRenameAlreadyNamedSession(t *testing.T) {
 	cfg := EngineConfig{MaxToolIterations: 5, Logger: testLogger(t)}
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "named-session")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "named-session")
 	session.SetSessionName("Already Named")
 	session.Append(Message{Role: RoleUser, Content: "first"})
 	session.Append(Message{Role: RoleAssistant, Content: "resp1"})
@@ -300,7 +300,7 @@ func TestAutoRename_DoesNotRenameAlreadyNamedSession(t *testing.T) {
 	if adapter.NamingRequested {
 		t.Fatal("expected no naming LLM call for already-named session")
 	}
-	session, _ = sm.GetOrCreate(context.Background(), "testns", "named-session")
+	session, _ = sm.CreateWithID(context.Background(), "testns", "named-session")
 	if session.SessionName() != "Already Named" {
 		t.Fatalf("expected name to remain %q, got %q", "Already Named", session.SessionName())
 	}
@@ -321,7 +321,7 @@ func TestAutoRename_DoesNotRenameWithFewMessages(t *testing.T) {
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
 	// Only 1 user message total (0 before turn + 1 from Execute) — should NOT trigger rename
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "few-msgs")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "few-msgs")
 	_ = sm.Save(context.Background(), "testns", session)
 
 	_, _, err := executeSync(conv, context.Background(), "few-msgs", "first message")
@@ -465,7 +465,7 @@ func TestConversation_NoToolsConfigured_GetsNoTools(t *testing.T) {
 	cfg := EngineConfig{MaxToolIterations: 5, Logger: testLogger(t)}
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "empty-session")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "empty-session")
 	// Session has empty EnabledTools → all tools should be available
 	adapter.sessionFn = func() *Session { return session }
 
@@ -524,7 +524,7 @@ func TestConversation_SomeToolsEnabled_LLMGetsThoseSchemas(t *testing.T) {
 	cfg := EngineConfig{MaxToolIterations: 5, Logger: testLogger(t)}
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "some-session")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "some-session")
 	session.EnableTool("alpha")
 	session.DisableTool("beta")
 	// Persist tool auth changes so they survive the store's deep-copy.
@@ -578,7 +578,7 @@ func TestConversation_DefenseInDepth_DeniedToolReturnsError(t *testing.T) {
 	cfg := EngineConfig{MaxToolIterations: 5, Logger: testLogger(t)}
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "defense-session")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "defense-session")
 	session.DenyTool("echo") // deny the tool
 	// Persist tool auth changes.
 	enabled := session.Read().EnabledTools
@@ -594,7 +594,7 @@ func TestConversation_DefenseInDepth_DeniedToolReturnsError(t *testing.T) {
 	}
 
 	// The tool result should be in the session messages and contain "denied"
-	session, _ = sm.GetOrCreate(context.Background(), "testns", "defense-session")
+	session, _ = sm.CreateWithID(context.Background(), "testns", "defense-session")
 	foundDeniedErr := false
 	for _, m := range session.Messages() {
 		if m.Role == RoleTool && strings.Contains(m.Content, "denied") {
@@ -638,7 +638,7 @@ func TestConversation_EnabledTool_ExecutesNormally(t *testing.T) {
 	cfg := EngineConfig{MaxToolIterations: 5, Logger: testLogger(t)}
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "normal-session")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "normal-session")
 	session.EnableTool("echo")
 
 	_, reply, err := executeSync(conv, context.Background(), "normal-session", "do it")

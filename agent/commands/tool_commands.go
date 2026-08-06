@@ -40,7 +40,7 @@ func NewToolCommands(sm *agent.SessionManager, tools *agent.ToolRegistry, ns str
 
 func (tc *ToolCommands) jsonToolList(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
-	session, err := tc.Sessions.GetOrCreate(ctx, ns, sessionID)
+	session, err := sessionForCommand(tc.Sessions, ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "tool_list", Error: err}
 	}
@@ -93,7 +93,7 @@ func (tc *ToolCommands) jsonToolAllow(ctx context.Context, sessionID string, par
 		}
 	}
 
-	session, err := tc.Sessions.GetOrCreate(ctx, ns, sessionID)
+	session, err := sessionForCommand(tc.Sessions, ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "tool_allow", Error: err}
 	}
@@ -129,7 +129,7 @@ func (tc *ToolCommands) jsonToolDeny(ctx context.Context, sessionID string, para
 		return tc.jsonDenyByTag(ctx, sessionID, strings.TrimPrefix(p.Name, "#"))
 	}
 
-	session, err := tc.Sessions.GetOrCreate(ctx, ns, sessionID)
+	session, err := sessionForCommand(tc.Sessions, ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "tool_deny", Error: err}
 	}
@@ -160,7 +160,7 @@ func (tc *ToolCommands) jsonAllowByTag(ctx context.Context, sessionID, tag strin
 		return CommandResult{Handled: true, Cmd: "tool_allow", Reply: fmt.Sprintf("no tools with tag #%s", tag)}
 	}
 
-	session, err := tc.Sessions.GetOrCreate(ctx, ns, sessionID)
+	session, err := sessionForCommand(tc.Sessions, ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "tool_allow", Error: err}
 	}
@@ -195,7 +195,7 @@ func (tc *ToolCommands) jsonDenyByTag(ctx context.Context, sessionID, tag string
 		return CommandResult{Handled: true, Cmd: "tool_deny", Reply: fmt.Sprintf("no tools with tag #%s", tag)}
 	}
 
-	session, err := tc.Sessions.GetOrCreate(ctx, ns, sessionID)
+	session, err := sessionForCommand(tc.Sessions, ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "tool_deny", Error: err}
 	}

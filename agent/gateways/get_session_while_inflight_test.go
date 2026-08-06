@@ -42,9 +42,9 @@ func TestGetSessionDuringActiveTurn(t *testing.T) {
 	handler := NewTurnHandler(conv, cmd, ns)
 
 	// Create a session and send a chat to start a turn that blocks.
-	session, err := sm.GetOrCreate(context.Background(), ns, "")
+	session, err := sm.CreateWithID(context.Background(), ns, "")
 	if err != nil {
-		t.Fatalf("GetOrCreate: %v", err)
+		t.Fatalf("CreateWithID: %v", err)
 	}
 
 	// Writer for the chat request.
@@ -123,7 +123,7 @@ func TestGetSessionDuringActiveTurn(t *testing.T) {
 	}
 
 	// Verify the turn completed by checking session messages.
-	session, _, err = sm.Get(context.Background(), ns, session.SessionID())
+	session, err = sm.Get(context.Background(), ns, session.SessionID())
 	if err != nil {
 		t.Fatalf("Get session after turn: %v", err)
 	}
@@ -193,9 +193,9 @@ func TestGetSessionDuringActiveTurnViaWebSocket(t *testing.T) {
 	defer gw.Stop(context.Background())
 
 	// Step 1: Create a session first (not via WebSocket).
-	session, err := sm.GetOrCreate(context.Background(), ns, "")
+	session, err := sm.CreateWithID(context.Background(), ns, "")
 	if err != nil {
-		t.Fatalf("GetOrCreate: %v", err)
+		t.Fatalf("CreateWithID: %v", err)
 	}
 	t.Logf("created session: %s", session.SessionID())
 

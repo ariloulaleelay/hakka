@@ -96,7 +96,7 @@ func TestConversationMidTurnEnableTool_EndToEnd(t *testing.T) {
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
 	// Create session first so we can capture its ID
-	s, err := sm.GetOrCreate(context.Background(), "testns", "")
+	s, err := sm.CreateWithID(context.Background(), "testns", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestConversationMidTurnEnableTool_EndToEnd(t *testing.T) {
 	}
 
 	if !testToolExecuted {
-		savedSession, _ := sm.GetOrCreate(context.Background(), "testns", sessionID)
+		savedSession, _ := sm.CreateWithID(context.Background(), "testns", sessionID)
 		for _, m := range savedSession.Messages() {
 			if m.Role == RoleTool && m.Name == "test_tool" {
 				if strings.Contains(m.Content, "disabled") {
@@ -214,7 +214,7 @@ func TestConversationMidTurnEnableTool_ContextInjection_Run(t *testing.T) {
 	toolExec := newToolExecutor(tools, nil, engineCfg.Hooks)
 	rr := newTurnRunner(tools, toolExec, engineCfg, router, testLogger(t), nil, sm.Store)
 
-	session, err := sm.GetOrCreate(context.Background(), "testns", sessionID)
+	session, err := sm.CreateWithID(context.Background(), "testns", sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestConversationMidTurnEnableTool_ContextInjection_Run(t *testing.T) {
 // captureSessionID creates a session and returns its ID.
 func captureSessionID(t *testing.T, sm *SessionManager, ns string) string {
 	t.Helper()
-	s, err := sm.GetOrCreate(context.Background(), ns, "")
+	s, err := sm.CreateWithID(context.Background(), ns, "")
 	if err != nil {
 		t.Fatal(err)
 	}

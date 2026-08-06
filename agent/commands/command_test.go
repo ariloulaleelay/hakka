@@ -18,7 +18,6 @@ func (f *fakeAdapter) Complete(_ context.Context, _ []agent.Message, _ []agent.T
 	return &agent.LLMResponse{Message: agent.Message{Role: agent.RoleAssistant, Content: "ok"}}, nil
 }
 
-
 // newCommandComponents builds the trio directly, bypassing Engine.
 func newCommandComponents(t *testing.T) (*agent.Conversation, *CommandProcessor, *agent.SessionManager) {
 	t.Helper()
@@ -42,10 +41,11 @@ func params(data map[string]any) json.RawMessage {
 
 func TestSessionModelPersistsAcrossLookups(t *testing.T) {
 	conv, _, sm := newCommandComponents(t)
-	if _, err := conv.BindSessionModel(context.Background(), "sid", "beta"); err != nil {
+	sess, _ := sm.CreateWithID(context.Background(), "testns", "sid")
+	if _, err := conv.BindSessionModel(context.Background(), sess.SessionID(), "beta"); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	sess, _ := sm.GetOrCreate(context.Background(), "testns", "sid")
+	sess, _ = sm.Get(context.Background(), "testns", "sid")
 	if conv.SessionModel(sess) != "beta" {
 		t.Fatalf("not persisted: %q", conv.SessionModel(sess))
 	}
@@ -55,7 +55,7 @@ func TestSessionModelPersistsAcrossLookups(t *testing.T) {
 
 func TestSessionList_ReportsInFlight(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	s1, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
+	s1, _ := sm.CreateWithID(context.Background(), "testns", "session1")
 	s1.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
 	sm.Save(context.Background(), "testns", s1)
 
@@ -83,11 +83,11 @@ func TestSessionList_ReportsInFlight(t *testing.T) {
 
 func TestSessionList_InFlightChecker(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	s1, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
+	s1, _ := sm.CreateWithID(context.Background(), "testns", "session1")
 	s1.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
 	sm.Save(context.Background(), "testns", s1)
 
-	s2, _ := sm.GetOrCreate(context.Background(), "testns", "session-other")
+	s2, _ := sm.CreateWithID(context.Background(), "testns", "session-other")
 	s2.Append(agent.Message{Role: agent.RoleUser, Content: "world"})
 	sm.Save(context.Background(), "testns", s2)
 
@@ -127,7 +127,7 @@ func TestSessionList_InFlightChecker(t *testing.T) {
 
 func TestSessionList_ReturnsSessions(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	s1, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
+	s1, _ := sm.CreateWithID(context.Background(), "testns", "session1")
 	s1.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
 	sm.Save(context.Background(), "testns", s1)
 
@@ -152,8 +152,8 @@ func TestSessionList_ReturnsSessions(t *testing.T) {
 
 func TestSessionList_HidesEmptySessions(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	sm.GetOrCreate(context.Background(), "testns", "empty-session")
-	fullSession, _ := sm.GetOrCreate(context.Background(), "testns", "full-session")
+	sm.CreateWithID(context.Background(), "testns", "empty-session")
+	fullSession, _ := sm.CreateWithID(context.Background(), "testns", "full-session")
 	fullSession.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
 	sm.Save(context.Background(), "testns", fullSession)
 
@@ -177,7 +177,7 @@ func TestSessionList_HidesEmptySessions(t *testing.T) {
 
 func TestSessionList_ShowsActiveEmptySession(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	sm.GetOrCreate(context.Background(), "testns", "active-empty")
+	sm.CreateWithID(context.Background(), "testns", "active-empty")
 
 	res := cmd.ExecuteJSON(context.Background(), "active-empty", "session_list", nil)
 
@@ -208,7 +208,7 @@ func TestSessionList_ShowsActiveEmptySession(t *testing.T) {
 
 // serializingStore wraps a MemoryStore but deep-copies on Put,
 // simulating the behaviour of a serialising store like SQLite.
-// This exposes bugs where session mutations after GetOrCreate are
+// This exposes bugs where session mutations after CreateWithID are
 // never saved back to the store.
 type serializingStore struct {
 	inner *agent.MemoryStore
@@ -253,7 +253,7 @@ func TestSessionCreate_PersistsCWD(t *testing.T) {
 	conv := agent.NewConversation(sm, router, tools, ns, cfg)
 	cmd := New(sm, conv, "", ns)
 
-	oldSession, _ := sm.GetOrCreate(context.Background(), "testns", "old-session")
+	oldSession, _ := sm.CreateWithID(context.Background(), "testns", "old-session")
 	oldSession.SetClientCWD("/client/project")
 	sm.Save(context.Background(), "testns", oldSession)
 
@@ -269,7 +269,7 @@ func TestSessionCreate_PersistsCWD(t *testing.T) {
 	}
 
 	// The store must also have the inherited CWD, NOT the process default.
-	// With the bug, GetOrCreate saves the session with os.Getwd() before
+	// With the bug, CreateWithID saves the session with os.Getwd() before
 	// inheritCWD runs, and the store is never updated afterwards.
 	stored, ok, _ := sm.Store.Get(context.Background(), "testns", newID)
 	if !ok {
@@ -282,7 +282,7 @@ func TestSessionCreate_PersistsCWD(t *testing.T) {
 
 func TestSessionCreate_ReturnsNewSession(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	sm.GetOrCreate(context.Background(), "testns", "session1")
+	sm.CreateWithID(context.Background(), "testns", "session1")
 
 	res := cmd.ExecuteJSON(context.Background(), "session1", "session_create", nil)
 
@@ -304,7 +304,7 @@ func TestSessionCreate_ReturnsNewSession(t *testing.T) {
 
 func TestGetSession_FetchesSession(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	s1, _ := sm.GetOrCreate(context.Background(), "testns", "target-session")
+	s1, _ := sm.CreateWithID(context.Background(), "testns", "target-session")
 	s1.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
 	sm.Save(context.Background(), "testns", s1)
 	createRes := cmd.ExecuteJSON(context.Background(), "target-session", "session_create", nil)
@@ -325,7 +325,7 @@ func TestGetSession_FetchesSession(t *testing.T) {
 
 func TestGetSession_NonExistentFails(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	sm.GetOrCreate(context.Background(), "testns", "session1")
+	sm.CreateWithID(context.Background(), "testns", "session1")
 
 	res := cmd.ExecuteJSON(context.Background(), "session1", "get_session", params(map[string]any{"id": "nonexistent"}))
 
@@ -339,7 +339,7 @@ func TestGetSession_NonExistentFails(t *testing.T) {
 
 func TestGetSession_WithShortID(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	s1, _ := sm.GetOrCreate(context.Background(), "testns", "target-session")
+	s1, _ := sm.CreateWithID(context.Background(), "testns", "target-session")
 	s1.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
 	sm.Save(context.Background(), "testns", s1)
 	createRes := cmd.ExecuteJSON(context.Background(), "target-session", "session_create", nil)
@@ -358,8 +358,8 @@ func TestGetSession_WithShortID(t *testing.T) {
 
 func TestGetSession_WithAmbiguousPrefix(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	sm.GetOrCreate(context.Background(), "testns", "xyz-one")
-	sm.GetOrCreate(context.Background(), "testns", "xyz-two")
+	sm.CreateWithID(context.Background(), "testns", "xyz-one")
+	sm.CreateWithID(context.Background(), "testns", "xyz-two")
 
 	res := cmd.ExecuteJSON(context.Background(), "xyz-one", "get_session", params(map[string]any{"id": "xyz"}))
 
@@ -380,7 +380,7 @@ func TestGetSession_WithEmptyID(t *testing.T) {
 
 func TestSessionDelete_RemovesTarget(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	sm.GetOrCreate(context.Background(), "testns", "session1")
+	sm.CreateWithID(context.Background(), "testns", "session1")
 	createRes := cmd.ExecuteJSON(context.Background(), "session1", "session_create", nil)
 	newID := createRes.Session.SessionID()
 
@@ -401,7 +401,7 @@ func TestSessionDelete_RemovesTarget(t *testing.T) {
 
 func TestSessionDelete_WithShortID(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	sm.GetOrCreate(context.Background(), "testns", "session1")
+	sm.CreateWithID(context.Background(), "testns", "session1")
 	createRes := cmd.ExecuteJSON(context.Background(), "session1", "session_create", nil)
 	newID := createRes.Session.SessionID()
 	createRes.Session.Append(agent.Message{Role: agent.RoleUser, Content: "hi"})
@@ -417,7 +417,7 @@ func TestSessionDelete_WithShortID(t *testing.T) {
 
 func TestSessionDelete_CurrentClearsSession(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	sm.GetOrCreate(context.Background(), "testns", "session1")
+	sm.CreateWithID(context.Background(), "testns", "session1")
 
 	res := cmd.ExecuteJSON(context.Background(), "session1", "session_delete", params(map[string]any{"id": "this"}))
 
@@ -431,8 +431,8 @@ func TestSessionDelete_CurrentClearsSession(t *testing.T) {
 
 func TestSessionDelete_ExactMatchPreferred(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	s1, _ := sm.GetOrCreate(context.Background(), "testns", "abc")
-	s2, _ := sm.GetOrCreate(context.Background(), "testns", "abcdef")
+	s1, _ := sm.CreateWithID(context.Background(), "testns", "abc")
+	s2, _ := sm.CreateWithID(context.Background(), "testns", "abcdef")
 	s1.Append(agent.Message{Role: agent.RoleUser, Content: "msg"})
 	s2.Append(agent.Message{Role: agent.RoleUser, Content: "msg"})
 	sm.Save(context.Background(), "testns", s1)
@@ -463,7 +463,7 @@ func TestSessionDelete_ExactMatchPreferred(t *testing.T) {
 
 func TestGetSession_ReturnsDefaultModelAndEstimatedTokens(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "model-test-session")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "model-test-session")
 	// Simulate a turn setting estimated_context_tokens
 	session.SetEstimatedContextTokens(12345)
 	session.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
@@ -516,7 +516,7 @@ func TestGetSession_ReturnsDefaultModelAndEstimatedTokens(t *testing.T) {
 
 func TestSessionInfo_ShowsDetails(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "session1")
 	session.SetSessionName("My Session")
 	_ = sm.Save(context.Background(), "testns", session)
 
@@ -544,7 +544,7 @@ func TestSessionInfo_ShowsDetails(t *testing.T) {
 
 func TestSessionRename_SetsName(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	sm.GetOrCreate(context.Background(), "testns", "session1")
+	sm.CreateWithID(context.Background(), "testns", "session1")
 
 	res := cmd.ExecuteJSON(context.Background(), "session1", "session_rename", params(map[string]any{"name": "My Chat"}))
 
@@ -555,7 +555,7 @@ func TestSessionRename_SetsName(t *testing.T) {
 		t.Fatalf("expected session.Name = %q, got %q", "My Chat", res.Session.SessionName())
 	}
 
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "session1")
 	if session.SessionName() != "My Chat" {
 		t.Fatalf("expected persisted Name = %q, got %q", "My Chat", session.SessionName())
 	}
@@ -573,7 +573,7 @@ func TestSessionRename_EmptyName(t *testing.T) {
 
 func TestSessionAutoRename_NamesSession(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "session1")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "session1")
 	session.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
 	session.Append(agent.Message{Role: agent.RoleAssistant, Content: "hi back"})
 	sm.Save(context.Background(), "testns", session)
@@ -590,7 +590,7 @@ func TestSessionAutoRename_NamesSession(t *testing.T) {
 
 func TestSessionAutoRename_WorksEvenWithNoMessages(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	sm.GetOrCreate(context.Background(), "testns", "session1")
+	sm.CreateWithID(context.Background(), "testns", "session1")
 
 	res := cmd.ExecuteJSON(context.Background(), "session1", "session_autorename", nil)
 
@@ -606,7 +606,7 @@ func TestSessionAutoRename_WorksEvenWithNoMessages(t *testing.T) {
 
 func TestModelList_ReturnsModels(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	sm.GetOrCreate(context.Background(), "testns", "sid")
+	sm.CreateWithID(context.Background(), "testns", "sid")
 
 	res := cmd.ExecuteJSON(context.Background(), "sid", "model_list", nil)
 
@@ -698,7 +698,7 @@ func newCommandComponentsWithTools(t *testing.T) (*agent.Conversation, *CommandP
 
 func TestToolList_ReturnsTools(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	sm.GetOrCreate(context.Background(), "testns", "s1")
+	sm.CreateWithID(context.Background(), "testns", "s1")
 
 	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_list", nil)
 
@@ -716,7 +716,7 @@ func TestToolList_ReturnsTools(t *testing.T) {
 
 func TestToolAllow_EnablesTool(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	sm.GetOrCreate(context.Background(), "testns", "s1")
+	sm.CreateWithID(context.Background(), "testns", "s1")
 
 	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_allow", params(map[string]any{"name": "read_file"}))
 
@@ -730,7 +730,7 @@ func TestToolAllow_EnablesTool(t *testing.T) {
 
 func TestToolDeny_DisablesTool(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "s1")
 	session.EnableTool("write_file")
 	_ = sm.Save(context.Background(), "testns", session)
 
@@ -746,7 +746,7 @@ func TestToolDeny_DisablesTool(t *testing.T) {
 
 func TestToolAllow_ByTag(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	sm.GetOrCreate(context.Background(), "testns", "s1")
+	sm.CreateWithID(context.Background(), "testns", "s1")
 
 	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_allow", params(map[string]any{"name": "#filesystem"}))
 
@@ -760,7 +760,7 @@ func TestToolAllow_ByTag(t *testing.T) {
 
 func TestToolDeny_ByTag(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "s1")
 	session.EnableTool("read_file")
 	session.EnableTool("shell")
 	_ = sm.Save(context.Background(), "testns", session)
@@ -780,7 +780,7 @@ func TestToolDeny_ByTag(t *testing.T) {
 
 func TestToolAllow_UnknownTool(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	sm.GetOrCreate(context.Background(), "testns", "s1")
+	sm.CreateWithID(context.Background(), "testns", "s1")
 
 	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_allow", params(map[string]any{"name": "nonexistent"}))
 
@@ -791,7 +791,7 @@ func TestToolAllow_UnknownTool(t *testing.T) {
 
 func TestToolAllow_NonexistentTag(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	sm.GetOrCreate(context.Background(), "testns", "s1")
+	sm.CreateWithID(context.Background(), "testns", "s1")
 
 	res := cmd.ExecuteJSON(context.Background(), "s1", "tool_allow", params(map[string]any{"name": "#bogus"}))
 
@@ -802,7 +802,7 @@ func TestToolAllow_NonexistentTag(t *testing.T) {
 
 func TestToolList_ShowsEnabledStatus(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "s1")
 	session.EnableTool("http_get")
 	_ = sm.Save(context.Background(), "testns", session)
 
@@ -831,15 +831,15 @@ func TestToolList_ShowsEnabledStatus(t *testing.T) {
 
 func TestToolCommand_PersistsAcrossSessions(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	sm.GetOrCreate(context.Background(), "testns", "s1")
+	sm.CreateWithID(context.Background(), "testns", "s1")
 	cmd.ExecuteJSON(context.Background(), "s1", "tool_allow", params(map[string]any{"name": "read_file"}))
 
-	session2, _ := sm.GetOrCreate(context.Background(), "testns", "s2")
+	session2, _ := sm.CreateWithID(context.Background(), "testns", "s2")
 	if session2.IsToolEnabled("read_file") {
 		t.Fatal("expected new sessions to have no tools enabled by default")
 	}
 
-	session1, _ := sm.GetOrCreate(context.Background(), "testns", "s1")
+	session1, _ := sm.CreateWithID(context.Background(), "testns", "s1")
 	if !session1.IsToolEnabled("read_file") {
 		t.Fatal("expected session1 to retain its tool settings")
 	}
@@ -857,7 +857,7 @@ func TestToolCommand_GatewayRestriction(t *testing.T) {
 	})
 	cmd.SetTools(restrictedTools)
 
-	sm.GetOrCreate(context.Background(), "testns", "tg-session")
+	sm.CreateWithID(context.Background(), "testns", "tg-session")
 
 	res := cmd.ExecuteJSON(context.Background(), "tg-session", "tool_allow", params(map[string]any{"name": "shell"}))
 	if res.Error == nil && !strings.Contains(res.Reply, "unknown") {
@@ -885,7 +885,7 @@ func TestToolCommand_GatewayRestriction(t *testing.T) {
 
 func TestStartCommand_CreatesNewSession(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	sm.GetOrCreate(context.Background(), "testns", "s1")
+	sm.CreateWithID(context.Background(), "testns", "s1")
 
 	res := cmd.ExecuteJSON(context.Background(), "s1", "start", nil)
 
@@ -905,7 +905,7 @@ func TestStartCommand_CreatesNewSession(t *testing.T) {
 
 func TestStartCommand_EnablesAllTools(t *testing.T) {
 	_, cmd, sm, tools := newCommandComponentsWithTools(t)
-	sm.GetOrCreate(context.Background(), "testns", "s1")
+	sm.CreateWithID(context.Background(), "testns", "s1")
 
 	res := cmd.ExecuteJSON(context.Background(), "s1", "start", nil)
 
@@ -921,7 +921,7 @@ func TestStartCommand_EnablesAllTools(t *testing.T) {
 
 func TestStartCommand_PreservesCWD(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
-	oldSession, _ := sm.GetOrCreate(context.Background(), "testns", "old-session")
+	oldSession, _ := sm.CreateWithID(context.Background(), "testns", "old-session")
 	oldSession.SetClientCWD("/client/project")
 	sm.Save(context.Background(), "testns", oldSession)
 
@@ -939,7 +939,7 @@ func TestStartCommand_PreservesCWD(t *testing.T) {
 
 func TestCWDSet_SetsSessionCWD(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	sess, _ := sm.GetOrCreate(context.Background(), "testns", "sid")
+	sess, _ := sm.CreateWithID(context.Background(), "testns", "sid")
 	sess.SetClientCWD("/old/path")
 
 	res := cmd.ExecuteJSON(context.Background(), "sid", "cwd_set", params(map[string]any{"cwd": "/new/path"}))
@@ -947,7 +947,7 @@ func TestCWDSet_SetsSessionCWD(t *testing.T) {
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	got, _ := sm.GetOrCreate(context.Background(), "testns", "sid")
+	got, _ := sm.CreateWithID(context.Background(), "testns", "sid")
 	if got.Read().ClientCWD != "/new/path" {
 		t.Fatalf("expected CWD /new/path, got %q", got.Read().ClientCWD)
 	}
@@ -978,7 +978,7 @@ func TestContinue_ReturnsContinueAction(t *testing.T) {
 
 func TestCompact_ReadsCurrentValue(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	sm.GetOrCreate(context.Background(), "testns", "sid")
+	sm.CreateWithID(context.Background(), "testns", "sid")
 
 	res := cmd.ExecuteJSON(context.Background(), "sid", "compact", nil)
 
@@ -996,14 +996,14 @@ func TestCompact_ReadsCurrentValue(t *testing.T) {
 
 func TestCompact_SetsValue(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	sm.GetOrCreate(context.Background(), "testns", "sid")
+	sm.CreateWithID(context.Background(), "testns", "sid")
 
 	res := cmd.ExecuteJSON(context.Background(), "sid", "compact", params(map[string]any{"n": 50000}))
 
 	if res.Error != nil {
 		t.Fatalf("unexpected error: %v", res.Error)
 	}
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "sid")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "sid")
 	if session.GetCompactSoftLimit() != 50000 {
 		t.Fatalf("expected compact limit 50000, got %d", session.GetCompactSoftLimit())
 	}
@@ -1019,7 +1019,7 @@ func TestCompact_SetsValue(t *testing.T) {
 
 func TestSessionMetadata_ConsistentAcrossGetSessionAndSessionInfo(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "meta-test")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "meta-test")
 	session.SetSessionName("Meta Test")
 	session.SetClientCWD("/home/test/project")
 	session.SetEstimatedContextTokens(54321)
@@ -1092,7 +1092,7 @@ func TestSessionMetadata_ConsistentAcrossGetSessionAndSessionInfo(t *testing.T) 
 
 func TestSessionMetadata_GetSessionIncludesMessages(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "msg-session")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "msg-session")
 	session.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
 	session.Append(agent.Message{Role: agent.RoleAssistant, Content: "world"})
 	sm.Save(context.Background(), "testns", session)
@@ -1130,7 +1130,7 @@ func TestSessionMetadata_GetSessionIncludesMessages(t *testing.T) {
 
 func TestSessionMetadata_NewSessionHasClientCWD(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "cwd-session")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "cwd-session")
 	session.SetClientCWD("/initial/cwd")
 	sm.Save(context.Background(), "testns", session)
 
@@ -1164,7 +1164,7 @@ func TestSessionMetadata_NewSessionHasClientCWD(t *testing.T) {
 
 func TestSessionMetadata_SessionInfoIncludesClientCWD(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "info-cwd")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "info-cwd")
 	session.SetClientCWD("/my/project")
 	sm.Save(context.Background(), "testns", session)
 
@@ -1231,7 +1231,11 @@ func TestUnknownCommand_ReturnsError(t *testing.T) {
 
 func TestShortestUniquePrefix_SingleSession(t *testing.T) {
 	sessions := []*agent.Session{
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.Update(func(d *agent.SessionData) { d.ID = "abcdef" }); return s }(),
+		func() *agent.Session {
+			s := agent.NewSession("ns", "")
+			s.Update(func(d *agent.SessionData) { d.ID = "abcdef" })
+			return s
+		}(),
 	}
 	prefixes := shortestUniquePrefixes(sessions)
 	if prefixes["abcdef"] != "a" {
@@ -1241,9 +1245,21 @@ func TestShortestUniquePrefix_SingleSession(t *testing.T) {
 
 func TestShortestUniquePrefix_MultipleSessions(t *testing.T) {
 	sessions := []*agent.Session{
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.Update(func(d *agent.SessionData) { d.ID = "abc123" }); return s }(),
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.Update(func(d *agent.SessionData) { d.ID = "abd456" }); return s }(),
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.Update(func(d *agent.SessionData) { d.ID = "abe789" }); return s }(),
+		func() *agent.Session {
+			s := agent.NewSession("ns", "")
+			s.Update(func(d *agent.SessionData) { d.ID = "abc123" })
+			return s
+		}(),
+		func() *agent.Session {
+			s := agent.NewSession("ns", "")
+			s.Update(func(d *agent.SessionData) { d.ID = "abd456" })
+			return s
+		}(),
+		func() *agent.Session {
+			s := agent.NewSession("ns", "")
+			s.Update(func(d *agent.SessionData) { d.ID = "abe789" })
+			return s
+		}(),
 	}
 	prefixes := shortestUniquePrefixes(sessions)
 	if prefixes["abc123"] != "abc" {
@@ -1259,9 +1275,21 @@ func TestShortestUniquePrefix_MultipleSessions(t *testing.T) {
 
 func TestShortestUniquePrefix_DifferentLengths(t *testing.T) {
 	sessions := []*agent.Session{
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.Update(func(d *agent.SessionData) { d.ID = "a-long-id" }); return s }(),
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.Update(func(d *agent.SessionData) { d.ID = "another-id" }); return s }(),
-		func() *agent.Session { s := agent.NewSession("ns", ""); s.Update(func(d *agent.SessionData) { d.ID = "b-short" }); return s }(),
+		func() *agent.Session {
+			s := agent.NewSession("ns", "")
+			s.Update(func(d *agent.SessionData) { d.ID = "a-long-id" })
+			return s
+		}(),
+		func() *agent.Session {
+			s := agent.NewSession("ns", "")
+			s.Update(func(d *agent.SessionData) { d.ID = "another-id" })
+			return s
+		}(),
+		func() *agent.Session {
+			s := agent.NewSession("ns", "")
+			s.Update(func(d *agent.SessionData) { d.ID = "b-short" })
+			return s
+		}(),
 	}
 	prefixes := shortestUniquePrefixes(sessions)
 	if prefixes["a-long-id"] != "a-" {
@@ -1281,7 +1309,7 @@ func TestSessionFork_BlankChild(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 
 	// Create a parent with some messages.
-	parent, _ := sm.GetOrCreate(context.Background(), "testns", "")
+	parent, _ := sm.CreateWithID(context.Background(), "testns", "")
 	parent.Append(agent.Message{ID: "m1", Role: agent.RoleUser, Content: "hello"})
 	parent.Append(agent.Message{ID: "m2", Role: agent.RoleAssistant, Content: "hi"})
 
@@ -1314,7 +1342,7 @@ func TestSessionFork_BlankChild(t *testing.T) {
 func TestSessionFork_CopiesMessages(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 
-	parent, _ := sm.GetOrCreate(context.Background(), "testns", "")
+	parent, _ := sm.CreateWithID(context.Background(), "testns", "")
 	parent.Append(agent.Message{ID: "m1", Role: agent.RoleUser, Content: "first"})
 	parent.Append(agent.Message{ID: "m2", Role: agent.RoleAssistant, Content: "second"})
 	parent.Append(agent.Message{ID: "m3", Role: agent.RoleUser, Content: "third"})
@@ -1342,7 +1370,7 @@ func TestSessionFork_CopiesMessages(t *testing.T) {
 func TestSessionFork_BadForkPoint(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 
-	parent, _ := sm.GetOrCreate(context.Background(), "testns", "")
+	parent, _ := sm.CreateWithID(context.Background(), "testns", "")
 	parent.Append(agent.Message{ID: "m1", Role: agent.RoleUser, Content: "hello"})
 	_ = sm.Save(context.Background(), "testns", parent)
 
@@ -1368,7 +1396,7 @@ func TestSessionFork_MissingParentID(t *testing.T) {
 func TestSessionFork_MetadataHasLineage(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 
-	parent, _ := sm.GetOrCreate(context.Background(), "testns", "")
+	parent, _ := sm.CreateWithID(context.Background(), "testns", "")
 	parent.Append(agent.Message{ID: "m1", Role: agent.RoleUser, Content: "hello"})
 	_ = sm.Save(context.Background(), "testns", parent)
 
@@ -1391,7 +1419,7 @@ func TestSessionFork_MetadataHasLineage(t *testing.T) {
 func TestSessionFork_LastAssistantMessage(t *testing.T) {
 	_, cmd, sm, _ := newCommandComponentsWithTools(t)
 
-	parent, _ := sm.GetOrCreate(context.Background(), "testns", "")
+	parent, _ := sm.CreateWithID(context.Background(), "testns", "")
 	parent.Append(agent.Message{ID: "91c", Role: agent.RoleUser, Content: "what is 2+2?"})
 	parent.Append(agent.Message{ID: "91d", Role: agent.RoleAssistant, Content: "4"})
 	_ = sm.Save(context.Background(), "testns", parent)
@@ -1458,7 +1486,7 @@ func TestNonModifyingCommandsDontBumpUpdatedAt(t *testing.T) {
 	_, cmd, sm := newCommandComponents(t)
 
 	// Create a fully-configured session with model and compact limit.
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "readonly-test")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "readonly-test")
 	session.SetModel("alpha")
 	session.SetCompactSoftLimit(100000)
 	session.SetClientCWD("/home/test")
@@ -1477,9 +1505,9 @@ func TestNonModifyingCommandsDontBumpUpdatedAt(t *testing.T) {
 	if res.Error != nil {
 		t.Fatalf("get_session error: %v", res.Error)
 	}
-	s, ok, err := sm.Get(context.Background(), "testns", "readonly-test")
-	if err != nil || !ok {
-		t.Fatalf("re-fetch after get_session: ok=%v err=%v", ok, err)
+	s, err := sm.Get(context.Background(), "testns", "readonly-test")
+	if err != nil {
+		t.Fatalf("re-fetch after get_session: err=%v", err)
 	}
 	if !s.Read().UpdatedAt.Equal(initial) {
 		t.Fatal("get_session should not change updated_at")
@@ -1487,9 +1515,9 @@ func TestNonModifyingCommandsDontBumpUpdatedAt(t *testing.T) {
 
 	// ---- session_info ----
 	_ = cmd.ExecuteJSON(context.Background(), "readonly-test", "session_info", nil)
-	s2, ok, err := sm.Get(context.Background(), "testns", "readonly-test")
-	if err != nil || !ok {
-		t.Fatalf("re-fetch after session_info: ok=%v err=%v", ok, err)
+	s2, err := sm.Get(context.Background(), "testns", "readonly-test")
+	if err != nil {
+		t.Fatalf("re-fetch after session_info: err=%v", err)
 	}
 	if !s2.Read().UpdatedAt.Equal(initial) {
 		t.Fatal("session_info should not change updated_at")
@@ -1497,9 +1525,9 @@ func TestNonModifyingCommandsDontBumpUpdatedAt(t *testing.T) {
 
 	// ---- session_list ----
 	_ = cmd.ExecuteJSON(context.Background(), "readonly-test", "session_list", nil)
-	s3, ok, err := sm.Get(context.Background(), "testns", "readonly-test")
-	if err != nil || !ok {
-		t.Fatalf("re-fetch after session_list: ok=%v err=%v", ok, err)
+	s3, err := sm.Get(context.Background(), "testns", "readonly-test")
+	if err != nil {
+		t.Fatalf("re-fetch after session_list: err=%v", err)
 	}
 	if !s3.Read().UpdatedAt.Equal(initial) {
 		t.Fatal("session_list should not change updated_at")

@@ -60,10 +60,10 @@ type Conversation struct {
 }
 
 func (conv *Conversation) Sessions() *SessionManager { return conv.sessions }
-func (conv *Conversation) Router() *Router             { return conv.router }
-func (conv *Conversation) Config() EngineConfig        { return conv.config }
-func (conv *Conversation) Namespace() string           { return conv.namespace }
-func (conv *Conversation) Tools() *ToolRegistry        { return conv.tools }
+func (conv *Conversation) Router() *Router           { return conv.router }
+func (conv *Conversation) Config() EngineConfig      { return conv.config }
+func (conv *Conversation) Namespace() string         { return conv.namespace }
+func (conv *Conversation) Tools() *ToolRegistry      { return conv.tools }
 
 // NewConversation builds a Conversation. Zero-valued config fields are
 // filled from DefaultEngineConfig() — the single source of truth for
@@ -215,7 +215,16 @@ func (conv *Conversation) Execute(ctx context.Context, sessionID, userInput stri
 // it appends a user message and persists. Returns the session as SessionView.
 func (conv *Conversation) prepareWithInput(ctx context.Context, sessionID, userInput string) (SessionView, error) {
 	ns := conv.resolveNamespace(ctx)
-	session, err := conv.sessions.GetOrCreate(ctx, ns, sessionID)
+	var session *Session
+	var err error
+	if sessionID == "" {
+		if userInput == "" {
+			return nil, fmt.Errorf("cannot continue without a session ID")
+		}
+		session, err = conv.sessions.Create(ctx, ns)
+	} else {
+		session, err = conv.sessions.Get(ctx, ns, sessionID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +274,7 @@ func (conv *Conversation) BindSessionModel(ctx context.Context, sessionID, name 
 		ctx = event.ContextWithNamespace(ctx, conv.namespace)
 	}
 	ns := conv.resolveNamespace(ctx)
-	sess, err := conv.sessions.GetOrCreate(ctx, ns, sessionID)
+	sess, err := conv.sessions.Get(ctx, ns, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +310,6 @@ func (e *errMsg) Is(target error) bool {
 	}
 	return e.msg == t.msg
 }
-
 
 // ---------------------------------------------------------------------------
 // Auto-rename — uses the LLM to generate a short session name after

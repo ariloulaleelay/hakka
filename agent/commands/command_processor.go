@@ -65,6 +65,10 @@ type SessionEvent struct {
 // CommandProcessor handles structured JSON commands (/help, /model, /session,
 // /tool, ...). No text-based slash command parsing happens here — clients
 // are responsible for mapping slash-commands to JSON.
+func sessionForCommand(sm *agent.SessionManager, ctx context.Context, namespace, id string) (*agent.Session, error) {
+	return sm.Get(ctx, namespace, id)
+}
+
 type CommandProcessor struct {
 	Sessions     *agent.SessionManager
 	Conv         *agent.Conversation
@@ -104,12 +108,12 @@ func New(sm *agent.SessionManager, conv *agent.Conversation, systemPrompt, names
 	})
 	reg.Register(Command{
 		Name: "cwd_set", Description: "Set working directory for the session",
-		Params: map[string]string{"cwd": "/path/to/dir"},
+		Params:  map[string]string{"cwd": "/path/to/dir"},
 		Handler: cp.execCWDSet,
 	})
 	reg.Register(Command{
 		Name: "compact", Description: "Set context soft limit in tokens",
-		Params: map[string]string{"n": "int (0=off)"},
+		Params:  map[string]string{"n": "int (0=off)"},
 		Handler: cp.execCompact,
 	})
 
@@ -166,10 +170,10 @@ func (cp *CommandProcessor) ExecuteJSON(ctx context.Context, sessionID, cmd stri
 
 func (cp *CommandProcessor) execHelp(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	type cmdEntry struct {
-		Cmd     string            `json:"cmd"`
-		Desc    string            `json:"desc"`
-		Params  any               `json:"params,omitempty"`
-		Display string            `json:"display,omitempty"`
+		Cmd     string `json:"cmd"`
+		Desc    string `json:"desc"`
+		Params  any    `json:"params,omitempty"`
+		Display string `json:"display,omitempty"`
 	}
 	all := cp.registry.List()
 	entries := make([]cmdEntry, 0, len(all))
@@ -191,7 +195,7 @@ func (cp *CommandProcessor) execHelp(ctx context.Context, sessionID string, para
 
 func (cp *CommandProcessor) execStart(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
-	session, err := cp.Sessions.GetOrCreate(ctx, ns, "")
+	session, err := cp.Sessions.Create(ctx, ns)
 	if err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}
@@ -244,7 +248,7 @@ func (cp *CommandProcessor) execCWDSet(ctx context.Context, sessionID string, pa
 	if p.CWD == "" {
 		return CommandResult{Handled: true, Cmd: "cwd_set", Reply: "error: please specify a path in 'cwd' field"}
 	}
-	session, err := cp.Sessions.GetOrCreate(ctx, ns, sessionID)
+	session, err := sessionForCommand(cp.Sessions, ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "cwd_set", Error: err}
 	}
@@ -268,7 +272,7 @@ func (cp *CommandProcessor) execCompact(ctx context.Context, sessionID string, p
 		json.Unmarshal(params, &p)
 	}
 
-	session, err := cp.Sessions.GetOrCreate(ctx, ns, sessionID)
+	session, err := sessionForCommand(cp.Sessions, ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}

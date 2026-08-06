@@ -252,25 +252,33 @@ when the provider adapter is configured with a `quota` block in `hakka.json`.
 {
   "ds-pro": {
     "quota": {
-      "url": "https://api.deepseek.com/user/balance",
-      "balance": ".balance_infos[currency=USD].total_balance",
-      "currency": ".balance_infos[currency=USD].currency"
+      "balance": {
+        "url": "https://api.deepseek.com/user/balance",
+        "path": ".balance_infos[currency=USD].total_balance"
+      },
+      "currency": "USD"
     }
   }
 }
 ```
 
-The `balance` and `currency` fields use simple dot+bracket path expressions
-to extract values from the JSON response. Supported syntax:
+Three source types are supported:
+
+| Source | Meaning |
+|--------|---------|
+| `balance` | Direct money-left value |
+| `spent`   | Money consumed — defaults to 0, yields negative balance if no `limit` |
+| `limit`   | Spending cap — defaults to 0 |
+
+`currency` is always a static literal (e.g. `"USD"`).
+
+Path syntax:
 
 | Syntax | Meaning |
 |--------|---------|
 | `.field` | Navigate into an object field |
 | `.arr[0]` | Numeric array index |
 | `.arr[f=v]` | Filter: find the first object where field `f` equals `v` |
-
-If `currency` contains no dots or brackets, it is treated as a static literal
-(e.g. `"USD"`).
 
 #### `type:"req"` — Server request to client
 

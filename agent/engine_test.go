@@ -141,9 +141,9 @@ func TestUsageDurationViaStream(t *testing.T) {
 
 	// Retrieve the session and check the assistant message has duration set.
 	sm := conv.sessions
-	session, err := sm.GetOrCreate(context.Background(), "testns", "stream-duration")
+	session, err := sm.CreateWithID(context.Background(), "testns", "stream-duration")
 	if err != nil {
-		t.Fatalf("GetOrCreate: %v", err)
+		t.Fatalf("CreateWithID: %v", err)
 	}
 	var found bool
 	for _, m := range session.Messages() {
@@ -318,7 +318,7 @@ func executeSync(conv *Conversation, ctx context.Context, sessionID, input strin
 	if returnedSessionID == "" {
 		returnedSessionID = sessionID
 	}
-	session, lookupErr := conv.sessions.GetOrCreate(ctx, conv.namespace, returnedSessionID)
+	session, lookupErr := conv.sessions.CreateWithID(ctx, conv.namespace, returnedSessionID)
 	if lookupErr != nil {
 		return nil, reply, lookupErr
 	}
@@ -327,7 +327,7 @@ func executeSync(conv *Conversation, ctx context.Context, sessionID, input strin
 
 func executeSyncWithTools(t *testing.T, conv *Conversation, ctx context.Context, sessionID, input string, toolNames ...string) (*Session, string, error) {
 	t.Helper()
-	session, err := conv.sessions.GetOrCreate(ctx, conv.namespace, sessionID)
+	session, err := conv.sessions.CreateWithID(ctx, conv.namespace, sessionID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -571,9 +571,9 @@ func TestMessageUsageViaStream(t *testing.T) {
 
 	// Retrieve the session and check the assistant message has usage.
 	sm := conv.sessions
-	session, err := sm.GetOrCreate(context.Background(), "testns", "stream-usage")
+	session, err := sm.CreateWithID(context.Background(), "testns", "stream-usage")
 	if err != nil {
-		t.Fatalf("GetOrCreate: %v", err)
+		t.Fatalf("CreateWithID: %v", err)
 	}
 	var found bool
 	for _, m := range session.Messages() {
@@ -610,7 +610,7 @@ func TestExecute_AutoRenameViaStream(t *testing.T) {
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
 	// Seed the session with 2 user messages (so threshold is met).
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "stream-auto")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "stream-auto")
 	session.Append(Message{Role: RoleUser, Content: "first message"})
 	session.Append(Message{Role: RoleAssistant, Content: "first response"})
 	session.Append(Message{Role: RoleUser, Content: "second message"})
@@ -631,7 +631,7 @@ func TestExecute_AutoRenameViaStream(t *testing.T) {
 	}
 
 	// Verify the session was renamed.
-	session, _ = sm.GetOrCreate(context.Background(), "testns", "stream-auto")
+	session, _ = sm.CreateWithID(context.Background(), "testns", "stream-auto")
 	if session.SessionName() != "My Test Session" {
 		t.Fatalf("BUG CONFIRMED: expected session.SessionName() = %q after auto-rename via stream, got %q", "My Test Session", session.SessionName())
 	}
@@ -825,7 +825,7 @@ func TestConversationExecuteEmptyInput(t *testing.T) {
 	}
 
 	// Verify no new user message was appended.
-	session, _ = conv.sessions.GetOrCreate(context.Background(), "testns", "resume-test")
+	session, _ = conv.sessions.CreateWithID(context.Background(), "testns", "resume-test")
 	if len(session.Messages()) != initialMsgCount+1 {
 		t.Fatalf("expected %d messages (initial + new assistant reply), got %d", initialMsgCount+1, len(session.Messages()))
 	}
@@ -863,7 +863,7 @@ func TestToolCallBrokenJSONArguments(t *testing.T) {
 		},
 	})
 
-	session, err := conv.sessions.GetOrCreate(context.Background(), "testns", "broken-json-test")
+	session, err := conv.sessions.CreateWithID(context.Background(), "testns", "broken-json-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -929,7 +929,7 @@ func TestToolCallEmptyArguments(t *testing.T) {
 		},
 	})
 
-	session, err := conv.sessions.GetOrCreate(context.Background(), "testns", "empty-args-test")
+	session, err := conv.sessions.CreateWithID(context.Background(), "testns", "empty-args-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -963,7 +963,7 @@ func TestToolCallEmptyArguments(t *testing.T) {
 func TestExecute_MidTurnToolEnable(t *testing.T) {
 	store := newCopyBackStore()
 	sm := NewSessionManager(store, "sys")
-	session, err := sm.GetOrCreate(context.Background(), "testns", "")
+	session, err := sm.CreateWithID(context.Background(), "testns", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1070,7 +1070,7 @@ func TestExecute_EstimatedContextStored(t *testing.T) {
 
 	// Pre-seed the session with some messages so there's context to estimate.
 	sm := conv.sessions
-	session, err := sm.GetOrCreate(context.Background(), "testns", "ect-test")
+	session, err := sm.CreateWithID(context.Background(), "testns", "ect-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1085,7 +1085,7 @@ func TestExecute_EstimatedContextStored(t *testing.T) {
 		t.Fatalf("Execute: %v", err2)
 	}
 
-	session, _ = sm.GetOrCreate(context.Background(), "testns", "ect-test")
+	session, _ = sm.CreateWithID(context.Background(), "testns", "ect-test")
 	estimated := session.GetEstimatedContextTokens()
 	if estimated <= 0 {
 		t.Fatalf("expected positive estimated context tokens, got %d", estimated)
@@ -1114,7 +1114,7 @@ func TestExecute_EmptyInputViaStream(t *testing.T) {
 
 	// Count existing messages.
 	sm := conv.sessions
-	session, _ := sm.GetOrCreate(context.Background(), "testns", "stream-empty-test")
+	session, _ := sm.CreateWithID(context.Background(), "testns", "stream-empty-test")
 	initialMsgCount := len(session.Messages())
 
 	// Now execute with empty input — should NOT add a user message.
@@ -1139,7 +1139,7 @@ func TestExecute_EmptyInputViaStream(t *testing.T) {
 	}
 
 	// Verify no new user message was appended.
-	session, _ = sm.GetOrCreate(context.Background(), "testns", "stream-empty-test")
+	session, _ = sm.CreateWithID(context.Background(), "testns", "stream-empty-test")
 	if len(session.Messages()) != initialMsgCount+1 {
 		t.Fatalf("expected %d messages (initial + new assistant reply), got %d", initialMsgCount+1, len(session.Messages()))
 	}

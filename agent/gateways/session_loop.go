@@ -22,7 +22,7 @@ type frameWriter interface {
 type writerFunc func(FrameResponse) error
 
 func (fn writerFunc) Write(r FrameResponse) error { return fn(r) }
-func (fn writerFunc) ConnKey() string              { return "" }
+func (fn writerFunc) ConnKey() string             { return "" }
 
 // gwClientWriter implements event.ClientWriter for transport gateways.
 // It converts engine frames into wire frames.
@@ -131,8 +131,6 @@ func sessionToMap(s *agent.Session) map[string]any {
 	}
 	return s.Metadata()
 }
-
-
 
 // messagesToEvents converts stored messages into a replay-friendly event
 // sequence that mirrors the live wire protocol. Each message type maps to
@@ -517,8 +515,11 @@ func enrichCtxWithCWD(ctx context.Context, conv *agent.Conversation, sessionID s
 	if sessionID == "" || conv == nil {
 		return ctx
 	}
-	session, ok, err := conv.Sessions().Get(ctx, conv.Namespace(), sessionID)
-	if err == nil && ok && session != nil && session.Read().ClientCWD != "" {
+	session, err := conv.Sessions().Get(ctx, conv.Namespace(), sessionID)
+	if err != nil {
+		return ctx
+	}
+	if session.Read().ClientCWD != "" {
 		ctx = event.ContextWithCWD(ctx, session.Read().ClientCWD)
 	}
 	return ctx

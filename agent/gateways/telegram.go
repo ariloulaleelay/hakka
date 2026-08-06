@@ -51,16 +51,16 @@ type TelegramGateway struct {
 	// activeSessions maps chatID → active session ID within the chat's
 	// namespace. On cache miss (e.g. after restart), the store is queried
 	// for existing sessions — see getOrCreateSession.
-	mu              sync.Mutex
-	activeSessions  map[int64]string
+	mu             sync.Mutex
+	activeSessions map[int64]string
 }
 
 // NewTelegramGateway creates a Telegram gateway from explicit dependencies.
 func NewTelegramGateway(conv *agent.Conversation, cmd *commands.CommandProcessor, token string) *TelegramGateway {
 	return &TelegramGateway{
-		Conv:  conv,
-		Cmd:   cmd,
-		Token: token,
+		Conv:           conv,
+		Cmd:            cmd,
+		Token:          token,
 		activeSessions: make(map[int64]string),
 	}
 }
@@ -406,7 +406,7 @@ func (gw *TelegramGateway) dispatch(ctx context.Context, upd tgbotapi.Update) {
 	inputText := gw.buildInputText(upd, isGroup)
 
 	sessionID := gw.getOrCreateSession(ctx, namespace, chatID)
-	session, err := gw.Conv.Sessions().GetOrCreate(ctx, namespace, sessionID)
+	session, err := gw.Conv.Sessions().Get(ctx, namespace, sessionID)
 	if err != nil {
 		slog.Warn("telegram: failed to get session",
 			"chat_id", chatID, "session_id", sessionID, "error", err)
@@ -783,7 +783,7 @@ func (gw *TelegramGateway) getOrCreateSession(ctx context.Context, namespace str
 	}
 
 	// No existing sessions found — create a new one in the chat's namespace.
-	session, err := gw.Conv.Sessions().GetOrCreate(ctx, namespace, "")
+	session, err := gw.Conv.Sessions().Create(ctx, namespace)
 	if err != nil {
 		// Fallback: use chat ID as session ID
 		sid := strconv.FormatInt(chatID, 10)

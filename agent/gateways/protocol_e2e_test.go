@@ -78,9 +78,9 @@ func startMockGateway(t *testing.T, conv *agent.Conversation, cmd *commands.Comm
 func createAndEnableSession(t *testing.T, conv *agent.Conversation, ns string, sessionID string) *agent.Session {
 	t.Helper()
 	sm := conv.Sessions()
-	session, err := sm.GetOrCreate(context.Background(), ns, sessionID)
+	session, err := sm.CreateWithID(context.Background(), ns, sessionID)
 	if err != nil {
-		t.Fatalf("GetOrCreate: %v", err)
+		t.Fatalf("CreateWithID: %v", err)
 	}
 	// Enable all mock tools.
 	for _, name := range []string{"echo_tool", "fail_tool", "slow_tool"} {
@@ -196,9 +196,9 @@ func TestE2E_SimpleChat(t *testing.T) {
 	frames := readUntilFrame(t, conn, "done", 5*time.Second)
 
 	var doneFrame struct {
-		Type  string   `json:"type"`
-		Text  string   `json:"text"`
-		Error string   `json:"error"`
+		Type  string     `json:"type"`
+		Text  string     `json:"text"`
+		Error string     `json:"error"`
 		Stats *TurnStats `json:"stats"`
 	}
 	for _, data := range frames {
@@ -268,9 +268,9 @@ func TestE2E_StreamingChat(t *testing.T) {
 			t.Fatalf("read: %v", err)
 		}
 		var frame struct {
-			Type  string   `json:"type"`
-			Text  string   `json:"text"`
-			Error string   `json:"error"`
+			Type  string     `json:"type"`
+			Text  string     `json:"text"`
+			Error string     `json:"error"`
 			Stats *TurnStats `json:"stats"`
 		}
 		if err := json.Unmarshal(data, &frame); err != nil {
@@ -355,13 +355,13 @@ func TestE2E_ToolCallThenText(t *testing.T) {
 			t.Fatalf("read: %v", err)
 		}
 		var frame struct {
-			Type      string `json:"type"`
-			ID        string `json:"id"`
-			Tool      string `json:"tool"`
-			Status    string `json:"status"`
+			Type       string `json:"type"`
+			ID         string `json:"id"`
+			Tool       string `json:"tool"`
+			Status     string `json:"status"`
 			ToolResult string `json:"result"`
-			Text      string `json:"text"`
-			Error     string `json:"error"`
+			Text       string `json:"text"`
+			Error      string `json:"error"`
 		}
 		if err := json.Unmarshal(data, &frame); err != nil {
 			t.Fatalf("unmarshal: %v", err)
@@ -410,7 +410,7 @@ done:
 	}
 
 	// Verify the tool result was recorded in the session.
-	session, _ = conv.Sessions().GetOrCreate(context.Background(), "e2e", sessionID)
+	session, _ = conv.Sessions().CreateWithID(context.Background(), "e2e", sessionID)
 	messages := session.Messages()
 	foundToolResult := false
 	for _, m := range messages {
@@ -461,10 +461,10 @@ func TestE2E_ToolError(t *testing.T) {
 			t.Fatalf("read: %v", err)
 		}
 		var frame struct {
-			Type      string `json:"type"`
-			Status    string `json:"status"`
-			Tool      string `json:"tool"`
-			Error     string `json:"error"`
+			Type       string `json:"type"`
+			Status     string `json:"status"`
+			Tool       string `json:"tool"`
+			Error      string `json:"error"`
 			ToolResult string `json:"result"`
 		}
 		if err := json.Unmarshal(data, &frame); err != nil {
@@ -946,7 +946,7 @@ func TestE2E_MultipleSequentialChats(t *testing.T) {
 	}
 
 	// Verify session has 4 messages (2 user + 2 assistant).
-	session, _ = conv.Sessions().GetOrCreate(context.Background(), "e2e", sessionID)
+	session, _ = conv.Sessions().CreateWithID(context.Background(), "e2e", sessionID)
 	if len(session.Messages()) != 4 {
 		t.Fatalf("expected 4 messages in session, got %d", len(session.Messages()))
 	}

@@ -37,7 +37,7 @@ func TestEnginePreEnabledToolsInFreshSession(t *testing.T) {
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
 	// Fresh session — management tools should be pre-enabled
-	session, err := sm.GetOrCreate(context.Background(), "testns", "fresh-session")
+	session, err := sm.CreateWithID(context.Background(), "testns", "fresh-session")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestEngineExecutePreEnabledToolInFreshSession(t *testing.T) {
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
 	// Fresh session — show_tool pre-enabled
-	session, err := sm.GetOrCreate(context.Background(), "testns", "fresh-exec")
+	session, err := sm.CreateWithID(context.Background(), "testns", "fresh-exec")
 	if err != nil {
 		t.Fatal(err)
 	}

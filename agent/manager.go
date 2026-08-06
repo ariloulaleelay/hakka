@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -21,37 +22,43 @@ func NewSessionManager(store SessionStore, systemPrompt string) *SessionManager 
 	return &SessionManager{Store: store, SystemPrompt: systemPrompt}
 }
 
-// Get fetches a session without creating it. Returns (nil, false, nil) if
-// the session does not exist. Use this when the caller needs to distinguish
-// between "not found" and "needs creation" (e.g. get_session).
-func (sm *SessionManager) Get(ctx context.Context, namespace, id string) (*Session, bool, error) {
+// Get fetches an existing session. It never creates one.
+func (sm *SessionManager) Get(ctx context.Context, namespace, id string) (*Session, error) {
 	if id == "" {
-		return nil, false, nil
+		return nil, fmt.Errorf("%w: empty session ID", ErrSessionNotFound)
 	}
-	return sm.Store.Get(ctx, namespace, id)
+	session, ok, err := sm.Store.Get(ctx, namespace, id)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, id)
+	}
+	return session, nil
 }
 
-func (sm *SessionManager) GetOrCreate(ctx context.Context, namespace, id string) (*Session, error) {
-	if id != "" {
-		if session, ok, err := sm.Store.Get(ctx, namespace, id); err != nil {
-			return nil, err
-		} else if ok {
-			return session, nil
-		}
-		// Session with this ID does not exist — we are about to create it.
-		// This is a side-effect that can silently resurrect deleted sessions.
-		slog.WarnContext(ctx, "GetOrCreate: session not found, creating with explicit ID",
-			"ns", namespace, "id", id)
-	}
+var ErrSessionNotFound = errors.New("session not found")
+
+func (sm *SessionManager) Create(ctx context.Context, namespace string) (*Session, error) {
 	session := NewSession(namespace, sm.SystemPrompt)
-	if id != "" {
-		session.Update(func(d *SessionData) { d.ID = id })
-	}
 	if err := sm.Store.Put(ctx, namespace, session); err != nil {
 		return nil, err
 	}
-	slog.InfoContext(ctx, "session created", "ns", namespace, "id", session.SessionID(),
-		"explicit_id", id != "")
+	slog.InfoContext(ctx, "session created", "ns", namespace, "id", session.SessionID())
+	return session, nil
+}
+
+// CreateWithID creates a new session with an explicitly supplied ID. This is
+// intended for restore/import workflows; normal callers should use Create.
+func (sm *SessionManager) CreateWithID(ctx context.Context, namespace, id string) (*Session, error) {
+	if id == "" {
+		return sm.Create(ctx, namespace)
+	}
+	session := NewSession(namespace, sm.SystemPrompt)
+	session.Update(func(d *SessionData) { d.ID = id })
+	if err := sm.Store.Put(ctx, namespace, session); err != nil {
+		return nil, err
+	}
 	return session, nil
 }
 

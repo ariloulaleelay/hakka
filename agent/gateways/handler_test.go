@@ -2,6 +2,7 @@ package gateways
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -133,7 +134,7 @@ func TestContinueCommand_TriggersLLM(t *testing.T) {
 	}
 
 	// Verify that the session now has 2 messages (user + assistant)
-	session, _, err := sm.Get(context.Background(), ns, "test-session")
+	session, err := sm.Get(context.Background(), ns, "test-session")
 	if err != nil {
 		t.Fatalf("Get session: %v", err)
 	}
@@ -160,7 +161,7 @@ func TestContinueCommand_TriggersLLM(t *testing.T) {
 	}
 
 	// Verify the session now has 3 messages (user + assistant + assistant)
-	session, _, _ = sm.Get(context.Background(), ns, "test-session")
+	session, _ = sm.Get(context.Background(), ns, "test-session")
 	if len(session.Messages()) != 3 {
 		t.Fatalf("expected 3 messages in session (user + 2 assistants), got %d", len(session.Messages()))
 	}
@@ -397,7 +398,7 @@ func TestContinueCommand_CommandProcessorDoesNotInvokeLLM(t *testing.T) {
 
 // TestEnrichCtxWithCWD_DoesNotRecreateDeletedSession verifies that
 // enrichCtxWithCWD does not re-create a session that was previously
-// deleted. It uses GetOrCreate internally, which is a bug: the function
+// deleted. It uses CreateWithID internally, which is a bug: the function
 // should treat the session as a read-only source of CWD and must not
 // mutate the store.
 func TestEnrichCtxWithCWD_DoesNotRecreateDeletedSession(t *testing.T) {
@@ -406,19 +407,15 @@ func TestEnrichCtxWithCWD_DoesNotRecreateDeletedSession(t *testing.T) {
 	sessionID := "session-to-delete"
 
 	// Create a session.
-	session, err := sm.GetOrCreate(context.Background(), ns, sessionID)
+	session, err := sm.CreateWithID(context.Background(), ns, sessionID)
 	if err != nil {
-		t.Fatalf("GetOrCreate: %v", err)
+		t.Fatalf("CreateWithID: %v", err)
 	}
 	session.SetClientCWD("/home/user/project")
 
 	// Verify the session exists.
-	_, ok, err := sm.Get(context.Background(), ns, sessionID)
-	if err != nil {
+	if _, err := sm.Get(context.Background(), ns, sessionID); err != nil {
 		t.Fatalf("Get: %v", err)
-	}
-	if !ok {
-		t.Fatal("session should exist before deletion")
 	}
 
 	// Delete the session.
@@ -427,12 +424,8 @@ func TestEnrichCtxWithCWD_DoesNotRecreateDeletedSession(t *testing.T) {
 	}
 
 	// Verify the session is gone.
-	_, ok, err = sm.Get(context.Background(), ns, sessionID)
-	if err != nil {
-		t.Fatalf("Get after drop: %v", err)
-	}
-	if ok {
-		t.Fatal("session should not exist after deletion")
+	if _, err = sm.Get(context.Background(), ns, sessionID); !errors.Is(err, agent.ErrSessionNotFound) {
+		t.Fatalf("expected deleted session, got err=%v", err)
 	}
 
 	// Create a Conversation (needed by enrichCtxWithCWD).
@@ -443,18 +436,12 @@ func TestEnrichCtxWithCWD_DoesNotRecreateDeletedSession(t *testing.T) {
 	conv := agent.NewConversation(sm, router, agent.NewToolRegistry(), ns, cfg)
 
 	// Call enrichCtxWithCWD with the deleted session's ID.
-	// BUG: this calls GetOrCreate internally, which re-creates the session.
+	// BUG: this calls CreateWithID internally, which re-creates the session.
 	ctx := context.Background()
 	_ = enrichCtxWithCWD(ctx, conv, sessionID)
 
 	// Check that the session was NOT re-created.
-	_, ok, err = sm.Get(context.Background(), ns, sessionID)
-	if err != nil {
-		t.Fatalf("Get after enrichCtxWithCWD: %v", err)
-	}
-	if ok {
-		t.Error("enrichCtxWithCWD re-created a deleted session! This is the bug: " +
-			"enrichCtxWithCWD uses GetOrCreate which mutates the store. " +
-			"After fixing, this test should pass (session should NOT exist).")
+	if _, err = sm.Get(context.Background(), ns, sessionID); !errors.Is(err, agent.ErrSessionNotFound) {
+		t.Fatalf("expected deleted session after enrichCtxWithCWD, got err=%v", err)
 	}
 }

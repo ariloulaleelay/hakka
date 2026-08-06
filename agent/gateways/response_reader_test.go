@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-		"github.com/ariloulaleelay/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent/event"
 )
 
 // ---------------------------------------------------------------------------
@@ -198,7 +198,7 @@ func TestInProcessResponseReader_BufferNoLeakOnLateResponse(t *testing.T) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-func requestID(i int) string { return "req-" + string(rune('a' + i)) }
+func requestID(i int) string { return "req-" + string(rune('a'+i)) }
 
 func mustMarshal(t *testing.T, v any) json.RawMessage {
 	t.Helper()

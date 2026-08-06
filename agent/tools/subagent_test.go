@@ -19,7 +19,7 @@ func TestSubagentRun_Basic(t *testing.T) {
 	sm := agent.NewSessionManager(newTestStore(), "You are a helpful assistant.")
 
 	// Create a parent session with some history.
-	parent, err := sm.GetOrCreate(context.Background(), ns, "")
+	parent, err := sm.CreateWithID(context.Background(), ns, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestSubagentRun_InheritsHistory(t *testing.T) {
 	ns := "testns"
 	sm := agent.NewSessionManager(newTestStore(), "You are a helpful assistant.")
 
-	parent, err := sm.GetOrCreate(context.Background(), ns, "")
+	parent, err := sm.CreateWithID(context.Background(), ns, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestSubagentRun_RecursionBlocked(t *testing.T) {
 	ns := "testns"
 	sm := agent.NewSessionManager(newTestStore(), "test")
 
-	parent, err := sm.GetOrCreate(context.Background(), ns, "")
+	parent, err := sm.CreateWithID(context.Background(), ns, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestSubagentRun_WithTools(t *testing.T) {
 	ns := "testns"
 	sm := agent.NewSessionManager(newTestStore(), "test")
 
-	parent, err := sm.GetOrCreate(context.Background(), ns, "")
+	parent, err := sm.CreateWithID(context.Background(), ns, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestSubagentRun_ForkStripsUnresolvedToolCalls(t *testing.T) {
 	ns := "testns"
 	sm := agent.NewSessionManager(newTestStore(), "You are a helpful assistant.")
 
-	parent, err := sm.GetOrCreate(context.Background(), ns, "")
+	parent, err := sm.CreateWithID(context.Background(), ns, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +364,7 @@ func TestSubagentRun_CreatesPersistentChildSession(t *testing.T) {
 	ns := "testns"
 	sm := agent.NewSessionManager(newTestStore(), "You are a helpful assistant.")
 
-	parent, err := sm.GetOrCreate(context.Background(), ns, "")
+	parent, err := sm.CreateWithID(context.Background(), ns, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +470,7 @@ func TestSubagentRun_ForkWithoutMessageIDs(t *testing.T) {
 	ns := "testns"
 	sm := agent.NewSessionManager(newTestStore(), "You are a helpful assistant.")
 
-	parent, err := sm.GetOrCreate(context.Background(), ns, "")
+	parent, err := sm.CreateWithID(context.Background(), ns, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +545,7 @@ func TestSubagentRun_ChildSessionGetsSubagentNotice(t *testing.T) {
 	ns := "testns"
 	sm := agent.NewSessionManager(newTestStore(), "You are a helpful assistant.")
 
-	parent, err := sm.GetOrCreate(context.Background(), ns, "")
+	parent, err := sm.CreateWithID(context.Background(), ns, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +634,7 @@ func TestSubagentRun_EmitsSessionCreatedEvent(t *testing.T) {
 	ns := "testns"
 	sm := agent.NewSessionManager(newTestStore(), "You are a helpful assistant.")
 
-	parent, err := sm.GetOrCreate(context.Background(), ns, "")
+	parent, err := sm.CreateWithID(context.Background(), ns, "")
 	if err != nil {
 		t.Fatal(err)
 	}

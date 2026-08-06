@@ -131,7 +131,7 @@ func newTestSessions(t *testing.T, ns string, count int) *agent.SessionManager {
 	t.Helper()
 	sm := agent.NewSessionManager(newTestStore(), "test-system-prompt")
 	for i := 0; i < count; i++ {
-		s, err := sm.GetOrCreate(context.Background(), ns, "")
+		s, err := sm.CreateWithID(context.Background(), ns, "")
 		if err != nil {
 			t.Fatalf("create session %d: %v", i, err)
 		}
@@ -171,11 +171,11 @@ func TestSessionList_RespectsNamespace(t *testing.T) {
 	// Sessions in namespace "alfa" should not appear when listing "beta".
 	sm := agent.NewSessionManager(newTestStore(), "test")
 
-	s1, _ := sm.GetOrCreate(context.Background(), "alfa", "")
+	s1, _ := sm.CreateWithID(context.Background(), "alfa", "")
 	s1.Append(agent.Message{Role: agent.RoleUser, Content: "alfa msg"})
 	_ = sm.Save(context.Background(), "alfa", s1)
 
-	s2, _ := sm.GetOrCreate(context.Background(), "beta", "")
+	s2, _ := sm.CreateWithID(context.Background(), "beta", "")
 	s2.Append(agent.Message{Role: agent.RoleUser, Content: "beta msg"})
 	_ = sm.Save(context.Background(), "beta", s2)
 
@@ -299,7 +299,7 @@ func TestSessionRead_LimitMessages(t *testing.T) {
 	sm := agent.NewSessionManager(newTestStore(), "test")
 	ctx := context.Background()
 
-	s, _ := sm.GetOrCreate(ctx, ns, "")
+	s, _ := sm.CreateWithID(ctx, ns, "")
 	for i := 0; i < 10; i++ {
 		s.Append(agent.Message{Role: agent.RoleUser, Content: fmt.Sprintf("msg %d", i)})
 	}
@@ -325,15 +325,15 @@ func TestSessionSearch(t *testing.T) {
 	sm := agent.NewSessionManager(newTestStore(), "test")
 	ctx := context.Background()
 
-	s1, _ := sm.GetOrCreate(ctx, ns, "")
+	s1, _ := sm.CreateWithID(ctx, ns, "")
 	s1.Append(agent.Message{Role: agent.RoleUser, Content: "the quick brown fox"})
 	_ = sm.Save(ctx, ns, s1)
 
-	s2, _ := sm.GetOrCreate(ctx, ns, "")
+	s2, _ := sm.CreateWithID(ctx, ns, "")
 	s2.Append(agent.Message{Role: agent.RoleUser, Content: "jumps over the lazy dog"})
 	_ = sm.Save(ctx, ns, s2)
 
-	s3, _ := sm.GetOrCreate(ctx, ns, "")
+	s3, _ := sm.CreateWithID(ctx, ns, "")
 	s3.Append(agent.Message{Role: agent.RoleUser, Content: "the fox is quick"})
 	_ = sm.Save(ctx, ns, s3)
 
@@ -368,11 +368,11 @@ func TestSessionSearch_NoMatch(t *testing.T) {
 func TestSessionSearch_RespectsNamespace(t *testing.T) {
 	sm := agent.NewSessionManager(newTestStore(), "test")
 
-	s1, _ := sm.GetOrCreate(context.Background(), "alfa", "")
+	s1, _ := sm.CreateWithID(context.Background(), "alfa", "")
 	s1.Append(agent.Message{Role: agent.RoleUser, Content: "secret-alfa-data"})
 	_ = sm.Save(context.Background(), "alfa", s1)
 
-	s2, _ := sm.GetOrCreate(context.Background(), "beta", "")
+	s2, _ := sm.CreateWithID(context.Background(), "beta", "")
 	s2.Append(agent.Message{Role: agent.RoleUser, Content: "secret-beta-data"})
 	_ = sm.Save(context.Background(), "beta", s2)
 
@@ -495,7 +495,7 @@ func runPlainCtx(t *testing.T, ctx context.Context, h func(context.Context, json
 func TestSessionList_NoNamespaceInContext(t *testing.T) {
 	sm := agent.NewSessionManager(newTestStore(), "test")
 	// Create a session directly (no context namespace)
-	s, _ := sm.GetOrCreate(context.Background(), "some-ns", "")
+	s, _ := sm.CreateWithID(context.Background(), "some-ns", "")
 	s.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
 	_ = sm.Save(context.Background(), "some-ns", s)
 
@@ -511,7 +511,7 @@ func TestSessionList_NoNamespaceInContext(t *testing.T) {
 func TestSessionRead_RespectsNamespace(t *testing.T) {
 	sm := agent.NewSessionManager(newTestStore(), "test")
 
-	s1, _ := sm.GetOrCreate(context.Background(), "alfa", "")
+	s1, _ := sm.CreateWithID(context.Background(), "alfa", "")
 	s1.Append(agent.Message{Role: agent.RoleUser, Content: "alfa-secret"})
 	_ = sm.Save(context.Background(), "alfa", s1)
 
@@ -545,7 +545,7 @@ func TestSessionTools_TimeoutSafety(t *testing.T) {
 	sm := agent.NewSessionManager(newTestStore(), "test")
 	ctx := context.Background()
 
-	s, _ := sm.GetOrCreate(ctx, "ns", "")
+	s, _ := sm.CreateWithID(ctx, "ns", "")
 	s.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
 	_ = sm.Save(ctx, "ns", s)
 
@@ -573,9 +573,9 @@ func TestSessionTools_TimeoutSafety(t *testing.T) {
 // askAdapter is a minimal LLMAdapter that records the messages it receives
 // and returns a canned response.
 type askAdapter struct {
-	t            *testing.T
+	t             *testing.T
 	wantToolCalls bool // if true, message list should NOT contain tool calls
-	response     string
+	response      string
 }
 
 func (a *askAdapter) Complete(_ context.Context, msgs []agent.Message, _ []agent.ToolSchema, _ agent.CompleteOptions, _ func(string)) (*agent.LLMResponse, error) {
@@ -593,14 +593,13 @@ func (a *askAdapter) Complete(_ context.Context, msgs []agent.Message, _ []agent
 	return &agent.LLMResponse{Message: agent.Message{Role: agent.RoleAssistant, Content: a.response}}, nil
 }
 
-
 func TestSessionAskQuestion_Basic(t *testing.T) {
 	ns := "testns"
 	sm := agent.NewSessionManager(newTestStore(), "")
 	ctx := context.Background()
 
 	// Create a session with some messages
-	s, err := sm.GetOrCreate(ctx, ns, "")
+	s, err := sm.CreateWithID(ctx, ns, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -635,7 +634,7 @@ func TestSessionAskQuestion_StripsToolCalls(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a session with tool calls
-	s, err := sm.GetOrCreate(ctx, ns, "")
+	s, err := sm.CreateWithID(ctx, ns, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -692,7 +691,7 @@ func TestSessionAskQuestion_NotFound(t *testing.T) {
 func TestSessionAskQuestion_MissingQuestion(t *testing.T) {
 	sm := agent.NewSessionManager(newTestStore(), "")
 	ns := "testns"
-	s, _ := sm.GetOrCreate(context.Background(), ns, "")
+	s, _ := sm.CreateWithID(context.Background(), ns, "")
 	_ = sm.Save(context.Background(), ns, s)
 
 	reg := agent.NewRegistry()
@@ -777,11 +776,11 @@ func TestSessionAskQuestion_WithPrefix(t *testing.T) {
 	ctx := context.Background()
 
 	// Create two sessions with different IDs
-	s1, _ := sm.GetOrCreate(ctx, ns, "")
+	s1, _ := sm.CreateWithID(ctx, ns, "")
 	s1.Append(agent.Message{Role: agent.RoleUser, Content: "session one content"})
 	_ = sm.Save(ctx, ns, s1)
 
-	s2, _ := sm.GetOrCreate(ctx, ns, "")
+	s2, _ := sm.CreateWithID(ctx, ns, "")
 	s2.Append(agent.Message{Role: agent.RoleUser, Content: "session two content"})
 	_ = sm.Save(ctx, ns, s2)
 

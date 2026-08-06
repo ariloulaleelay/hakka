@@ -313,8 +313,8 @@ func TestWebSocketV2RoundTrip(t *testing.T) {
 
 	// Send chat with v2 type
 	writeWSFrame(t, conn, map[string]any{
-		"type":   "chat",
-		"input":  "hello",
+		"type":  "chat",
+		"input": "hello",
 	})
 
 	// Read frames until done
@@ -441,9 +441,9 @@ func TestGetSessionEvents(t *testing.T) {
 
 	// Create a session with realistic messages including tool calls.
 	sm := conv.Sessions()
-	session, err := sm.GetOrCreate(context.Background(), "default", "")
+	session, err := sm.CreateWithID(context.Background(), "default", "")
 	if err != nil {
-		t.Fatalf("GetOrCreate: %v", err)
+		t.Fatalf("CreateWithID: %v", err)
 	}
 
 	usage := &agent.Usage{
@@ -461,7 +461,7 @@ func TestGetSessionEvents(t *testing.T) {
 			{ID: "call_1", Name: "read_file", Arguments: `{"path":"README.md"}`, ExecSnippet: "read_file 'README.md'"},
 			{ID: "call_2", Name: "search", Arguments: `{"pattern":"TODO"}`, ExecSnippet: `search 'TODO'`},
 		},
-		Usage: usage,
+		Usage:     usage,
 		Timestamp: 1700000000123,
 	})
 	session.Append(agent.Message{
@@ -479,9 +479,9 @@ func TestGetSessionEvents(t *testing.T) {
 		Timestamp:  1700000000123,
 	})
 	session.Append(agent.Message{
-		Role:    "assistant",
-		Content: "Here's what I found in README.md...",
-		Usage:   usage,
+		Role:      "assistant",
+		Content:   "Here's what I found in README.md...",
+		Usage:     usage,
 		Timestamp: 1700000000123,
 	})
 
@@ -509,11 +509,11 @@ func TestGetSessionEvents(t *testing.T) {
 
 	// Read response.
 	var resp struct {
-		Type     string           `json:"type"`
-		Event    string           `json:"event"`
-		Session  map[string]any   `json:"session"`
-		Events   []map[string]any `json:"events"`
-		Error    string           `json:"error"`
+		Type    string           `json:"type"`
+		Event   string           `json:"event"`
+		Session map[string]any   `json:"session"`
+		Events  []map[string]any `json:"events"`
+		Error   string           `json:"error"`
 	}
 	rawData := readWSFrame(t, conn, 3*time.Second, &resp)
 
@@ -698,12 +698,12 @@ func TestFrameForEvent_SessionCreated(t *testing.T) {
 	evt := event.SessionCreated{
 		SessionID: childID,
 		Session: map[string]any{
-			"id":         childID,
-			"parent_id":  parentID,
-			"fork_point": forkPoint,
-			"name":       "child-session",
-			"short_id":   childID[:8],
-			"model":      "deepseek",
+			"id":            childID,
+			"parent_id":     parentID,
+			"fork_point":    forkPoint,
+			"name":          "child-session",
+			"short_id":      childID[:8],
+			"model":         "deepseek",
 			"message_count": 3,
 		},
 	}

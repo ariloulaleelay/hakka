@@ -183,9 +183,9 @@ func TestPlatformSessionsAccessor(t *testing.T) {
 		SystemPrompt: "X",
 	})
 
-	s, err := p.Sessions().GetOrCreate(t.Context(), "test-ns", "")
+	s, err := p.Sessions().CreateWithID(t.Context(), "test-ns", "")
 	if err != nil {
-		t.Fatalf("GetOrCreate: %v", err)
+		t.Fatalf("CreateWithID: %v", err)
 	}
 	if s == nil {
 		t.Fatal("session is nil")

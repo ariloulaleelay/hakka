@@ -18,9 +18,11 @@
         "ignore_stop_if_no_content": true
       },
       "quota": {
-        "url": "https://api.deepseek.com/user/balance",
-        "balance": ".balance_infos[currency=USD].total_balance",
-        "currency": ".balance_infos[currency=USD].currency"
+        "balance": {
+          "url": "https://api.deepseek.com/user/balance",
+          "path": ".balance_infos[currency=USD].total_balance"
+        },
+        "currency": "USD"
       }
     },
     "claude": {

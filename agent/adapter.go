@@ -28,8 +28,8 @@ type Usage struct {
 	PromptTokens          int
 	CompletionTokens      int
 	TotalTokens           int
-	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens,omitempty"`
-	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens,omitempty"`
+	PromptCacheHitTokens  int           `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens int           `json:"prompt_cache_miss_tokens,omitempty"`
 	Duration              time.Duration `json:"duration_ns,omitempty"`
 	Cost                  float64       `json:"cost,omitempty"`
 }
@@ -82,16 +82,37 @@ type Pricing struct {
 
 // QuotaInfo holds the fetched quota/balance information for a provider.
 type QuotaInfo struct {
-	Balance  *float64 `json:"balance,omitempty"` // money left
+	Balance  *float64 `json:"balance,omitempty"`  // money left (computed)
 	Currency string   `json:"currency,omitempty"` // e.g. "CNY", "USD"
 }
 
-// QuotaConfig describes how to fetch quota/balance info from a provider's API.
-// URL is the endpoint. Balance and Currency are jq-like path expressions.
+// QuotaSource describes a single HTTP endpoint + path expression to fetch
+// a numeric value. Set Value to a static number to skip the HTTP call.
+type QuotaSource struct {
+	URL   string   `json:"url,omitempty"`
+	Path  string   `json:"path,omitempty"`
+	Value *float64 `json:"value,omitempty"`
+}
+
+// QuotaConfig describes how to fetch quota/balance info from one or more
+// provider API endpoints.
+//
+// Three sources are supported:
+//   - balance: directly gives money-left (e.g. DeepSeek)
+//   - spent:   money consumed this period (defaults to 0)
+//   - limit:   spending cap for the period (defaults to 0)
+//
+// Resolution order:
+//  1. If balance is configured → use it directly.
+//  2. Otherwise → compute balance = limit - spent.
+//     Missing sources default to 0, so spent-only yields a negative balance.
+//
+// Currency is always a static literal (e.g. "USD").
 type QuotaConfig struct {
-	URL      string `json:"url"`
-	Balance  string `json:"balance,omitempty"`  // path to money-left value
-	Currency string `json:"currency,omitempty"` // path to currency string, or static literal
+	Balance  *QuotaSource `json:"balance,omitempty"`
+	Spent    *QuotaSource `json:"spent,omitempty"`
+	Limit    *QuotaSource `json:"limit,omitempty"`
+	Currency string       `json:"currency,omitempty"`
 }
 
 // QuotaFetcher is an optional interface that adapters can implement to

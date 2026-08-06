@@ -147,7 +147,7 @@ func (sc *SessionCommands) jsonSessionList(ctx context.Context, sessionID string
 
 func (sc *SessionCommands) jsonSessionCreate(ctx context.Context, prevSessionID string, params json.RawMessage) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
-	session, err := sc.Sessions.GetOrCreate(ctx, ns, "")
+	session, err := sc.Sessions.Create(ctx, ns)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "session_create", Error: err}
 	}
@@ -157,7 +157,7 @@ func (sc *SessionCommands) jsonSessionCreate(ctx context.Context, prevSessionID 
 	inheritCWD(ctx, sc.Sessions, ns, prevSessionID, session)
 
 	// Persist the inherited CWD and model defaults set by EnsureDefaultModel.
-	// GetOrCreate saved the session before these were applied, so we patch.
+	// Create saved the session before these were applied, so we patch.
 	cwd := session.Read().ClientCWD
 	model := session.GetModel()
 	limit := session.GetCompactSoftLimit()
@@ -204,12 +204,9 @@ func (sc *SessionCommands) jsonGetSession(ctx context.Context, sessionID string,
 		return CommandResult{Handled: true, Cmd: "get_session", Reply: err.Error()}
 	}
 
-	session, ok, err := sc.Sessions.Get(ctx, ns, target)
+	session, err := sc.Sessions.Get(ctx, ns, target)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "get_session", Error: err}
-	}
-	if !ok {
-		return CommandResult{Handled: true, Cmd: "get_session", Reply: fmt.Sprintf("session not found: %s", p.ID)}
 	}
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "get_session", Error: err}
@@ -260,8 +257,7 @@ func (sc *SessionCommands) jsonSessionDelete(ctx context.Context, sessionID stri
 		}
 	}
 
-	_, _, err = sc.Sessions.Get(ctx, ns, target)
-	if err != nil {
+	if _, err = sc.Sessions.Get(ctx, ns, target); err != nil {
 		return CommandResult{Handled: true, Cmd: "session_delete", Error: err}
 	}
 
@@ -293,7 +289,7 @@ func (sc *SessionCommands) jsonSessionDelete(ctx context.Context, sessionID stri
 
 func (sc *SessionCommands) jsonSessionInfo(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
-	session, err := sc.Sessions.GetOrCreate(ctx, ns, sessionID)
+	session, err := sessionForCommand(sc.Sessions, ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "session_info", Error: err}
 	}
@@ -316,7 +312,7 @@ func (sc *SessionCommands) jsonSessionRename(ctx context.Context, sessionID stri
 		return CommandResult{Handled: true, Cmd: "session_rename", Reply: "error: name must not be empty"}
 	}
 
-	session, err := sc.Sessions.GetOrCreate(ctx, ns, sessionID)
+	session, err := sessionForCommand(sc.Sessions, ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "session_rename", Error: err}
 	}
@@ -348,7 +344,7 @@ func (sc *SessionCommands) jsonSessionRename(ctx context.Context, sessionID stri
 
 func (sc *SessionCommands) jsonSessionAutoRename(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	ns := event.NamespaceFromContext(ctx)
-	session, err := sc.Sessions.GetOrCreate(ctx, ns, sessionID)
+	session, err := sessionForCommand(sc.Sessions, ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "session_autorename", Error: err}
 	}
@@ -403,12 +399,9 @@ func (sc *SessionCommands) jsonSessionFork(ctx context.Context, sessionID string
 		return CommandResult{Handled: true, Cmd: "session_fork", Reply: err.Error()}
 	}
 
-	parent, ok, err := sc.Sessions.Get(ctx, ns, targetID)
+	parent, err := sc.Sessions.Get(ctx, ns, targetID)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "session_fork", Error: err}
-	}
-	if !ok {
-		return CommandResult{Handled: true, Cmd: "session_fork", Reply: fmt.Sprintf("parent session not found: %s", p.ID)}
 	}
 
 	parentData := parent.Read()

@@ -37,7 +37,7 @@ func (mc *ModelCommands) resolveNamespace(ctx context.Context) string {
 
 func (mc *ModelCommands) jsonModelList(ctx context.Context, sessionID string, params json.RawMessage) CommandResult {
 	ns := mc.resolveNamespace(ctx)
-	session, err := mc.Sessions.GetOrCreate(ctx, ns, sessionID)
+	session, err := sessionForCommand(mc.Sessions, ctx, ns, sessionID)
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "model_list", Error: err}
 	}
@@ -110,7 +110,7 @@ func (mc *ModelCommands) bindModel(ctx context.Context, sessionID, name string) 
 		return mc.Conv.BindSessionModel(ctx, sessionID, name)
 	}
 	ns := mc.resolveNamespace(ctx)
-	session, err := mc.Sessions.GetOrCreate(ctx, ns, sessionID)
+	session, err := sessionForCommand(mc.Sessions, ctx, ns, sessionID)
 	if err != nil {
 		return nil, err
 	}

@@ -206,7 +206,7 @@ func TestParallel_SharedSessionBothReceiveEvents(t *testing.T) {
 	defer connA.CloseNow()
 	sessionID := createSessionViaWebSocket(t, connA)
 
-	session, _, _ := conv.Sessions().Get(context.Background(), "par2", sessionID)
+	session, _ := conv.Sessions().Get(context.Background(), "par2", sessionID)
 	enableToolsDirect(session, "slow_tool", "echo_tool")
 	conv.Sessions().Save(context.Background(), "par2", session)
 
@@ -249,7 +249,7 @@ func TestParallel_CrossClientCancel(t *testing.T) {
 	defer connA.CloseNow()
 	sessionID := createSessionViaWebSocket(t, connA)
 
-	session, _, _ := conv.Sessions().Get(context.Background(), "par3", sessionID)
+	session, _ := conv.Sessions().Get(context.Background(), "par3", sessionID)
 	enableToolsDirect(session, "slow_tool")
 	conv.Sessions().Save(context.Background(), "par3", session)
 
@@ -301,10 +301,10 @@ func TestParallel_IndependentSessions(t *testing.T) {
 	defer connB.CloseNow()
 	sidB := createSessionViaWebSocket(t, connB)
 
-	sA, _, _ := conv.Sessions().Get(context.Background(), "par4", sidA)
+	sA, _ := conv.Sessions().Get(context.Background(), "par4", sidA)
 	enableToolsDirect(sA, "echo_tool")
 	conv.Sessions().Save(context.Background(), "par4", sA)
-	sB, _, _ := conv.Sessions().Get(context.Background(), "par4", sidB)
+	sB, _ := conv.Sessions().Get(context.Background(), "par4", sidB)
 	enableToolsDirect(sB, "echo_tool")
 	conv.Sessions().Save(context.Background(), "par4", sB)
 
@@ -337,8 +337,12 @@ func TestParallel_IndependentSessions(t *testing.T) {
 	}()
 	wg.Wait()
 
-	if textA != "A done" { t.Fatalf("expected 'A done', got %q", textA) }
-	if textB != "B done" { t.Fatalf("expected 'B done', got %q", textB) }
+	if textA != "A done" {
+		t.Fatalf("expected 'A done', got %q", textA)
+	}
+	if textB != "B done" {
+		t.Fatalf("expected 'B done', got %q", textB)
+	}
 	t.Logf("Independent turns filtered by session_id: A=%q B=%q", textA, textB)
 }
 
@@ -374,8 +378,12 @@ func TestParallel_SessionListVisibility(t *testing.T) {
 		Error string          `json:"error"`
 	}
 	readWSFrame(t, connB, 3*time.Second, &res)
-	if res.Error != "" { t.Fatalf("session_list error: %s", res.Error) }
-	if res.Type != "result" { t.Fatalf("expected result, got %q", res.Type) }
+	if res.Error != "" {
+		t.Fatalf("session_list error: %s", res.Error)
+	}
+	if res.Type != "result" {
+		t.Fatalf("expected result, got %q", res.Type)
+	}
 	t.Log("B: session_list works (sees A's sessions)")
 }
 
@@ -407,12 +415,18 @@ func TestParallel_SimultaneousSessionCreate(t *testing.T) {
 	// A consumes the broadcast.
 	readFrameByType(t, connA, "session", 3*time.Second)
 
-	if sidA == "" || sidB == "" { t.Fatal("both IDs must be non-empty") }
-	if sidA == sidB { t.Fatal("duplicate session IDs") }
+	if sidA == "" || sidB == "" {
+		t.Fatal("both IDs must be non-empty")
+	}
+	if sidA == sidB {
+		t.Fatal("duplicate session IDs")
+	}
 	t.Logf("A=%s B=%s (unique)", shortID(sidA), shortID(sidB))
 
 	sessions, _ := conv.Sessions().List(context.Background(), "par6")
-	if len(sessions) < 2 { t.Fatalf("expected >=2 sessions, got %d", len(sessions)) }
+	if len(sessions) < 2 {
+		t.Fatalf("expected >=2 sessions, got %d", len(sessions))
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -428,7 +442,7 @@ func TestParallel_MidTurnReconnect(t *testing.T) {
 	defer connA.CloseNow()
 	sessionID := createSessionViaWebSocket(t, connA)
 
-	session, _, _ := conv.Sessions().Get(context.Background(), "par7", sessionID)
+	session, _ := conv.Sessions().Get(context.Background(), "par7", sessionID)
 	enableToolsDirect(session, "slow_tool", "echo_tool")
 	conv.Sessions().Save(context.Background(), "par7", session)
 
@@ -473,7 +487,7 @@ func TestParallel_StreamingMidTurnReconnect(t *testing.T) {
 	defer connA.CloseNow()
 	sessionID := createSessionViaWebSocket(t, connA)
 
-	session, _, _ := conv.Sessions().Get(context.Background(), "par8", sessionID)
+	session, _ := conv.Sessions().Get(context.Background(), "par8", sessionID)
 	enableToolsDirect(session, "slow_tool")
 	conv.Sessions().Save(context.Background(), "par8", session)
 
@@ -514,14 +528,14 @@ func TestParallel_ConcurrentToolTurnsDifferentSessions(t *testing.T) {
 	connA := connectAndWelcome(t, addr)
 	defer connA.CloseNow()
 	sidA := createSessionViaWebSocket(t, connA)
-	sA, _, _ := conv.Sessions().Get(context.Background(), "par9", sidA)
+	sA, _ := conv.Sessions().Get(context.Background(), "par9", sidA)
 	enableToolsDirect(sA, "echo_tool")
 	conv.Sessions().Save(context.Background(), "par9", sA)
 
 	connB := connectAndWelcome(t, addr)
 	defer connB.CloseNow()
 	sidB := createSessionViaWebSocket(t, connB)
-	sB, _, _ := conv.Sessions().Get(context.Background(), "par9", sidB)
+	sB, _ := conv.Sessions().Get(context.Background(), "par9", sidB)
 	enableToolsDirect(sB, "echo_tool")
 	conv.Sessions().Save(context.Background(), "par9", sB)
 
@@ -554,7 +568,11 @@ func TestParallel_ConcurrentToolTurnsDifferentSessions(t *testing.T) {
 	}()
 	wg.Wait()
 
-	if textA != "A done" { t.Fatalf("expected 'A done', got %q", textA) }
-	if textB != "B done" { t.Fatalf("expected 'B done', got %q", textB) }
+	if textA != "A done" {
+		t.Fatalf("expected 'A done', got %q", textA)
+	}
+	if textB != "B done" {
+		t.Fatalf("expected 'B done', got %q", textB)
+	}
 	t.Logf("Concurrent turns: A=%q B=%q", textA, textB)
 }

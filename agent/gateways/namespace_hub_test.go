@@ -18,7 +18,7 @@ func newSpyWriter(name string) *spyWriter {
 type failingWriter struct{}
 
 func (f *failingWriter) Write(_ FrameResponse) error { return errFakeWrite }
-func (f *failingWriter) ConnKey() string              { return "fail" }
+func (f *failingWriter) ConnKey() string             { return "fail" }
 
 var errFakeWrite = errFakeWriteSentinel{}
 

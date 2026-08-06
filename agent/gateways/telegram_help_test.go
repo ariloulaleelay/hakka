@@ -84,7 +84,7 @@ func TestTelegramGateway_ToolsPreEnabledByDefault(t *testing.T) {
 
 	// Tools that should be pre-enabled for Telegram
 	expectedEnabled := []string{
-		"show_tool",   // pre-enabled by default for all sessions
+		"show_tool", // pre-enabled by default for all sessions
 		"http_get",
 		"random",
 		"feedback",

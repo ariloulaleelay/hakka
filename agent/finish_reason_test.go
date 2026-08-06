@@ -126,9 +126,9 @@ func TestFinishReason_StreamPath(t *testing.T) {
 		}
 	}
 
-	session, err := conv.sessions.GetOrCreate(context.Background(), "testns", "fr-stream-test")
+	session, err := conv.sessions.CreateWithID(context.Background(), "testns", "fr-stream-test")
 	if err != nil {
-		t.Fatalf("GetOrCreate: %v", err)
+		t.Fatalf("CreateWithID: %v", err)
 	}
 	lastMsg := session.Messages()[len(session.Messages())-1]
 	if lastMsg.Role != RoleAssistant {
