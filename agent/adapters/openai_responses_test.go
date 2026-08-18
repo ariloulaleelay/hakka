@@ -609,9 +609,9 @@ func TestResponsesStreamCost(t *testing.T) {
 
 func TestToResponsesInstructions(t *testing.T) {
 	tests := []struct {
-		name    string
-		msgs    []agent.Message
-		want    string
+		name string
+		msgs []agent.Message
+		want string
 	}{
 		{
 			name: "no system",

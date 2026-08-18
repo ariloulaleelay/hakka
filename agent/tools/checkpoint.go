@@ -40,12 +40,12 @@ type checkpointMeta struct {
 // where <XX> and <YY> are the first 4 hex chars of the checkpoint ID
 // to avoid thousands of files in a single directory.
 type CheckpointStore struct {
-	rootDir    string
-	maxFileSize int64 // per-file size limit (default: checkpointMaxFileSize)
-	totalLimit  int64 // total storage limit (default: checkpointTotalLimit)
-	totalBytes  atomic.Int64
-	mu          sync.Mutex
-	checkpointIDs []string            // ordered by timestamp (oldest first) for LRU eviction
+	rootDir       string
+	maxFileSize   int64 // per-file size limit (default: checkpointMaxFileSize)
+	totalLimit    int64 // total storage limit (default: checkpointTotalLimit)
+	totalBytes    atomic.Int64
+	mu            sync.Mutex
+	checkpointIDs []string                  // ordered by timestamp (oldest first) for LRU eviction
 	checkpoints   map[string]checkpointMeta // id → meta
 }
 
@@ -69,9 +69,9 @@ func NewCheckpointStore(rootDir string, opts ...CheckpointOption) (*CheckpointSt
 		return nil, fmt.Errorf("checkpoint: create root dir: %w", err)
 	}
 	cs := &CheckpointStore{
-		rootDir:      rootDir,
-		maxFileSize:  checkpointMaxFileSize,
-		totalLimit:   checkpointTotalLimit,
+		rootDir:       rootDir,
+		maxFileSize:   checkpointMaxFileSize,
+		totalLimit:    checkpointTotalLimit,
 		checkpointIDs: make([]string, 0),
 		checkpoints:   make(map[string]checkpointMeta),
 	}

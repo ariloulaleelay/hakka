@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -26,20 +27,20 @@ func makeCompactifyCall(sess *Session, ranges []compactRange) {
 			Summary:    r.summary,
 		})
 
-		sess.Append(Message{
+		sess.AddMessages(context.Background(), []Message{Message{
 			Role: RoleAssistant,
 			ToolCalls: []ToolCall{{
 				ID:        callID,
 				Name:      "context_compactify",
 				Arguments: string(args),
 			}},
-		})
-		sess.Append(Message{
+		}}, 0, 0)
+		sess.AddMessages(context.Background(), []Message{Message{
 			Role:       RoleTool,
 			Content:    fmt.Sprintf("Noted: [%d,%d].", r.from, r.to),
 			ToolCallID: callID,
 			Name:       "context_compactify",
-		})
+		}}, 0, 0)
 	}
 }
 
@@ -471,16 +472,18 @@ func TestBuildCompactContext_NoSummaryRepeatedOnSplitRange(t *testing.T) {
 	s := NewSession("testns", "")
 
 	// Round 1
-	s.Append(Message{Role: RoleUser, Content: "Read the main configuration file and report the database connection details"}) // 74 chars, > 60
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{}`}}})
-	s.Append(Message{Role: RoleTool, Content: "config data", ToolCallID: "c1", Name: "read_file"})
-	s.Append(Message{Role: RoleAssistant, Content: "Here is the config"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "Read the main configuration file and report the database connection details"}}, 0, 0) // 74 chars, > 60
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{}`}}}, Message{Role: RoleTool, Content: "config data", ToolCallID: "c1", Name: "read_file"}}, 0, 0)
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, Content: "Here is the config"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 
 	// Round 2
-	s.Append(Message{Role: RoleUser, Content: "Now run all the integration tests and let me know which ones failed"}) // 73 chars, > 60
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "shell", Arguments: `{}`}}})
-	s.Append(Message{Role: RoleTool, Content: "test output", ToolCallID: "c2", Name: "shell"})
-	s.Append(Message{Role: RoleAssistant, Content: "Tests passed"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "Now run all the integration tests and let me know which ones failed"}}, 0, 0) // 73 chars, > 60
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "shell", Arguments: `{}`}}}, Message{Role: RoleTool, Content: "test output", ToolCallID: "c2", Name: "shell"}}, 0, 0)
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, Content: "Tests passed"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 
 	// Compact the entire range with one summary
 	makeCompactifyCall(s, []compactRange{
@@ -793,8 +796,7 @@ func TestBuildSummaryLookup_MultipleRanges(t *testing.T) {
 
 func TestBuildCompactContext_NoCompactionUnderLimit(t *testing.T) {
 	s := NewSession("testns", "You are helpful.")
-	s.Append(Message{Role: RoleUser, Content: "hello"})
-	s.Append(Message{Role: RoleAssistant, Content: "hi there"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "hello"}, Message{Role: RoleAssistant, Content: "hi there"}}, 0, 0)
 
 	result, needCompactify, _ := BuildCompactContext(s, 100000, nil)
 
@@ -807,19 +809,18 @@ func TestBuildCompactContext_NoCompactionUnderLimit(t *testing.T) {
 	if result[0].Role != RoleSystem || result[0].Content != "You are helpful." {
 		t.Fatalf("msg 0: expected system prompt, got %+v", result[0])
 	}
-	if result[len(result) - 2].Role != RoleUser || result[len(result) - 2].Content != "hello" {
-		t.Fatalf("msg 3: expected user 'hello', got %+v", result[len(result) - 2])
+	if result[len(result)-2].Role != RoleUser || result[len(result)-2].Content != "hello" {
+		t.Fatalf("msg 3: expected user 'hello', got %+v", result[len(result)-2])
 	}
-	if result[len(result) - 1].Role != RoleAssistant || result[len(result) - 1].Content != "hi there" {
-		t.Fatalf("msg 4: expected assistant 'hi there', got %+v", result[len(result) - 1])
+	if result[len(result)-1].Role != RoleAssistant || result[len(result)-1].Content != "hi there" {
+		t.Fatalf("msg 4: expected assistant 'hi there', got %+v", result[len(result)-1])
 	}
 }
 
 func TestBuildCompactContext_SoftLimitTriggersWarning(t *testing.T) {
 	s := NewSession("testns", "You are helpful.")
 	bigContent := strings.Repeat("x", 400)
-	s.Append(Message{Role: RoleUser, Content: bigContent})
-	s.Append(Message{Role: RoleAssistant, Content: "ok"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: bigContent}, Message{Role: RoleAssistant, Content: "ok"}}, 0, 0)
 
 	result, needCompactify, _ := BuildCompactContext(s, 10, nil)
 
@@ -866,8 +867,7 @@ func TestBuildCompactContext_WarningFormat(t *testing.T) {
 	// with STOP! prefix and guidance on what to compact.
 	s := NewSession("testns", "You are helpful.")
 	bigContent := strings.Repeat("x", 400)
-	s.Append(Message{Role: RoleUser, Content: bigContent})
-	s.Append(Message{Role: RoleAssistant, Content: "ok"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: bigContent}, Message{Role: RoleAssistant, Content: "ok"}}, 0, 0)
 
 	result, needCompactify, _ := BuildCompactContext(s, 10, nil)
 	if !needCompactify {
@@ -907,15 +907,12 @@ func TestBuildCompactContext_WarningFormat(t *testing.T) {
 
 func TestBuildCompactContext_PastCompactifyCallApplied(t *testing.T) {
 	s := NewSession("testns", "You are helpful.")
-	s.Append(Message{Role: RoleUser, Content: "read file"})
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{"path":"f.go"}`}}})
-	s.Append(Message{Role: RoleTool, Content: "package main", ToolCallID: "c1", Name: "read_file"})
-	s.Append(Message{Role: RoleAssistant, Content: "I've read the file."})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "read file"}, Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{"path":"f.go"}`}}}}, 0, 0)
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleTool, Content: "package main", ToolCallID: "c1", Name: "read_file"}, Message{Role: RoleAssistant, Content: "I've read the file."}}, 0, 0)
 	makeCompactifyCall(s, []compactRange{{from: 1, to: 2}})
-	s.Append(Message{Role: RoleUser, Content: "now write"})
-	s.Append(Message{Role: RoleAssistant, Content: "Writing..."})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "now write"}, Message{Role: RoleAssistant, Content: "Writing..."}}, 0, 0)
 
-	result, needCompactify, _:= BuildCompactContext(s, 100000, nil)
+	result, needCompactify, _ := BuildCompactContext(s, 100000, nil)
 
 	for _, m := range result {
 		if m.Role == RoleTool && m.Name == "context_compactify" {
@@ -951,18 +948,20 @@ func TestBuildCompactContext_PastCompactifyCallApplied(t *testing.T) {
 
 func TestBuildCompactContext_LongUserMessagesNeverCompacted(t *testing.T) {
 	s := NewSession("testns", "sys")
-	s.Append(Message{Role: RoleUser, Content: "Please read the main configuration file and report the database settings"})
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "Please read the main configuration file and report the database settings"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{
 		{ID: "c1", Name: "read_file", Arguments: `{}`},
-	}})
-	s.Append(Message{Role: RoleTool, Content: "data", ToolCallID: "c1", Name: "read_file"})
-	s.Append(Message{Role: RoleAssistant, Content: "done reading"})
-	s.Append(Message{Role: RoleUser, Content: "Now run the tests and let me know if any fail, especially the integration tests in the api package"})
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{
+	}}}, 0, 0)
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleTool, Content: "data", ToolCallID: "c1", Name: "read_file"}, Message{Role: RoleAssistant, Content: "done reading"}}, 0, 0)
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "Now run the tests and let me know if any fail, especially the integration tests in the api package"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{
 		{ID: "c2", Name: "shell", Arguments: `{}`},
-	}})
-	s.Append(Message{Role: RoleTool, Content: "output", ToolCallID: "c2", Name: "shell"})
-	s.Append(Message{Role: RoleAssistant, Content: "done shelling"})
+	}}}, 0, 0)
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleTool, Content: "output", ToolCallID: "c2", Name: "shell"}, Message{Role: RoleAssistant, Content: "done shelling"}}, 0, 0)
 
 	makeCompactifyCall(s, []compactRange{{from: 0, to: 7}})
 
@@ -988,18 +987,20 @@ func TestBuildCompactContext_LongUserMessagesNeverCompacted(t *testing.T) {
 
 func TestBuildCompactContext_ShortUserMessagesCompressible(t *testing.T) {
 	s := NewSession("testns", "sys")
-	s.Append(Message{Role: RoleUser, Content: "proceed"})
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "proceed"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{
 		{ID: "c1", Name: "read_file", Arguments: `{}`},
-	}})
-	s.Append(Message{Role: RoleTool, Content: "data", ToolCallID: "c1", Name: "read_file"})
-	s.Append(Message{Role: RoleAssistant, Content: "done reading"})
-	s.Append(Message{Role: RoleUser, Content: "ok whats next"})
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{
+	}}}, 0, 0)
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleTool, Content: "data", ToolCallID: "c1", Name: "read_file"}, Message{Role: RoleAssistant, Content: "done reading"}}, 0, 0)
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "ok whats next"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{
 		{ID: "c2", Name: "shell", Arguments: `{}`},
-	}})
-	s.Append(Message{Role: RoleTool, Content: "output", ToolCallID: "c2", Name: "shell"})
-	s.Append(Message{Role: RoleAssistant, Content: "done shelling"})
+	}}}, 0, 0)
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleTool, Content: "output", ToolCallID: "c2", Name: "shell"}, Message{Role: RoleAssistant, Content: "done shelling"}}, 0, 0)
 
 	// Compact the entire range — short user messages should be included
 	makeCompactifyCall(s, []compactRange{{from: 0, to: 7}})
@@ -1033,10 +1034,8 @@ func TestBuildCompactContext_PartialRoundNotCompacted(t *testing.T) {
 	// When a compactify range only covers part of a tool-call round,
 	// the whole round must stay visible to avoid OpenAI protocol errors.
 	s := NewSession("testns", "")
-	s.Append(Message{Role: RoleUser, Content: "task"})
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{}`}}})
-	s.Append(Message{Role: RoleTool, Content: "result1", ToolCallID: "c1", Name: "read_file"})
-	s.Append(Message{Role: RoleAssistant, Content: "done"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "task"}, Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{}`}}}}, 0, 0)
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleTool, Content: "result1", ToolCallID: "c1", Name: "read_file"}, Message{Role: RoleAssistant, Content: "done"}}, 0, 0)
 
 	// Try to compact only index 2 (the tool result) — should fail atomic check
 	makeCompactifyCall(s, []compactRange{{from: 2, to: 2}})
@@ -1077,8 +1076,7 @@ func TestBuildCompactContext_PartialRoundNotCompacted(t *testing.T) {
 
 func TestBuildCompactContext_NoSoftLimitWhenUnder(t *testing.T) {
 	s := NewSession("testns", "You are helpful.")
-	s.Append(Message{Role: RoleUser, Content: "hi"})
-	s.Append(Message{Role: RoleAssistant, Content: "hello"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "hi"}, Message{Role: RoleAssistant, Content: "hello"}}, 0, 0)
 
 	result, needCompactify, _ := BuildCompactContext(s, 150000, nil)
 
@@ -1126,11 +1124,9 @@ func TestBuildCompactContext_CompactifyMessagesNeverInOutput(t *testing.T) {
 	// be transparent to the LLM.
 
 	s := NewSession("testns", "You are helpful.")
-	s.Append(Message{Role: RoleUser, Content: "task"})
-	s.Append(Message{Role: RoleAssistant, Content: "done"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "task"}, Message{Role: RoleAssistant, Content: "done"}}, 0, 0)
 	makeCompactifyCall(s, []compactRange{{from: 0, to: 0}})
-	s.Append(Message{Role: RoleUser, Content: "more work"})
-	s.Append(Message{Role: RoleAssistant, Content: "ok"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "more work"}, Message{Role: RoleAssistant, Content: "ok"}}, 0, 0)
 
 	// Test with high soft limit (needCompactify=false).
 	result, needCompactify, _ := BuildCompactContext(s, 100000, nil)
@@ -1161,8 +1157,7 @@ func TestBuildCompactContext_CompactifyMessagesNeverInOutput(t *testing.T) {
 	// Test with low soft limit (needCompactify=true).
 	// Add big content to trigger.
 	bigContent := strings.Repeat("x", 1000)
-	s.Append(Message{Role: RoleUser, Content: bigContent})
-	s.Append(Message{Role: RoleAssistant, Content: "final"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: bigContent}, Message{Role: RoleAssistant, Content: "final"}}, 0, 0)
 
 	result2, needCompactify2, _ := BuildCompactContext(s, 10, nil)
 	if !needCompactify2 {
@@ -1192,18 +1187,19 @@ func TestBuildCompactContext_TokenEstimateExcludesCompactifyMessages(t *testing.
 
 	s := NewSession("testns", "")
 	// Add enough real content to be near the limit.
-	s.Append(Message{Role: RoleUser, Content: strings.Repeat("a", 2000)})
-	s.Append(Message{Role: RoleAssistant, Content: strings.Repeat("b", 2000)})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: strings.Repeat("a", 2000)}, Message{Role: RoleAssistant, Content: strings.Repeat("b", 2000)}}, 0, 0)
 
 	// Now add a compactify call with very large content in the arguments
 	// (simulating a large range). This should NOT affect the token estimate.
 	largeArgs := strings.Repeat("x", 10000) // 10KB of fake arguments
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{{
 		ID:        "c-big",
 		Name:      "context_compactify",
 		Arguments: largeArgs,
-	}}})
-	s.Append(Message{Role: RoleTool, Content: "noted", ToolCallID: "c-big", Name: "context_compactify"})
+	}}}}, 0, 0)
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleTool, Content: "noted", ToolCallID: "c-big", Name: "context_compactify"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 
 	// The real content is ~4000 chars → ~1000 tokens.
 	// The compactify call adds ~10000 chars → ~2500 tokens if counted.
@@ -1342,21 +1338,21 @@ func TestBuildCompactContext_InvalidRangeDoesNotCausePanic(t *testing.T) {
 	// Full integration: invalid compactify call in session should not
 	// cause a panic in BuildCompactContext.
 	s := NewSession("testns", "You are helpful.")
-	s.Append(Message{Role: RoleUser, Content: "task"})
-	s.Append(Message{Role: RoleAssistant, Content: "done"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "task"}, Message{Role: RoleAssistant, Content: "done"}}, 0, 0)
 
 	// Record an invalid compactify call (range_start=-1).
 	invalidArgs, _ := json.Marshal(struct {
 		RangeStart int `json:"range_start"`
 		RangeEnd   int `json:"range_end"`
 	}{RangeStart: -1, RangeEnd: 3})
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{
 		{ID: "c-bad", Name: "context_compactify", Arguments: string(invalidArgs)},
-	}})
-	s.Append(Message{Role: RoleTool, Content: "Error: invalid range", ToolCallID: "c-bad", Name: "context_compactify"})
+	}}}, 0, 0)
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleTool, Content: "Error: invalid range", ToolCallID: "c-bad", Name: "context_compactify"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 
-	s.Append(Message{Role: RoleUser, Content: "more work"})
-	s.Append(Message{Role: RoleAssistant, Content: "ok"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "more work"}, Message{Role: RoleAssistant, Content: "ok"}}, 0, 0)
 
 	// Must not panic.
 	result, _, _ := BuildCompactContext(s, 100000, nil)
@@ -1392,8 +1388,7 @@ func TestBuildCompactContext_InvalidRangeDoesNotCausePanic(t *testing.T) {
 func TestBuildCompactContext_NoDuplicateWarnings(t *testing.T) {
 	s := NewSession("testns", "You are helpful.")
 	bigContent := strings.Repeat("x", 500)
-	s.Append(Message{Role: RoleUser, Content: bigContent})
-	s.Append(Message{Role: RoleAssistant, Content: "ok"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: bigContent}, Message{Role: RoleAssistant, Content: "ok"}}, 0, 0)
 
 	// Call BuildCompactContext multiple times — simulating multiple
 	// tool-loop iterations where the LLM has not yet called compactify.
@@ -1453,19 +1448,22 @@ func TestBuildCompactContext_MixedCompactifyAndRegularTools(t *testing.T) {
 		RangeEnd   int `json:"range_end"`
 	}{RangeStart: 2, RangeEnd: 2})
 
-	s.Append(Message{Role: RoleUser, Content: "read and compact"})
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "read and compact"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 
 	// Assistant message with mixed tool calls.
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{
 		{ID: readCallID, Name: "read_file", Arguments: `{"path":"f.go"}`},
 		{ID: compactifyCallID, Name: "context_compactify", Arguments: string(compactifyArgs)},
-	}})
+	}}}, 0, 0)
 
 	// Tool results (both).
-	s.Append(Message{Role: RoleTool, Content: "file content", ToolCallID: readCallID, Name: "read_file"})
-	s.Append(Message{Role: RoleTool, Content: "noted", ToolCallID: compactifyCallID, Name: "context_compactify"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleTool, Content: "file content", ToolCallID: readCallID, Name: "read_file"}, Message{Role: RoleTool, Content: "noted", ToolCallID: compactifyCallID, Name: "context_compactify"}}, 0, 0)
 
-	s.Append(Message{Role: RoleAssistant, Content: "done"})
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, Content: "done"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 
 	result, _, _ := BuildCompactContext(s, 100000, nil)
 
@@ -1575,8 +1573,8 @@ func TestEstimateTokens_HeuristicOnPlainMessages(t *testing.T) {
 
 func TestEstimateTokens_MixedMessagesNoUsage(t *testing.T) {
 	msgs := []Message{
-		{Role: RoleUser, Content: "a"},     // 1/4 = 0
-		{Role: RoleAssistant, Content: "bb"},  // 2/4 = 0
+		{Role: RoleUser, Content: "a"},         // 1/4 = 0
+		{Role: RoleAssistant, Content: "bb"},   // 2/4 = 0
 		{Role: RoleAssistant, Content: "cccc"}, // 4/4 = 1
 	}
 	total := estimateTokens(msgs)
@@ -1753,10 +1751,8 @@ func TestBuildCompactContext_MultipleSeparateCompactionsHaveDistinctSummaries(t 
 	s := NewSession("testns", "")
 
 	// Round 1
-	s.Append(Message{Role: RoleUser, Content: "read files"})
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`}}})
-	s.Append(Message{Role: RoleTool, Content: "content1", ToolCallID: "c1", Name: "read_file"})
-	s.Append(Message{Role: RoleAssistant, Content: "done reading"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "read files"}, Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`}}}}, 0, 0)
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleTool, Content: "content1", ToolCallID: "c1", Name: "read_file"}, Message{Role: RoleAssistant, Content: "done reading"}}, 0, 0)
 
 	// First compactify call with summary "Reading project files"
 	compactifyArgs1, _ := json.Marshal(struct {
@@ -1764,14 +1760,11 @@ func TestBuildCompactContext_MultipleSeparateCompactionsHaveDistinctSummaries(t 
 		RangeEnd   int    `json:"range_end"`
 		Summary    string `json:"summary,omitempty"`
 	}{RangeStart: 1, RangeEnd: 3, Summary: "Reading project files"})
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc1", Name: "context_compactify", Arguments: string(compactifyArgs1)}}})
-	s.Append(Message{Role: RoleTool, Content: "Noted.", ToolCallID: "cc1", Name: "context_compactify"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc1", Name: "context_compactify", Arguments: string(compactifyArgs1)}}}, Message{Role: RoleTool, Content: "Noted.", ToolCallID: "cc1", Name: "context_compactify"}}, 0, 0)
 
 	// Round 2
-	s.Append(Message{Role: RoleUser, Content: "write code"})
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "write_file", Arguments: `{"path":"b.go"}`}}})
-	s.Append(Message{Role: RoleTool, Content: "written", ToolCallID: "c2", Name: "write_file"})
-	s.Append(Message{Role: RoleAssistant, Content: "done writing"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "write code"}, Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "write_file", Arguments: `{"path":"b.go"}`}}}}, 0, 0)
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleTool, Content: "written", ToolCallID: "c2", Name: "write_file"}, Message{Role: RoleAssistant, Content: "done writing"}}, 0, 0)
 
 	// Second compactify call with different summary
 	compactifyArgs2, _ := json.Marshal(struct {
@@ -1779,8 +1772,7 @@ func TestBuildCompactContext_MultipleSeparateCompactionsHaveDistinctSummaries(t 
 		RangeEnd   int    `json:"range_end"`
 		Summary    string `json:"summary,omitempty"`
 	}{RangeStart: 6, RangeEnd: 8, Summary: "Writing implementation"})
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc2", Name: "context_compactify", Arguments: string(compactifyArgs2)}}})
-	s.Append(Message{Role: RoleTool, Content: "Noted.", ToolCallID: "cc2", Name: "context_compactify"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc2", Name: "context_compactify", Arguments: string(compactifyArgs2)}}}, Message{Role: RoleTool, Content: "Noted.", ToolCallID: "cc2", Name: "context_compactify"}}, 0, 0)
 
 	// Now build compact context
 	result, needCompactify, _ := BuildCompactContext(s, 100000, nil)
@@ -1909,9 +1901,10 @@ func TestBuildCompactContext_TwoToolRoundsWithCompactifyBetween_NoUserMessage(t 
 	s := NewSession("testns", "")
 
 	// Round 1: user asks to read a file, assistant does it
-	s.Append(Message{Role: RoleUser, Content: "read file"})
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`}}})
-	s.Append(Message{Role: RoleTool, Content: "content", ToolCallID: "c1", Name: "read_file"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "read file"}, Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`}}}}, 0, 0)
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleTool, Content: "content", ToolCallID: "c1", Name: "read_file"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 
 	// Compactify round 1
 	compactifyArgs1, _ := json.Marshal(struct {
@@ -1919,12 +1912,10 @@ func TestBuildCompactContext_TwoToolRoundsWithCompactifyBetween_NoUserMessage(t 
 		RangeEnd   int    `json:"range_end"`
 		Summary    string `json:"summary,omitempty"`
 	}{RangeStart: 1, RangeEnd: 2, Summary: "Reading files"})
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc1", Name: "context_compactify", Arguments: string(compactifyArgs1)}}})
-	s.Append(Message{Role: RoleTool, Content: "Noted.", ToolCallID: "cc1", Name: "context_compactify"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc1", Name: "context_compactify", Arguments: string(compactifyArgs1)}}}, Message{Role: RoleTool, Content: "Noted.", ToolCallID: "cc1", Name: "context_compactify"}}, 0, 0)
 
 	// Round 2: assistant continues with shell (no user in between!)
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "shell", Arguments: `{"cmd":"ls"}`}}})
-	s.Append(Message{Role: RoleTool, Content: "filelist", ToolCallID: "c2", Name: "shell"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c2", Name: "shell", Arguments: `{"cmd":"ls"}`}}}, Message{Role: RoleTool, Content: "filelist", ToolCallID: "c2", Name: "shell"}}, 0, 0)
 
 	// Compactify round 2
 	compactifyArgs2, _ := json.Marshal(struct {
@@ -1932,8 +1923,7 @@ func TestBuildCompactContext_TwoToolRoundsWithCompactifyBetween_NoUserMessage(t 
 		RangeEnd   int    `json:"range_end"`
 		Summary    string `json:"summary,omitempty"`
 	}{RangeStart: 5, RangeEnd: 6, Summary: "Listing directory"})
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc2", Name: "context_compactify", Arguments: string(compactifyArgs2)}}})
-	s.Append(Message{Role: RoleTool, Content: "Noted.", ToolCallID: "cc2", Name: "context_compactify"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc2", Name: "context_compactify", Arguments: string(compactifyArgs2)}}}, Message{Role: RoleTool, Content: "Noted.", ToolCallID: "cc2", Name: "context_compactify"}}, 0, 0)
 
 	// Now build compact context
 	result, needCompactify, _ := BuildCompactContext(s, 100000, nil)
@@ -2063,8 +2053,10 @@ func TestBuildAgentMarkdownMessage_InjectedIntoBuildCompactContext(t *testing.T)
 	writeFile(t, dir, "AGENTS.md", "# Proj\nBe concise.")
 
 	s := NewSession("test", "You are helpful.")
-	s.SetClientCWD(dir)
-	s.Append(Message{Role: RoleUser, Content: "hello"})
+	s.SetClientCWD(context.Background(), dir)
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "hello"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 
 	result, _, _ := BuildCompactContext(s, 100000, nil)
 
@@ -2086,8 +2078,10 @@ func TestBuildAgentMarkdownMessage_InjectedIntoBuildCompactContext(t *testing.T)
 
 func TestBuildAgentMarkdownMessage_NoFileWhenCWDEmpty(t *testing.T) {
 	s := NewSession("test", "You are helpful.")
-	s.SetClientCWD("") // explicitly clear
-	s.Append(Message{Role: RoleUser, Content: "hello"})
+	s.SetClientCWD(context.Background(), "") // explicitly clear
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "hello"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 
 	result, _, _ := BuildCompactContext(s, 100000, nil)
 

@@ -62,11 +62,12 @@ func Search() agent.Tool {
 			if path == "" {
 				path = "."
 			}
+			searchPath := resolvePath(ctx, path)
 			argv := []string{"--line-number", "--column", "--no-heading", "--color", "never"}
 			if args.IgnoreCase {
 				argv = append(argv, "-i")
 			}
-			argv = append(argv, "--", args.Pattern, resolvePath(ctx, path))
+			argv = append(argv, "--", args.Pattern, searchPath)
 			cmd := exec.CommandContext(ctx, "rg", argv...)
 			stdout, err := cmd.StdoutPipe()
 			if err != nil {
@@ -135,12 +136,12 @@ func Search() agent.Tool {
 			if waitErr != nil {
 				var exitErr *exec.ExitError
 				if errors.As(waitErr, &exitErr) && exitErr.ExitCode() == 1 {
-					return "", nil
+					return fmt.Sprintf("No matches found for pattern %q in %s", args.Pattern, searchPath), nil
 				}
 				return "", waitErr
 			}
 			if lineCount == 0 {
-				return "", nil
+				return fmt.Sprintf("No matches found for pattern %q in %s", args.Pattern, searchPath), nil
 			}
 			if !truncated {
 				cleanup = false

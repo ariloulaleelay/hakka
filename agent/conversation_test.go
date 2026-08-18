@@ -243,10 +243,8 @@ func TestAutoRename_NamesSessionAfterTwoUserMessages(t *testing.T) {
 
 	// Seed the session with 2 user messages already (simulating past conversation)
 	session, _ := sm.CreateWithID(context.Background(), "testns", "auto-session")
-	session.Append(Message{Role: RoleUser, Content: "first message"})
-	session.Append(Message{Role: RoleAssistant, Content: "first response"})
-	session.Append(Message{Role: RoleUser, Content: "second message"})
-	session.Append(Message{Role: RoleAssistant, Content: "second response"})
+	session.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "first message"}, Message{Role: RoleAssistant, Content: "first response"}}, 0, 0)
+	session.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "second message"}, Message{Role: RoleAssistant, Content: "second response"}}, 0, 0)
 	_ = sm.Save(context.Background(), "testns", session)
 
 	// Run a third turn — this should trigger auto-rename
@@ -283,11 +281,9 @@ func TestAutoRename_DoesNotRenameAlreadyNamedSession(t *testing.T) {
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
 	session, _ := sm.CreateWithID(context.Background(), "testns", "named-session")
-	session.SetSessionName("Already Named")
-	session.Append(Message{Role: RoleUser, Content: "first"})
-	session.Append(Message{Role: RoleAssistant, Content: "resp1"})
-	session.Append(Message{Role: RoleUser, Content: "second"})
-	session.Append(Message{Role: RoleAssistant, Content: "resp2"})
+	session.SetSessionName(context.Background(), "Already Named")
+	session.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "first"}, Message{Role: RoleAssistant, Content: "resp1"}}, 0, 0)
+	session.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "second"}, Message{Role: RoleAssistant, Content: "resp2"}}, 0, 0)
 	_ = sm.Save(context.Background(), "testns", session)
 
 	_, _, err := executeSync(conv, context.Background(), "named-session", "third")
@@ -334,10 +330,8 @@ func TestAutoRename_DoesNotRenameWithFewMessages(t *testing.T) {
 
 func TestBuildNamingMessages_ExcludesToolMessages(t *testing.T) {
 	session := NewSession("testns", "sys")
-	session.Append(Message{Role: RoleUser, Content: "hello"})
-	session.Append(Message{Role: RoleAssistant, Content: "hi there", ToolCalls: []ToolCall{{ID: "t1", Name: "tool1"}}})
-	session.Append(Message{Role: RoleTool, Content: "tool result", ToolCallID: "t1"})
-	session.Append(Message{Role: RoleAssistant, Content: "done"})
+	session.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "hello"}, Message{Role: RoleAssistant, Content: "hi there", ToolCalls: []ToolCall{{ID: "t1", Name: "tool1"}}}}, 0, 0)
+	session.AddMessages(context.Background(), []Message{Message{Role: RoleTool, Content: "tool result", ToolCallID: "t1"}, Message{Role: RoleAssistant, Content: "done"}}, 0, 0)
 
 	msgs := buildNamingMessages(session)
 	// Should have: user "hello" + [TRUNCATED] (from assistant tool-call) + [TRUNCATED] (from tool response) + assistant "done" + instruction
@@ -378,10 +372,8 @@ func TestBuildNamingMessages_ExcludesToolMessages(t *testing.T) {
 func TestBuildNamingMessages_ExcludesAssistantToolCallMessages(t *testing.T) {
 	session := NewSession("testns", "sys")
 	// Realistic conversation: user asks → assistant requests tool → tool responds → assistant replies
-	session.Append(Message{Role: RoleUser, Content: "what is the weather?"})
-	session.Append(Message{Role: RoleAssistant, Content: "", ToolCalls: []ToolCall{{ID: "tc1", Name: "get_weather", Arguments: `{"city":"London"}`}}})
-	session.Append(Message{Role: RoleTool, Content: "rainy", ToolCallID: "tc1"})
-	session.Append(Message{Role: RoleAssistant, Content: "The weather in London is rainy."})
+	session.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "what is the weather?"}, Message{Role: RoleAssistant, Content: "", ToolCalls: []ToolCall{{ID: "tc1", Name: "get_weather", Arguments: `{"city":"London"}`}}}}, 0, 0)
+	session.AddMessages(context.Background(), []Message{Message{Role: RoleTool, Content: "rainy", ToolCallID: "tc1"}, Message{Role: RoleAssistant, Content: "The weather in London is rainy."}}, 0, 0)
 
 	msgs := buildNamingMessages(session)
 	// Should have: user + [TRUNCATED] (from assistant tool-call) + [TRUNCATED] (from tool) + assistant (reply) + instruction
@@ -522,8 +514,8 @@ func TestConversation_SomeToolsEnabled_LLMGetsThoseSchemas(t *testing.T) {
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
 	session, _ := sm.CreateWithID(context.Background(), "testns", "some-session")
-	session.EnableTool("alpha")
-	session.DisableTool("beta")
+	session.EnableTool(context.Background(), "alpha")
+	session.DisableTool(context.Background(), "beta")
 	// Persist tool auth changes so they survive the store's deep-copy.
 	enabled := session.Read().EnabledTools
 	blocked := session.Read().BlockedTools
@@ -576,7 +568,7 @@ func TestConversation_DefenseInDepth_DeniedToolReturnsError(t *testing.T) {
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
 	session, _ := sm.CreateWithID(context.Background(), "testns", "defense-session")
-	session.DenyTool("echo") // deny the tool
+	session.DenyTool(context.Background(), "echo") // deny the tool
 	// Persist tool auth changes.
 	enabled := session.Read().EnabledTools
 	blocked := session.Read().BlockedTools
@@ -636,7 +628,7 @@ func TestConversation_EnabledTool_ExecutesNormally(t *testing.T) {
 	conv := NewConversation(sm, router, tools, "testns", cfg)
 
 	session, _ := sm.CreateWithID(context.Background(), "testns", "normal-session")
-	session.EnableTool("echo")
+	session.EnableTool(context.Background(), "echo")
 
 	_, reply, err := executeSync(conv, context.Background(), "normal-session", "do it")
 	if err != nil {

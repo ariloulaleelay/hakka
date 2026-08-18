@@ -453,8 +453,10 @@ func TestGetSessionEvents(t *testing.T) {
 	}
 
 	// Build a conversation with: user msg → assistant (thinking + tool call) → tool result → assistant (final)
-	session.Append(agent.Message{Role: "user", Content: "Read README.md", Timestamp: 1700000000123})
-	session.Append(agent.Message{
+	if err := session.AddMessages(context.Background(), []agent.Message{agent.Message{Role: "user", Content: "Read README.md", Timestamp: 1700000000123}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	session.AddMessages(context.Background(), []agent.Message{agent.Message{
 		Role:    "assistant",
 		Content: "Let me check that file...",
 		ToolCalls: []agent.ToolCall{
@@ -463,27 +465,27 @@ func TestGetSessionEvents(t *testing.T) {
 		},
 		Usage:     usage,
 		Timestamp: 1700000000123,
-	})
-	session.Append(agent.Message{
+	}}, 0, 0)
+	session.AddMessages(context.Background(), []agent.Message{agent.Message{
 		Role:       "tool",
 		Content:    "# Hakka\n\nA Go framework...",
 		ToolCallID: "call_1",
 		Name:       "read_file",
 		Timestamp:  1700000000123,
-	})
-	session.Append(agent.Message{
+	}}, 0, 0)
+	session.AddMessages(context.Background(), []agent.Message{agent.Message{
 		Role:       "tool",
 		Content:    "Error: pattern not found",
 		ToolCallID: "call_2",
 		Name:       "search",
 		Timestamp:  1700000000123,
-	})
-	session.Append(agent.Message{
+	}}, 0, 0)
+	session.AddMessages(context.Background(), []agent.Message{agent.Message{
 		Role:      "assistant",
 		Content:   "Here's what I found in README.md...",
 		Usage:     usage,
 		Timestamp: 1700000000123,
-	})
+	}}, 0, 0)
 
 	if err := sm.Save(context.Background(), "default", session); err != nil {
 		t.Fatalf("Save: %v", err)

@@ -44,7 +44,7 @@ func TestNewSession_ToolDisabledByDefault(t *testing.T) {
 
 func TestDenyTool(t *testing.T) {
 	s := NewSession("ns", "sys")
-	s.DenyTool("read_file")
+	s.DenyTool(context.Background(), "read_file")
 	if !s.IsToolDenied("read_file") {
 		t.Fatal("expected read_file to be denied")
 	}
@@ -55,8 +55,8 @@ func TestDenyTool(t *testing.T) {
 
 func TestAllowTool(t *testing.T) {
 	s := NewSession("ns", "sys")
-	s.DenyTool("read_file")
-	s.AllowTool("read_file")
+	s.DenyTool(context.Background(), "read_file")
+	s.AllowTool(context.Background(), "read_file")
 	if s.IsToolDenied("read_file") {
 		t.Fatal("expected read_file to be allowed again")
 	}
@@ -68,13 +68,13 @@ func TestAllowTool(t *testing.T) {
 func TestDenyTool_LockedToolFails(t *testing.T) {
 	s := NewSession("ns", "sys")
 	// Tool is locked when it appears in a tool call in conversation history
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{
 		{ID: "c1", Name: "read_file", Arguments: `{"path":"x"}`},
-	}})
+	}}}, 0, 0)
 	if !s.IsToolLocked("read_file") {
 		t.Fatal("expected read_file to be locked")
 	}
-	err := s.DenyTool("read_file")
+	err := s.DenyTool(context.Background(), "read_file")
 	if err == nil {
 		t.Fatal("expected error when denying a locked tool")
 	}
@@ -86,13 +86,13 @@ func TestDenyTool_LockedToolFails(t *testing.T) {
 func TestDisableTool_LockedToolFails(t *testing.T) {
 	s := NewSession("ns", "sys")
 	// Tool is locked when it appears in a tool call in conversation history
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{
 		{ID: "c1", Name: "read_file", Arguments: `{"path":"x"}`},
-	}})
+	}}}, 0, 0)
 	if !s.IsToolLocked("read_file") {
 		t.Fatal("expected read_file to be locked")
 	}
-	err := s.DisableTool("read_file")
+	err := s.DisableTool(context.Background(), "read_file")
 	if err == nil {
 		t.Fatal("expected error when disabling a locked tool")
 	}
@@ -104,9 +104,9 @@ func TestDisableTool_LockedToolFails(t *testing.T) {
 func TestIsToolLocked_ByHistory(t *testing.T) {
 	s := NewSession("ns", "sys")
 	// A tool is locked when it appears in a tool call in the history
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{
 		{ID: "c1", Name: "read_file", Arguments: `{"path":"x"}`},
-	}})
+	}}}, 0, 0)
 	if !s.IsToolLocked("read_file") {
 		t.Fatal("expected read_file to be locked after tool call in history")
 	}
@@ -117,7 +117,7 @@ func TestIsToolLocked_ByHistory(t *testing.T) {
 
 func TestEnableTool(t *testing.T) {
 	s := NewSession("ns", "sys")
-	s.EnableTool("read_file")
+	s.EnableTool(context.Background(), "read_file")
 	if !s.IsToolEnabled("read_file") {
 		t.Fatal("expected read_file to be enabled")
 	}
@@ -125,8 +125,8 @@ func TestEnableTool(t *testing.T) {
 
 func TestDisableTool(t *testing.T) {
 	s := NewSession("ns", "sys")
-	s.EnableTool("read_file")
-	err := s.DisableTool("read_file")
+	s.EnableTool(context.Background(), "read_file")
+	err := s.DisableTool(context.Background(), "read_file")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -137,8 +137,8 @@ func TestDisableTool(t *testing.T) {
 
 func TestIsToolEnabled_RequiresAllowed(t *testing.T) {
 	s := NewSession("ns", "sys")
-	s.EnableTool("read_file")
-	s.DenyTool("read_file")
+	s.EnableTool(context.Background(), "read_file")
+	s.DenyTool(context.Background(), "read_file")
 	// Denied takes precedence — even if "enabled", a denied tool is not enabled
 	if s.IsToolEnabled("read_file") {
 		t.Fatal("denied tool should not be enabled even if EnableTool was called")
@@ -152,16 +152,16 @@ func TestIsToolEnabled_RequiresAllowed(t *testing.T) {
 func TestSchemasForSession_OnlyEnabledTools(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "alpha"},
+		Schema:  ToolSchema{Name: "alpha"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "ok", nil },
 	})
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "beta"},
+		Schema:  ToolSchema{Name: "beta"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "ok", nil },
 	})
 
 	s := NewSession("ns", "sys")
-	s.EnableTool("alpha")
+	s.EnableTool(context.Background(), "alpha")
 
 	schemas := r.SchemasForSession(s)
 	if len(schemas) != 1 {
@@ -175,13 +175,13 @@ func TestSchemasForSession_OnlyEnabledTools(t *testing.T) {
 func TestSchemasForSession_DeniedToolsExcluded(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "alpha"},
+		Schema:  ToolSchema{Name: "alpha"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "ok", nil },
 	})
 
 	s := NewSession("ns", "sys")
-	s.EnableTool("alpha")
-	s.DenyTool("alpha") // denied overrides enable
+	s.EnableTool(context.Background(), "alpha")
+	s.DenyTool(context.Background(), "alpha") // denied overrides enable
 
 	schemas := r.SchemasForSession(s)
 	if len(schemas) != 0 {
@@ -192,7 +192,7 @@ func TestSchemasForSession_DeniedToolsExcluded(t *testing.T) {
 func TestSchemasForSession_DisabledToolsNotInAPI(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "alpha"},
+		Schema:  ToolSchema{Name: "alpha"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "ok", nil },
 	})
 
@@ -208,12 +208,12 @@ func TestSchemasForSession_DisabledToolsNotInAPI(t *testing.T) {
 func TestSchemasForSession_ManagementToolsEnabledByDefault(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "show_tool"},
-		Tags:   []string{"tool", "all"},
+		Schema:  ToolSchema{Name: "show_tool"},
+		Tags:    []string{"tool", "all"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "ok", nil },
 	})
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "read_file"},
+		Schema:  ToolSchema{Name: "read_file"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "ok", nil },
 	})
 
@@ -236,11 +236,11 @@ func TestSchemasForSession_ManagementToolsEnabledByDefault(t *testing.T) {
 func TestAllowedSchemas_IncludesAllAllowed(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "alpha"},
+		Schema:  ToolSchema{Name: "alpha"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "ok", nil },
 	})
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "beta"},
+		Schema:  ToolSchema{Name: "beta"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "ok", nil },
 	})
 
@@ -256,16 +256,16 @@ func TestAllowedSchemas_IncludesAllAllowed(t *testing.T) {
 func TestAllowedSchemas_DeniedExcluded(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "alpha"},
+		Schema:  ToolSchema{Name: "alpha"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "ok", nil },
 	})
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "beta"},
+		Schema:  ToolSchema{Name: "beta"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "ok", nil },
 	})
 
 	s := NewSession("ns", "sys")
-	s.DenyTool("beta")
+	s.DenyTool(context.Background(), "beta")
 
 	schemas := r.AllowedSchemas(s)
 	if len(schemas) != 1 {
@@ -283,12 +283,12 @@ func TestAllowedSchemas_DeniedExcluded(t *testing.T) {
 func TestExecuteForSession_EnabledToolSucceeds(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "echo"},
+		Schema:  ToolSchema{Name: "echo"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "hello", nil },
 	})
 
 	s := NewSession("ns", "sys")
-	s.EnableTool("echo")
+	s.EnableTool(context.Background(), "echo")
 
 	result := r.ExecuteForSession(context.Background(), s, "echo", `{}`)
 	if result.IsError() {
@@ -304,7 +304,7 @@ func TestExecuteForSession_DisabledToolMutualActivation(t *testing.T) {
 	// if the LLM somehow invokes it.
 	r := NewToolRegistry()
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "echo"},
+		Schema:  ToolSchema{Name: "echo"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "hello", nil },
 	})
 
@@ -323,12 +323,12 @@ func TestExecuteForSession_DisabledToolMutualActivation(t *testing.T) {
 func TestExecuteForSession_DeniedToolRejected(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "echo"},
+		Schema:  ToolSchema{Name: "echo"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "hello", nil },
 	})
 
 	s := NewSession("ns", "sys")
-	s.DenyTool("echo")
+	s.DenyTool(context.Background(), "echo")
 
 	result := r.ExecuteForSession(context.Background(), s, "echo", `{}`)
 	if !result.IsError() {
@@ -342,15 +342,15 @@ func TestExecuteForSession_DeniedToolRejected(t *testing.T) {
 func TestExecuteForSession_LockedToolCanRun(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "echo"},
+		Schema:  ToolSchema{Name: "echo"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "hello", nil },
 	})
 
 	s := NewSession("ns", "sys")
 	// Lock by adding a tool call to history
-	s.Append(Message{Role: RoleAssistant, ToolCalls: []ToolCall{
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{
 		{ID: "c1", Name: "echo", Arguments: `{}`},
-	}})
+	}}}, 0, 0)
 
 	result := r.ExecuteForSession(context.Background(), s, "echo", `{}`)
 	if result.IsError() {
@@ -368,16 +368,16 @@ func TestExecuteForSession_LockedToolCanRun(t *testing.T) {
 func TestBuildToolListMessage_IncludesAllowedTools(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "read_file", Description: "Read a file."},
+		Schema:  ToolSchema{Name: "read_file", Description: "Read a file."},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "ok", nil },
 	})
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "write_file", Description: "Write a file."},
+		Schema:  ToolSchema{Name: "write_file", Description: "Write a file."},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "ok", nil },
 	})
 
 	s := NewSession("ns", "sys")
-	s.EnableTool("read_file")
+	s.EnableTool(context.Background(), "read_file")
 	// read_file is enabled, write_file is disabled (but allowed)
 
 	msg := BuildToolListMessage(r, s)
@@ -401,17 +401,17 @@ func TestBuildToolListMessage_IncludesAllowedTools(t *testing.T) {
 func TestBuildToolListMessage_DeniedExcluded(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "read_file", Description: "Read a file."},
+		Schema:  ToolSchema{Name: "read_file", Description: "Read a file."},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "ok", nil },
 	})
 	r.Register(Tool{
-		Schema: ToolSchema{Name: "secret_tool", Description: "Secret."},
+		Schema:  ToolSchema{Name: "secret_tool", Description: "Secret."},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "ok", nil },
 	})
 
 	s := NewSession("ns", "sys")
-	s.EnableTool("read_file")
-	s.DenyTool("secret_tool")
+	s.EnableTool(context.Background(), "read_file")
+	s.DenyTool(context.Background(), "secret_tool")
 
 	msg := BuildToolListMessage(r, s)
 	if strings.Contains(msg, "secret_tool") {

@@ -136,7 +136,7 @@ func TestLoadSkill_AlreadyLoaded(t *testing.T) {
 	tool := LoadSkill(reg)
 
 	session := agent.NewSession("test", "test-prompt")
-	session.AddActiveSkill("go-testing")
+	session.AddActiveSkill(context.Background(), "go-testing")
 
 	raw, _ := json.Marshal(map[string]any{"name": "go-testing"})
 	ctx := event.ContextWithSessionView(context.Background(), session)
@@ -176,7 +176,7 @@ func TestUnloadSkill_RemovesTracking(t *testing.T) {
 	tool := UnloadSkill(reg)
 
 	session := agent.NewSession("test", "test-prompt")
-	session.AddActiveSkill("go-testing")
+	session.AddActiveSkill(context.Background(), "go-testing")
 
 	raw, _ := json.Marshal(map[string]any{"name": "go-testing"})
 	ctx := event.ContextWithSessionView(context.Background(), session)

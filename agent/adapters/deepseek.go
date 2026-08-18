@@ -58,7 +58,7 @@ func NewDeepSeekAdapter(client *http.Client, baseURL, model string, cfg DeepSeek
 
 type deepSeekMessage struct {
 	Role             string             `json:"role"`
-	Content          string             `json:"content,omitempty"`
+	Content          *string            `json:"content,omitempty"`
 	ReasoningContent *string            `json:"reasoning_content,omitempty"`
 	Name             string             `json:"name,omitempty"`
 	ToolCallID       string             `json:"tool_call_id,omitempty"`
@@ -154,9 +154,16 @@ func toDeepSeekMessages(messages []agent.Message) []deepSeekMessage {
 		}
 		dsMsg := deepSeekMessage{
 			Role:       string(msg.Role),
-			Content:    msg.Content,
 			Name:       msg.Name,
 			ToolCallID: msg.ToolCallID,
+		}
+		// Tool messages must ALWAYS carry a content field on the wire —
+		// DeepSeek 400s with "missing field content" when it is omitted,
+		// even for an empty tool result (e.g. search with no matches).
+		// Other roles keep omitting empty content to save context.
+		if msg.Role == agent.RoleTool || msg.Content != "" {
+			content := msg.Content
+			dsMsg.Content = &content
 		}
 		if msg.Role == agent.RoleAssistant && len(msg.ToolCalls) > 0 {
 			// DeepSeek requires reasoning_content on assistant turns that made

@@ -20,7 +20,6 @@ func (a *loopFakeAdapter) Complete(ctx context.Context, msgs []Message, tools []
 	return &LLMResponse{Message: resp}, nil
 }
 
-
 func TestMaxToolIterations_IsPerTurn(t *testing.T) {
 	adapter := &loopFakeAdapter{
 		responses: []Message{

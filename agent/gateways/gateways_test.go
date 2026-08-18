@@ -236,7 +236,7 @@ func TestWebSocketGatewayStreamToolFallbackUsesStreamNotComplete(t *testing.T) {
 	cmd := commands.New(sm, conv, "", ns)
 
 	session, _ := sm.CreateWithID(context.Background(), ns, "")
-	session.EnableTool("example_tool")
+	session.EnableTool(context.Background(), "example_tool")
 	sm.Save(context.Background(), ns, session)
 
 	addr := freeAddr(t)
@@ -578,7 +578,9 @@ func TestDeltaAndDoneCarrySameMessageID(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 	conv.EnsureDefaultModel(context.Background(), sess)
-	sess.Append(agent.Message{ID: agent.MakeUniqueID(), Role: agent.RoleUser, Content: "hi"})
+	if err := sess.AddMessages(context.Background(), []agent.Message{agent.Message{ID: agent.MakeUniqueID(), Role: agent.RoleUser, Content: "hi"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 
 	// Execute a turn with streaming.
 	eventCh, err := conv.Execute(context.Background(), sess.SessionID(), "hi again")

@@ -9,16 +9,16 @@ func TestExtractJSONPath(t *testing.T) {
 		"is_available": true,
 		"balance_infos": []any{
 			map[string]any{
-				"currency":           "CNY",
-				"total_balance":      "110.00",
-				"granted_balance":    "10.00",
-				"topped_up_balance":  "100.00",
+				"currency":          "CNY",
+				"total_balance":     "110.00",
+				"granted_balance":   "10.00",
+				"topped_up_balance": "100.00",
 			},
 			map[string]any{
-				"currency":           "USD",
-				"total_balance":      "50.00",
-				"granted_balance":    "5.00",
-				"topped_up_balance":  "45.00",
+				"currency":          "USD",
+				"total_balance":     "50.00",
+				"granted_balance":   "5.00",
+				"topped_up_balance": "45.00",
 			},
 		},
 		"usage": map[string]any{
@@ -27,10 +27,10 @@ func TestExtractJSONPath(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		path     string
-		want     any
-		wantOk   bool
+		name   string
+		path   string
+		want   any
+		wantOk bool
 	}{
 		{
 			name:   "nested field in array",

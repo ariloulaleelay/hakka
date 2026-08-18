@@ -113,7 +113,9 @@ func LoadSkill(sr *agent.SkillRegistry) agent.Tool {
 				return "", fmt.Errorf("load_skill: %w", err)
 			}
 
-			session.AddActiveSkill(args.Name)
+			if err := session.AddActiveSkill(ctx, args.Name); err != nil {
+				return "", fmt.Errorf("load_skill: %w", err)
+			}
 			return fmt.Sprintf("Loaded skill %q. It is now part of your system prompt on every turn. Use unload_skill %q to remove it when no longer needed.", args.Name, args.Name), nil
 		}).
 		Build()
@@ -159,7 +161,9 @@ func UnloadSkill(sr *agent.SkillRegistry) agent.Tool {
 				return fmt.Sprintf("Skill %q is not currently loaded.", args.Name), nil
 			}
 
-			session.RemoveActiveSkill(args.Name)
+			if err := session.RemoveActiveSkill(ctx, args.Name); err != nil {
+				return "", fmt.Errorf("unload_skill: %w", err)
+			}
 			return fmt.Sprintf("Unloaded skill %q. It will no longer appear in your system prompt.", args.Name), nil
 		}).
 		Build()

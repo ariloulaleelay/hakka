@@ -422,7 +422,7 @@ func TestEnrichCtxWithCWD_DoesNotRecreateDeletedSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWithID: %v", err)
 	}
-	session.SetClientCWD("/home/user/project")
+	session.SetClientCWD(context.Background(), "/home/user/project")
 
 	// Verify the session exists.
 	if _, err := sm.Get(context.Background(), ns, sessionID); err != nil {

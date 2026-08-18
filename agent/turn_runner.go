@@ -53,12 +53,7 @@ func (r *turnRunner) executeTurn(
 
 		reply, msgID, err := r.runLoop(ctx, session, eventCh)
 
-		// Persist estimated context tokens post-turn (best-effort).
-		ns := event.NamespaceFromContext(ctx)
-		ect := session.GetEstimatedContextTokens()
-		_ = r.store.PatchMeta(ctx, ns, session.SessionID(), &SessionMetaPatch{
-			EstimatedContextTokens: &ect,
-		})
+		// Estimated context is persisted by the session mutation itself.
 
 		// Fetch quota from the provider after the turn (best-effort).
 		r.fetchAndEmitQuota(ctx, session, eventCh)
@@ -95,10 +90,7 @@ func (r *turnRunner) runLoop(
 	hooks := r.toolExec.SerialisedHooks(&turnMu)
 	autoContinueCount := 0
 
-	// Accumulated deltas for AppendMessages since last save.
-	var accumTokens int
-	var accumCost float64
-
+	// Usage is persisted together with the message group.
 	// msgID is captured by onDelta and updated each iteration before
 	// calling Complete. This way streaming deltas and the final TurnFinished
 	// event all carry the same message ID.
@@ -117,7 +109,9 @@ func (r *turnRunner) runLoop(
 	for i := 0; i < r.config.MaxToolIterations; i++ {
 		schemas := r.tools.SchemasForSession(session)
 		msgs, needCompactify, estimatedTokens := r.buildLLMContext(session)
-		session.SetEstimatedContextTokens(estimatedTokens)
+		if err := session.SetEstimatedContextTokens(ctx, estimatedTokens); err != nil {
+			r.logger.Warn("failed to persist estimated context tokens", "session", session.SessionID(), "error", err)
+		}
 		if needCompactify {
 			schemas = r.augmentSchemasWithCompactify(schemas)
 		}
@@ -169,25 +163,17 @@ func (r *turnRunner) runLoop(
 			"finish_reason", resp.FinishReason, "tool_calls", len(resp.Message.ToolCalls))
 
 		toolMessages := r.executeTools(ctx, session, resp.Message.ToolCalls, events, hooks)
-		session.Append(assistantMessage)
-		for _, toolMessage := range toolMessages {
-			session.Append(toolMessage)
-		}
-
-		// Accumulate delta for AppendMessages.
-		if resp.Usage != nil {
-			accumTokens += resp.Usage.TotalTokens
-			accumCost += resp.Usage.Cost
-		}
-		ns := event.NamespaceFromContext(ctx)
 		allNew := append([]Message{assistantMessage}, toolMessages...)
-		if err := r.store.AppendMessages(ctx, ns, session.SessionID(), allNew, accumTokens, accumCost); err != nil {
+		var deltaTokens int
+		var deltaCost float64
+		if resp.Usage != nil {
+			deltaTokens = resp.Usage.TotalTokens
+			deltaCost = resp.Usage.Cost
+		}
+		if err := session.AddMessages(ctx, allNew, deltaTokens, deltaCost); err != nil {
 			r.logger.Error("failed to save session mid-turn", "session", session.SessionID(), "iteration", i, "error", err)
 			return "", msgID, fmt.Errorf("save session: %w", err)
 		}
-		accumTokens = 0
-		accumCost = 0
-
 		if r.isEmptyStopResponse(resp) && r.isIgnoreStopOnNoContent(session) {
 			if autoContinueCount < maxAutoContinue {
 				autoContinueCount++
@@ -260,8 +246,7 @@ func (r *turnRunner) reportUsage(
 	// Seems to be unused
 	// hooks.FireLLMResponse(session.SessionID(), &LLMResponse{Message: msg, Usage: usage})
 
-	session.AddTokenUsage(usage.TotalTokens)
-	session.AddCost(usage.Cost)
+	// Usage is committed together with the message group by AddMessages.
 	events <- event.UsageReported{
 		SessionID: session.SessionID(),
 		Usage: event.UsageInfo{

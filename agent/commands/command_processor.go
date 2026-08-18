@@ -137,15 +137,15 @@ func (cp *CommandProcessor) SetSessionActiveChecker(fn SessionActiveChecker) {
 	}
 }
 
-func inheritCWD(ctx context.Context, sm *agent.SessionManager, ns, prevSessionID string, session *agent.Session) {
+func inheritCWD(ctx context.Context, sm *agent.SessionManager, ns, prevSessionID string, session *agent.Session) error {
 	if prevSessionID == "" {
-		return
+		return nil
 	}
 	prev, _, err := sm.Store.Get(ctx, ns, prevSessionID)
 	if err != nil || prev == nil || prev.Read().ClientCWD == "" {
-		return
+		return nil
 	}
-	session.SetClientCWD(prev.Read().ClientCWD)
+	return session.SetClientCWD(ctx, prev.Read().ClientCWD)
 }
 
 // ExecuteJSON handles a structured JSON command from a JSON-capable
@@ -202,23 +202,13 @@ func (cp *CommandProcessor) execStart(ctx context.Context, sessionID string, par
 	if cp.Conv != nil {
 		cp.Conv.EnsureDefaultModel(ctx, session)
 	}
-	inheritCWD(ctx, cp.Sessions, ns, sessionID, session)
+	if err := inheritCWD(ctx, cp.Sessions, ns, sessionID, session); err != nil {
+		return CommandResult{Handled: true, Error: err}
+	}
 	if cp.Tools != nil {
 		for _, schema := range cp.Tools.Schemas() {
-			session.EnableTool(schema.Name)
+			session.EnableTool(ctx, schema.Name)
 		}
-	}
-	cwd := session.Read().ClientCWD
-	model := session.GetModel()
-	limit := session.GetCompactSoftLimit()
-	enabled := session.Read().EnabledTools
-	if err := cp.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
-		ClientCWD:        &cwd,
-		Model:            &model,
-		CompactSoftLimit: &limit,
-		EnabledTools:     enabled,
-	}); err != nil {
-		return CommandResult{Handled: true, Error: err}
 	}
 	data, _ := json.Marshal(map[string]any{
 		"session": sessionToMap(session),
@@ -252,11 +242,8 @@ func (cp *CommandProcessor) execCWDSet(ctx context.Context, sessionID string, pa
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "cwd_set", Error: err}
 	}
-	session.SetClientCWD(p.CWD)
-	if err := cp.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
-		ClientCWD: &p.CWD,
-	}); err != nil {
-		return CommandResult{Handled: true, Cmd: "cwd_set", Error: err}
+	if err := session.SetClientCWD(ctx, p.CWD); err != nil {
+		return CommandResult{Handled: true, Error: err}
 	}
 	data, _ := json.Marshal(map[string]any{"cwd": p.CWD, "session_id": session.SessionID()})
 	return CommandResult{Handled: true, Cmd: "cwd_set", Data: data, Session: session}
@@ -285,10 +272,7 @@ func (cp *CommandProcessor) execCompact(ctx context.Context, sessionID string, p
 		return CommandResult{Handled: true, Cmd: "compact", Data: data}
 	}
 
-	session.SetCompactSoftLimit(p.N)
-	if err := cp.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
-		CompactSoftLimit: &p.N,
-	}); err != nil {
+	if err := session.SetCompactSoftLimit(ctx, p.N); err != nil {
 		return CommandResult{Handled: true, Error: err}
 	}
 

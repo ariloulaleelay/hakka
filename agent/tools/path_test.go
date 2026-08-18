@@ -20,10 +20,10 @@ func TestResolvePathTildeExpansion(t *testing.T) {
 	home := u.HomeDir
 
 	tests := []struct {
-		name  string
-		path  string
-		cwd   string
-		want  func() string // computed expected path
+		name string
+		path string
+		cwd  string
+		want func() string // computed expected path
 	}{
 		{
 			name: "tilde alone resolves to home",

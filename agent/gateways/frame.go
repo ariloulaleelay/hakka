@@ -26,13 +26,13 @@ type CommandRequest struct {
 
 // FrameRequest is the inbound envelope.
 type FrameRequest struct {
-	Type      string          `json:"type"`                   // "chat", "cmd", "resp", "cancel"
+	Type      string          `json:"type"` // "chat", "cmd", "resp", "cancel"
 	SessionID string          `json:"session_id,omitempty"`
-	Input     string          `json:"input,omitempty"`        // for "chat"
-	Command   *CommandRequest `json:"command,omitempty"`      // for "cmd"
-	RequestID string          `json:"request_id,omitempty"`   // for "resp"
-	Result    json.RawMessage `json:"result,omitempty"`       // for "resp"
-	ReqError  string          `json:"error,omitempty"`        // for "resp"
+	Input     string          `json:"input,omitempty"`      // for "chat"
+	Command   *CommandRequest `json:"command,omitempty"`    // for "cmd"
+	RequestID string          `json:"request_id,omitempty"` // for "resp"
+	Result    json.RawMessage `json:"result,omitempty"`     // for "resp"
+	ReqError  string          `json:"error,omitempty"`      // for "resp"
 }
 
 // TurnStats is the end-of-turn statistics embedded in a "done" frame.
@@ -57,20 +57,20 @@ type FrameResponse struct {
 
 	// --- "delta" / "done" fields ---
 	// LLM content is always "text", regardless of streaming or final.
-	Text   string `json:"text,omitempty"`
+	Text string `json:"text,omitempty"`
 
 	// --- "done" fields ---
-	Error     string     `json:"error,omitempty"`     // turn error (done) or tool error (tool.status=="err")
+	Error     string     `json:"error,omitempty"` // turn error (done) or tool error (tool.status=="err")
 	Cancelled bool       `json:"cancelled,omitempty"`
 	Stats     *TurnStats `json:"stats,omitempty"`
 
 	// --- "tool" fields ---
 	Tool       string          `json:"tool,omitempty"`
-	ID         string          `json:"id,omitempty"`         // tool call ID (tool frames) or message ID (delta/done/chat frames)
-	Status     string          `json:"status,omitempty"`     // "start", "ok", "err"
-	Args       json.RawMessage `json:"args,omitempty"`       // tool arguments (on "start")
-	Snippet    string          `json:"snippet,omitempty"`    // human-readable summary
-	ToolResult string          `json:"result,omitempty"`     // tool output (on "ok")
+	ID         string          `json:"id,omitempty"`      // tool call ID (tool frames) or message ID (delta/done/chat frames)
+	Status     string          `json:"status,omitempty"`  // "start", "ok", "err"
+	Args       json.RawMessage `json:"args,omitempty"`    // tool arguments (on "start")
+	Snippet    string          `json:"snippet,omitempty"` // human-readable summary
+	ToolResult string          `json:"result,omitempty"`  // tool output (on "ok")
 
 	// --- "usage" fields ---
 	PromptTokens     *int     `json:"prompt_tokens,omitempty"`
@@ -93,7 +93,7 @@ type FrameResponse struct {
 	// Sessions list (welcome) / session object (session events) are at top level, not nested in "data".
 	// Pointer + omitempty so only welcome frames include the field; all other frames omit it entirely.
 	Sessions *[]map[string]any `json:"sessions,omitempty"`
-	Session  map[string]any   `json:"session,omitempty"`
+	Session  map[string]any    `json:"session,omitempty"`
 	// Events is a replay-friendly sequence of typed events (chat, delta, tool,
 	// usage, done) that mirrors the live wire protocol. Returned alongside
 	// Messages for backward compatibility. Clients can use Events to render

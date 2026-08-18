@@ -102,11 +102,11 @@ func TestExtractCostFromUsage_UsedInUsageStruct(t *testing.T) {
 
 func TestExtractRawUsage_DeepSeekCacheTokens(t *testing.T) {
 	tests := []struct {
-		name       string
-		json       string
-		wantCost   float64
-		wantHit    int
-		wantMiss   int
+		name     string
+		json     string
+		wantCost float64
+		wantHit  int
+		wantMiss int
 	}{
 		{
 			name: "deepseek with cache breakdown",
@@ -184,10 +184,10 @@ func TestExtractRawUsage_DeepSeekCacheTokens(t *testing.T) {
 
 func TestCalculateCostFromPricing(t *testing.T) {
 	tests := []struct {
-		name      string
-		pricing   agent.Pricing
-		usage     RawUsage
-		wantCost  float64
+		name     string
+		pricing  agent.Pricing
+		usage    RawUsage
+		wantCost float64
 	}{
 		{
 			name: "no cache breakdown - basic pricing",
@@ -218,7 +218,7 @@ func TestCalculateCostFromPricing(t *testing.T) {
 			// 0.000054 + 0.000021 + 0.000110 = 0.000185
 		},
 		{
-			name: "pricing not configured (zero)",
+			name:    "pricing not configured (zero)",
 			pricing: agent.Pricing{},
 			usage: RawUsage{
 				promptTokens:     100,

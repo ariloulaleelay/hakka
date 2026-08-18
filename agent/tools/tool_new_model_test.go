@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestShowTool_AlreadyEnabledDoesNotDuplicate(t *testing.T) {
 	tool := ShowTool(r)
 
 	session := agent.NewSession("ns", "sys")
-	session.EnableTool("read_file")
+	session.EnableTool(context.Background(), "read_file")
 	ctx := ctxWithSessionNS("ns", session.SessionID(), session)
 
 	_ = runPlainCtx(t, ctx, tool.Handler, map[string]any{"name": "read_file"})

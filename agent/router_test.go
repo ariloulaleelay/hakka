@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func newTestRouter() (*Router, *fakeAdapter, *fakeAdapter) {
 	reg := NewRegistry()
@@ -25,7 +28,7 @@ func TestRouterAdapterDefaults(t *testing.T) {
 func TestRouterBindAndResolve(t *testing.T) {
 	r, _, b := newTestRouter()
 	sess := NewSession("testns", "sys")
-	if err := r.Bind(sess, "b"); err != nil {
+	if err := r.Bind(context.Background(), sess, "b"); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	if r.Adapter(sess) != b {
@@ -39,7 +42,7 @@ func TestRouterBindAndResolve(t *testing.T) {
 func TestRouterBindUnknownModelIsRejected(t *testing.T) {
 	r, _, _ := newTestRouter()
 	sess := NewSession("testns", "sys")
-	if err := r.Bind(sess, "nope"); err == nil {
+	if err := r.Bind(context.Background(), sess, "nope"); err == nil {
 		t.Fatal("expected error binding unknown model")
 	}
 	// Model must be untouched after a rejected bind.
@@ -54,7 +57,7 @@ func TestRouterReturnsNilWhenBoundModelDisappears(t *testing.T) {
 	// surface an error to the user instead of silently falling back.
 	r, _, _ := newTestRouter()
 	sess := NewSession("testns", "sys")
-	sess.SetModel("ghost")
+	sess.SetModel(context.Background(), "ghost")
 	if r.Adapter(sess) != nil {
 		t.Fatal("expected nil when bound model is unknown")
 	}
@@ -63,7 +66,7 @@ func TestRouterReturnsNilWhenBoundModelDisappears(t *testing.T) {
 func TestRouterUsesModelField(t *testing.T) {
 	r, _, b := newTestRouter()
 	sess := NewSession("testns", "sys")
-	sess.SetModel("b")
+	sess.SetModel(context.Background(), "b")
 	if r.Adapter(sess) != b {
 		t.Fatal("router did not read the Model field")
 	}

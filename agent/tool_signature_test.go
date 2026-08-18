@@ -80,9 +80,9 @@ func TestToolSchema_Signature_BoolDefaultFalse(t *testing.T) {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":       map[string]any{"type": "string"},
-				"old":        map[string]any{"type": "string"},
-				"new":        map[string]any{"type": "string"},
+				"path":        map[string]any{"type": "string"},
+				"old":         map[string]any{"type": "string"},
+				"new":         map[string]any{"type": "string"},
 				"replace_all": map[string]any{"type": "boolean"},
 			},
 			"required": []string{"path", "old", "new"},
@@ -100,8 +100,8 @@ func TestToolSchema_Signature_OptionalObjectNone(t *testing.T) {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"url":      map[string]any{"type": "string"},
-				"headers":  map[string]any{"type": "object", "description": "Optional headers"},
+				"url":       map[string]any{"type": "string"},
+				"headers":   map[string]any{"type": "object", "description": "Optional headers"},
 				"max_bytes": map[string]any{"type": "integer", "description": "Max bytes (default 65536)"},
 			},
 			"required": []string{"url"},
@@ -154,7 +154,7 @@ func TestBuildToolListMessage_SignatureFormat(t *testing.T) {
 	})
 
 	s := NewSession("ns", "sys")
-	s.EnableTool("read_file")
+	s.EnableTool(context.Background(), "read_file")
 
 	msg := BuildToolListMessage(r, s)
 	if !strings.Contains(msg, "read_file(path, limit=200)") {
@@ -174,7 +174,7 @@ func TestBuildToolListMessage_ToolWithoutParams(t *testing.T) {
 	})
 
 	s := NewSession("ns", "sys")
-	s.EnableTool("session_create")
+	s.EnableTool(context.Background(), "session_create")
 
 	msg := BuildToolListMessage(r, s)
 	if !strings.Contains(msg, "session_create") {
@@ -214,8 +214,8 @@ func TestBuildToolListMessage_MultipleToolsWithSignatures(t *testing.T) {
 	})
 
 	s := NewSession("ns", "sys")
-	s.EnableTool("read_file")
-	s.EnableTool("list_dir")
+	s.EnableTool(context.Background(), "read_file")
+	s.EnableTool(context.Background(), "list_dir")
 
 	msg := BuildToolListMessage(r, s)
 	if !strings.Contains(msg, "read_file(path)") {

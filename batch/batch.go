@@ -154,10 +154,10 @@ func RunBatchWithOutput(ctx context.Context, p RunBatchParams, output io.Writer,
 		return "", fmt.Errorf("create session: %w", err)
 	}
 	for _, name := range resolved {
-		session.EnableTool(name)
+		session.EnableTool(ctx, name)
 	}
 	if p.CompactSoftLimit > 0 {
-		session.SetCompactSoftLimit(p.CompactSoftLimit)
+		session.SetCompactSoftLimit(ctx, p.CompactSoftLimit)
 	}
 	if err := sessions.Save(ctx, "batch", session); err != nil {
 		return "", fmt.Errorf("save session: %w", err)

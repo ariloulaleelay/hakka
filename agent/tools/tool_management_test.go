@@ -21,7 +21,7 @@ func newTestRegistry() *agent.ToolRegistry {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"path":      map[string]any{"type": "string", "description": "Absolute or relative path"},
+					"path":  map[string]any{"type": "string", "description": "Absolute or relative path"},
 					"limit": map[string]any{"type": "integer", "description": "Optional max lines (default 200)"},
 				},
 				"required": []any{"path"},

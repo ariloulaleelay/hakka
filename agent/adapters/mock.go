@@ -173,7 +173,6 @@ func (m *MockProvider) Complete(ctx context.Context, msgs []agent.Message, _ []a
 	return nil, fmt.Errorf("mock: invalid step (no message or run_tool)")
 }
 
-
 // Reset clears all per-session indices. Used in test cleanup.
 func (m *MockProvider) Reset() {
 	m.mu.Lock()

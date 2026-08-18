@@ -21,6 +21,7 @@ type SessionMetaPatch struct {
 	EnabledTools           map[string]bool
 	BlockedTools           map[string]bool
 	ActiveSkills           []string
+	UpdatedAt              *time.Time
 }
 
 // SessionStore persists sessions, keyed by (namespace, id).
@@ -158,7 +159,11 @@ func (ms *MemoryStore) PatchMeta(_ context.Context, namespace, id string, patch 
 	if patch.ActiveSkills != nil {
 		d.ActiveSkills = patch.ActiveSkills
 	}
-	d.UpdatedAt = time.Now()
+	if patch.UpdatedAt != nil {
+		d.UpdatedAt = *patch.UpdatedAt
+	} else {
+		d.UpdatedAt = time.Now()
+	}
 	ms.data[storeKey(namespace, id)] = d
 
 	return nil

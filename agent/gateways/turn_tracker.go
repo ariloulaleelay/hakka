@@ -11,12 +11,12 @@ import (
 // reads from the turn's event channel and broadcasts every event to
 // the namespace hub. The turn continues even if all clients disconnect.
 type activeTurn struct {
-	cancel  context.CancelFunc
-	eventCh <-chan event.EngineEvent
-	done    chan struct{} // closed when the fan-out goroutine exits
-	hub     *NamespaceHub
+	cancel    context.CancelFunc
+	eventCh   <-chan event.EngineEvent
+	done      chan struct{} // closed when the fan-out goroutine exits
+	hub       *NamespaceHub
 	sessionID string
-	mu      sync.Mutex
+	mu        sync.Mutex
 }
 
 // turnTracker manages active turns per session ID. It provides methods

@@ -27,7 +27,9 @@ func TestSessionManagerReusesExisting(t *testing.T) {
 	ctx := context.Background()
 
 	a, _ := sm.CreateWithID(ctx, "testns", "")
-	a.Append(Message{Role: RoleUser, Content: "marker"})
+	if err := a.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "marker"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	if err := sm.Save(ctx, "testns", a); err != nil {
 		t.Fatalf("save: %v", err)
 	}

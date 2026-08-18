@@ -350,7 +350,7 @@ func executeSyncWithTools(t *testing.T, conv *Conversation, ctx context.Context,
 		return nil, "", err
 	}
 	for _, name := range toolNames {
-		session.EnableTool(name)
+		session.EnableTool(context.Background(), name)
 	}
 	if err := conv.sessions.Save(ctx, conv.namespace, session); err != nil {
 		return nil, "", err
@@ -635,10 +635,8 @@ func TestExecute_AutoRenameViaStream(t *testing.T) {
 
 	// Seed the session with 2 user messages (so threshold is met).
 	session, _ := sm.CreateWithID(context.Background(), "testns", "stream-auto")
-	session.Append(Message{Role: RoleUser, Content: "first message"})
-	session.Append(Message{Role: RoleAssistant, Content: "first response"})
-	session.Append(Message{Role: RoleUser, Content: "second message"})
-	session.Append(Message{Role: RoleAssistant, Content: "second response"})
+	session.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "first message"}, Message{Role: RoleAssistant, Content: "first response"}}, 0, 0)
+	session.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "second message"}, Message{Role: RoleAssistant, Content: "second response"}}, 0, 0)
 	_ = sm.Save(context.Background(), "testns", session)
 
 	// Run a third turn via streaming — this should trigger auto-rename.
@@ -728,7 +726,7 @@ func TestEngineChat_SaveFailurePropagatesToTurnFinished(t *testing.T) {
 	}
 	// Now wrap with errStore that lets the initial creates succeed but
 	// fails after the first successful turn iteration (PatchMeta + user AppendMessages).
-	failStore := &errStore{SessionStore: memStore, failCount: 2}
+	failStore := &errStore{SessionStore: memStore, failCount: 3}
 	sm := NewSessionManager(failStore, "sys")
 	tools := NewToolRegistry()
 	reg := NewRegistry()
@@ -769,16 +767,14 @@ func TestEngineChat_SaveFailureBeforeAutoRename(t *testing.T) {
 	// Seed the session with 2 user messages to enable auto-rename.
 	seedSession := NewSession("testns", "sys")
 	seedSession.Update(func(d *SessionData) { d.ID = "auto-fail" })
-	seedSession.Append(Message{Role: RoleUser, Content: "first"})
-	seedSession.Append(Message{Role: RoleAssistant, Content: "resp1"})
-	seedSession.Append(Message{Role: RoleUser, Content: "second"})
-	seedSession.Append(Message{Role: RoleAssistant, Content: "resp2"})
+	seedSession.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "first"}, Message{Role: RoleAssistant, Content: "resp1"}}, 0, 0)
+	seedSession.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "second"}, Message{Role: RoleAssistant, Content: "resp2"}}, 0, 0)
 	if err := memStore.Put(context.Background(), "testns", seedSession); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	// After seeding, fail on the first AppendMessages during the turn
 	// (PatchMeta + user msg AppendMessages will succeed first).
-	failStore := &errStore{SessionStore: memStore, failCount: 2}
+	failStore := &errStore{SessionStore: memStore, failCount: 3}
 	sm := NewSessionManager(failStore, "sys")
 	tools := NewToolRegistry()
 	reg := NewRegistry()
@@ -891,7 +887,7 @@ func TestToolCallBrokenJSONArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session.EnableTool("echo_tool")
+	session.EnableTool(context.Background(), "echo_tool")
 	if err := conv.sessions.Save(context.Background(), "testns", session); err != nil {
 		t.Fatal(err)
 	}
@@ -957,7 +953,7 @@ func TestToolCallEmptyArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session.EnableTool("list_dir_tool")
+	session.EnableTool(context.Background(), "list_dir_tool")
 	if err := conv.sessions.Save(context.Background(), "testns", session); err != nil {
 		t.Fatal(err)
 	}
@@ -1015,13 +1011,13 @@ func TestExecute_MidTurnToolEnable(t *testing.T) {
 			if !ok || sess == nil {
 				return "", fmt.Errorf("inline_enable: no session in context")
 			}
-			sess.EnableTool(args.Name)
+			sess.EnableTool(context.Background(), args.Name)
 			return "enabled " + args.Name, nil
 		},
 	})
 
 	// Enable only inline_enable initially — test_tool must be discovered.
-	session.EnableTool("inline_enable")
+	session.EnableTool(context.Background(), "inline_enable")
 	if err := sm.Save(context.Background(), "testns", session); err != nil {
 		t.Fatal(err)
 	}
@@ -1098,8 +1094,7 @@ func TestExecute_EstimatedContextStored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session.Append(Message{Role: RoleUser, Content: "What is the meaning of life?"})
-	session.Append(Message{Role: RoleAssistant, Content: "42. It is the answer."})
+	session.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "What is the meaning of life?"}, Message{Role: RoleAssistant, Content: "42. It is the answer."}}, 0, 0)
 	if err := sm.Save(context.Background(), "testns", session); err != nil {
 		t.Fatal(err)
 	}

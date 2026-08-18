@@ -135,7 +135,7 @@ func RegisterMockTools(reg *agent.ToolRegistry) {
 			}
 			return fmt.Sprintf("sleep %ds", args.Seconds)
 		},
-		Tags: []string{"mock", "utility"},
+		Tags:    []string{"mock", "utility"},
 		Timeout: 10 * time.Second,
 	})
 }

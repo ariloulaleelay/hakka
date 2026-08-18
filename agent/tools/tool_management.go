@@ -42,7 +42,9 @@ func ShowTool(r *agent.ToolRegistry) agent.Tool {
 			// Auto-enable the tool in the current session
 			session, ok := event.SessionViewFromContext(ctx).(agent.SessionToolEditor)
 			if ok && session != nil {
-				session.EnableTool(args.Name)
+				if err := session.EnableTool(ctx, args.Name); err != nil {
+					return "", fmt.Errorf("show_tool: %w", err)
+				}
 			}
 
 			// Build usage info from the tool's schema

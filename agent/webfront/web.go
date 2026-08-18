@@ -3,7 +3,7 @@
 // endpoint (/ws) on the same port. This makes hakka a self-contained
 // server+client: a single binary, a single port, no external dependencies.
 //
-// The webfront-dist directory is copied from externa hakka-webfront
+// # The webfront-dist directory is copied from externa hakka-webfront
 //
 // This is done automatically by the Makefile before `go build`.
 package webfront

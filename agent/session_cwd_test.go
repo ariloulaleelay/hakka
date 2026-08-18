@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ func TestSessionClientCWD(t *testing.T) {
 	}
 
 	// Can be overridden
-	s.SetClientCWD("/home/user/project")
+	s.SetClientCWD(context.Background(), "/home/user/project")
 	if s.Read().ClientCWD != "/home/user/project" {
 		t.Fatalf("expected /home/user/project, got %q", s.Read().ClientCWD)
 	}
@@ -23,8 +24,10 @@ func TestSessionClientCWD(t *testing.T) {
 
 func TestMessagesDoesNotIncludeCWD(t *testing.T) {
 	s := NewSession("testns", "you are helpful")
-	s.SetClientCWD("/home/user/project")
-	s.Append(Message{Role: RoleUser, Content: "hello"})
+	s.SetClientCWD(context.Background(), "/home/user/project")
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "hello"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 
 	if sp := s.SystemPrompt(); sp != "you are helpful" {
 		t.Fatalf("expected system prompt 'you are helpful', got %q", sp)
@@ -47,8 +50,10 @@ func TestMessagesDoesNotIncludeCWD(t *testing.T) {
 
 func TestMessagesDoesNotIncludeCWDWhenEmpty(t *testing.T) {
 	s := NewSession("testns", "you are helpful")
-	s.SetClientCWD("") // explicitly clear it
-	s.Append(Message{Role: RoleUser, Content: "hello"})
+	s.SetClientCWD(context.Background(), "") // explicitly clear it
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "hello"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 
 	if sp := s.SystemPrompt(); sp != "you are helpful" {
 		t.Fatalf("expected system prompt 'you are helpful', got %q", sp)
@@ -62,7 +67,7 @@ func TestMessagesDoesNotIncludeCWDWhenEmpty(t *testing.T) {
 
 func TestCWDMessageReturnsMessageWhenSet(t *testing.T) {
 	s := NewSession("testns", "sys prompt")
-	s.SetClientCWD("/workspace")
+	s.SetClientCWD(context.Background(), "/workspace")
 
 	msg := s.CWDMessage()
 	if msg == nil {
@@ -81,7 +86,7 @@ func TestCWDMessageReturnsMessageWhenSet(t *testing.T) {
 
 func TestCWDMessageReturnsNilWhenEmpty(t *testing.T) {
 	s := NewSession("testns", "sys prompt")
-	s.SetClientCWD("") // explicitly clear
+	s.SetClientCWD(context.Background(), "") // explicitly clear
 
 	msg := s.CWDMessage()
 	if msg != nil {
@@ -105,12 +110,12 @@ func TestSessionGetCWD(t *testing.T) {
 		t.Fatalf("expected GetCWD=%q, got %q", serverCWD, cwd)
 	}
 
-	s.SetClientCWD("/home/user/project")
+	s.SetClientCWD(context.Background(), "/home/user/project")
 	if cwd := s.GetCWD(); cwd != "/home/user/project" {
 		t.Fatalf("expected GetCWD=/home/user/project, got %q", cwd)
 	}
 
-	s.SetClientCWD("")
+	s.SetClientCWD(context.Background(), "")
 	if cwd := s.GetCWD(); cwd != "" {
 		t.Fatalf("expected GetCWD= empty, got %q", cwd)
 	}

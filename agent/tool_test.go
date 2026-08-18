@@ -283,7 +283,7 @@ func TestSchemasForSession_ToolTaggedToolsMustBeEnabled(t *testing.T) {
 	}
 
 	// When explicitly enabled, it should appear
-	session.EnableTool("list_tools")
+	session.EnableTool(context.Background(), "list_tools")
 	schemas = r.SchemasForSession(session)
 	if len(schemas) != 1 {
 		t.Fatalf("expected 1 schema after enabling list_tools, got %d: %+v", len(schemas), schemas)
@@ -334,7 +334,7 @@ func TestExecuteForSession_ToolTaggedFollowsAllowDeny(t *testing.T) {
 	}
 
 	// Denied tools should be rejected
-	session.DenyTool("list_tools")
+	session.DenyTool(context.Background(), "list_tools")
 	result = r.ExecuteForSession(context.Background(), session, "list_tools", `{}`)
 	if !result.IsError() {
 		t.Fatalf("expected error for denied tool, got success: %+v", result)
@@ -360,8 +360,8 @@ func TestSchemasForSession_SomeEnabled(t *testing.T) {
 	})
 
 	session := NewSession("testns", "sys")
-	session.EnableTool("alpha")
-	session.DisableTool("beta") // explicitly disable beta
+	session.EnableTool(context.Background(), "alpha")
+	session.DisableTool(context.Background(), "beta") // explicitly disable beta
 
 	schemas := r.SchemasForSession(session)
 	if len(schemas) != 1 {
@@ -388,8 +388,8 @@ func TestSchemasForSession_AllEnabled(t *testing.T) {
 	})
 
 	session := NewSession("testns", "sys")
-	session.EnableTool("alpha")
-	session.EnableTool("beta")
+	session.EnableTool(context.Background(), "alpha")
+	session.EnableTool(context.Background(), "beta")
 
 	schemas := r.SchemasForSession(session)
 	if len(schemas) != 2 {
@@ -458,9 +458,9 @@ func TestSchemasForSession_RespectsDeny(t *testing.T) {
 	})
 
 	session := NewSession("testns", "sys")
-	session.EnableTool("read_file")
-	session.EnableTool("shell")
-	session.DenyTool("shell") // denied → not in schemas
+	session.EnableTool(context.Background(), "read_file")
+	session.EnableTool(context.Background(), "shell")
+	session.DenyTool(context.Background(), "shell") // denied → not in schemas
 
 	schemas := r.SchemasForSession(session)
 	if len(schemas) != 1 {
@@ -481,7 +481,7 @@ func TestExecute_DeniedToolReturnsError(t *testing.T) {
 	})
 
 	session := NewSession("testns", "sys")
-	session.DenyTool("echo") // explicitly deny
+	session.DenyTool(context.Background(), "echo") // explicitly deny
 
 	result := r.ExecuteForSession(context.Background(), session, "echo", `{}`)
 	if !result.IsError() {
@@ -502,7 +502,7 @@ func TestExecute_EnabledToolSucceeds(t *testing.T) {
 	})
 
 	session := NewSession("testns", "sys")
-	session.EnableTool("echo")
+	session.EnableTool(context.Background(), "echo")
 
 	result := r.ExecuteForSession(context.Background(), session, "echo", `{}`)
 	if result.IsError() {

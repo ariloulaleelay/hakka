@@ -89,7 +89,9 @@ func TestMemoryStoreList_OrderedByUpdatedAt(t *testing.T) {
 	}
 
 	// Now update s1 (re-Put with a new message) — it should move to the front
-	s1.Append(Message{Role: RoleUser, Content: "new message"})
+	if err := s1.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "new message"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Put(ctx, "testns", s1); err != nil {
 		t.Fatalf("put s1 again: %v", err)
 	}

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -58,15 +59,14 @@ func (router *Router) Current(session SessionModelBinding) string {
 
 // Bind records a model choice on the session. Does not persist — callers must
 // Save the session separately.
-func (router *Router) Bind(session SessionModelBinding, name string) error {
+func (router *Router) Bind(ctx context.Context, session SessionModelBinding, name string) error {
 	if router == nil || router.models == nil {
 		return errors.New("router: no registry configured")
 	}
 	if _, ok := router.models.Get(name); !ok {
 		return fmt.Errorf("router: unknown model %q", name)
 	}
-	session.SetModel(name)
-	return nil
+	return session.SetModel(ctx, name)
 }
 
 func (router *Router) Models() []string {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
 	"testing"
@@ -27,8 +28,7 @@ func TestNewSession(t *testing.T) {
 
 func TestSessionAppendAndHistory(t *testing.T) {
 	s := NewSession("testns", "sys")
-	s.Append(Message{Role: RoleUser, Content: "hello"})
-	s.Append(Message{Role: RoleAssistant, Content: "hi"})
+	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "hello"}, Message{Role: RoleAssistant, Content: "hi"}}, 0, 0)
 
 	if sp := s.SystemPrompt(); sp != "sys" {
 		t.Fatalf("expected system prompt 'sys', got %q", sp)
@@ -44,7 +44,9 @@ func TestSessionAppendAndHistory(t *testing.T) {
 
 func TestSessionHistoryWithoutSystem(t *testing.T) {
 	s := NewSession("testns", "")
-	s.Append(Message{Role: RoleUser, Content: "hi"})
+	if err := s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "hi"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	if sp := s.SystemPrompt(); sp != "" {
 		t.Fatalf("expected empty system prompt, got %q", sp)
 	}
@@ -56,14 +58,16 @@ func TestSessionHistoryWithoutSystem(t *testing.T) {
 
 func TestSessionConcurrentAppend(t *testing.T) {
 	s := NewSession("testns", "")
-	s.SetClientCWD("") // clear default CWD for simplicity
+	s.SetClientCWD(context.Background(), "") // clear default CWD for simplicity
 	var wg sync.WaitGroup
 	const N = 200
 	for i := 0; i < N; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.Append(Message{Role: RoleUser, Content: "x"})
+			if err := s.AddMessages(context.Background(), []Message{{Role: RoleUser, Content: "x"}}, 0, 0); err != nil {
+				t.Errorf("AddMessages: %v", err)
+			}
 		}()
 	}
 	wg.Wait()
@@ -89,7 +93,7 @@ func TestSessionName_DisplayNameReturnsIDWhenEmpty(t *testing.T) {
 
 func TestSessionName_DisplayNameReturnsNameWhenSet(t *testing.T) {
 	s := NewSession("testns", "sys")
-	s.SetSessionName("My Chat")
+	s.SetSessionName(context.Background(), "My Chat")
 	if s.DisplayName() != "My Chat" {
 		t.Fatalf("expected DisplayName() to return %q, got %q", "My Chat", s.DisplayName())
 	}
@@ -108,11 +112,11 @@ func TestEnabledTools_NewSessionAllToolsDisabled(t *testing.T) {
 
 func TestEnabledTools_DisablingToolWorks(t *testing.T) {
 	s := NewSession("testns", "sys")
-	s.EnableTool("read_file")
+	s.EnableTool(context.Background(), "read_file")
 	if !s.IsToolEnabled("read_file") {
 		t.Fatal("expected read_file to be enabled after EnableTool")
 	}
-	s.DisableTool("read_file")
+	s.DisableTool(context.Background(), "read_file")
 	if s.IsToolEnabled("read_file") {
 		t.Fatal("expected read_file to be disabled after DisableTool")
 	}
@@ -120,10 +124,10 @@ func TestEnabledTools_DisablingToolWorks(t *testing.T) {
 
 func TestEnabledTools_EnableByTag(t *testing.T) {
 	s := NewSession("testns", "sys")
-	s.DisableTool("read_file")
-	s.EnableTool("write_file")
-	s.EnableTool("list_dir")
-	s.DisableTool("write_file")
+	s.DisableTool(context.Background(), "read_file")
+	s.EnableTool(context.Background(), "write_file")
+	s.EnableTool(context.Background(), "list_dir")
+	s.DisableTool(context.Background(), "write_file")
 
 	if s.IsToolEnabled("read_file") {
 		t.Fatal("read_file should be disabled")
@@ -138,9 +142,9 @@ func TestEnabledTools_EnableByTag(t *testing.T) {
 
 func TestEnabledTools_JSONRoundTrip(t *testing.T) {
 	s := NewSession("testns", "sys")
-	s.DisableTool("read_file")
-	s.EnableTool("search")
-	s.DisableTool("shell")
+	s.DisableTool(context.Background(), "read_file")
+	s.EnableTool(context.Background(), "search")
+	s.DisableTool(context.Background(), "shell")
 
 	// JSON round-trip through SessionData (used by stores).
 	data := s.Read()
@@ -185,7 +189,7 @@ func TestEnabledTools_NewSessionHasPreEnabled(t *testing.T) {
 
 func TestEnabledTools_DisableTool(t *testing.T) {
 	s := NewSession("testns", "sys")
-	err := s.DisableTool("show_tool")
+	err := s.DisableTool(context.Background(), "show_tool")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

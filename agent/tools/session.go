@@ -86,12 +86,9 @@ func resolveSessionFromTool(ctx context.Context, sm *agent.SessionManager, ns, p
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", toolName, err)
 	}
-	s, ok, err := sm.Store.Get(ctx, ns, sessionID)
+	s, err := sm.Get(ctx, ns, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", toolName, err)
-	}
-	if !ok {
-		return nil, fmt.Errorf("%s: session %q not found", toolName, prefix)
 	}
 	return s, nil
 }
@@ -207,10 +204,7 @@ func SessionRename(sm *agent.SessionManager) agent.Tool {
 				return "", err
 			}
 
-			s.SetSessionName(args.Name)
-			if err := sm.Store.PatchMeta(ctx, ns, s.SessionID(), &agent.SessionMetaPatch{
-				Name: &args.Name,
-			}); err != nil {
+			if err := s.SetSessionName(ctx, args.Name); err != nil {
 				return "", fmt.Errorf("session_rename: %w", err)
 			}
 

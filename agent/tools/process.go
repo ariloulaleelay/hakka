@@ -463,9 +463,9 @@ func InteractProcess(pm *ProcessManager) agent.Tool {
 		}).
 		Handler(func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args struct {
-				ID       string `json:"id"`
-				Input    string `json:"input"`
-				Timeout  int    `json:"timeout_seconds"`
+				ID      string `json:"id"`
+				Input   string `json:"input"`
+				Timeout int    `json:"timeout_seconds"`
 			}
 			if err := json.Unmarshal(raw, &args); err != nil {
 				return "", fmt.Errorf("interact_process: %w", err)

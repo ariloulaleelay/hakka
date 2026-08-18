@@ -90,7 +90,7 @@ func TestExecuteEvents_ToolLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWithID: %v", err)
 	}
-	session.EnableTool("greet")
+	session.EnableTool(context.Background(), "greet")
 	if err := conv.sessions.Save(context.Background(), "testns", session); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

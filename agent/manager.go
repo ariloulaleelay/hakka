@@ -23,6 +23,8 @@ func NewSessionManager(store SessionStore, systemPrompt string) *SessionManager 
 }
 
 // Get fetches an existing session. It never creates one.
+var ErrSessionNotFound = errors.New("session not found")
+
 func (sm *SessionManager) Get(ctx context.Context, namespace, id string) (*Session, error) {
 	if id == "" {
 		return nil, fmt.Errorf("%w: empty session ID", ErrSessionNotFound)
@@ -34,10 +36,19 @@ func (sm *SessionManager) Get(ctx context.Context, namespace, id string) (*Sessi
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, id)
 	}
-	return session, nil
+	return sm.bindPersistence(namespace, session), nil
 }
 
-var ErrSessionNotFound = errors.New("session not found")
+func (sm *SessionManager) bindPersistence(namespace string, session *Session) *Session {
+	id := session.SessionID()
+	session.bindMessagePersistence(func(ctx context.Context, msgs []Message, tokens int, cost float64) error {
+		return sm.Store.AppendMessages(ctx, namespace, id, msgs, tokens, cost)
+	})
+	session.bindMetaPersistence(func(ctx context.Context, patch SessionMetaPatch) error {
+		return sm.Store.PatchMeta(ctx, namespace, id, &patch)
+	})
+	return session
+}
 
 func (sm *SessionManager) Create(ctx context.Context, namespace string) (*Session, error) {
 	session := NewSession(namespace, sm.SystemPrompt)
@@ -45,7 +56,7 @@ func (sm *SessionManager) Create(ctx context.Context, namespace string) (*Sessio
 		return nil, err
 	}
 	slog.InfoContext(ctx, "session created", "ns", namespace, "id", session.SessionID())
-	return session, nil
+	return sm.bindPersistence(namespace, session), nil
 }
 
 // CreateWithID creates a new session with an explicitly supplied ID. This is
@@ -59,7 +70,7 @@ func (sm *SessionManager) CreateWithID(ctx context.Context, namespace, id string
 	if err := sm.Store.Put(ctx, namespace, session); err != nil {
 		return nil, err
 	}
-	return session, nil
+	return sm.bindPersistence(namespace, session), nil
 }
 
 func (sm *SessionManager) Save(ctx context.Context, namespace string, session SessionView) error {

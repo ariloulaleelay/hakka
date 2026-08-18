@@ -23,15 +23,14 @@ func TestSubagentRun_Basic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parent.Append(agent.Message{ID: "pm1", Role: agent.RoleUser, Content: "What is the capital of France?"})
-	parent.Append(agent.Message{ID: "pm2", Role: agent.RoleAssistant, Content: "The capital of France is Paris."})
+	parent.AddMessages(context.Background(), []agent.Message{agent.Message{ID: "pm1", Role: agent.RoleUser, Content: "What is the capital of France?"}, agent.Message{ID: "pm2", Role: agent.RoleAssistant, Content: "The capital of France is Paris."}}, 0, 0)
 	if err := sm.Save(context.Background(), ns, parent); err != nil {
 		t.Fatal(err)
 	}
 
 	// Enable some tools on the parent (including subagent_run).
-	parent.EnableTool("read_file")
-	parent.EnableTool("subagent_run")
+	parent.EnableTool(context.Background(), "read_file")
+	parent.EnableTool(context.Background(), "subagent_run")
 
 	// Set up router with a mock adapter that returns a deterministic response.
 	adapter := &askAdapter{
@@ -91,14 +90,12 @@ func TestSubagentRun_InheritsHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parent.Append(agent.Message{ID: "pm1", Role: agent.RoleUser, Content: "First message"})
-	parent.Append(agent.Message{ID: "pm2", Role: agent.RoleAssistant, Content: "First reply"})
-	parent.Append(agent.Message{ID: "pm3", Role: agent.RoleUser, Content: "Second message"})
-	parent.Append(agent.Message{ID: "pm4", Role: agent.RoleAssistant, Content: "Second reply"})
+	parent.AddMessages(context.Background(), []agent.Message{agent.Message{ID: "pm1", Role: agent.RoleUser, Content: "First message"}, agent.Message{ID: "pm2", Role: agent.RoleAssistant, Content: "First reply"}}, 0, 0)
+	parent.AddMessages(context.Background(), []agent.Message{agent.Message{ID: "pm3", Role: agent.RoleUser, Content: "Second message"}, agent.Message{ID: "pm4", Role: agent.RoleAssistant, Content: "Second reply"}}, 0, 0)
 	if err := sm.Save(context.Background(), ns, parent); err != nil {
 		t.Fatal(err)
 	}
-	parent.EnableTool("subagent_run")
+	parent.EnableTool(context.Background(), "subagent_run")
 
 	// Use a spy adapter that records the messages it received so we can
 	// verify the child received the full history + task.
@@ -206,7 +203,7 @@ func TestSubagentRun_RecursionBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parent.EnableTool("subagent_run")
+	parent.EnableTool(context.Background(), "subagent_run")
 
 	adapter := &askAdapter{t: t, response: "done"}
 	reg := agent.NewRegistry()
@@ -229,7 +226,6 @@ func TestSubagentRun_RecursionBlocked(t *testing.T) {
 	}
 }
 
-
 func TestSubagentRun_WithTools(t *testing.T) {
 	// Test that the child subagent can use tools that the parent has enabled.
 	ns := "testns"
@@ -239,8 +235,8 @@ func TestSubagentRun_WithTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parent.EnableTool("subagent_run")
-	parent.EnableTool("echo_tool")
+	parent.EnableTool(context.Background(), "subagent_run")
+	parent.EnableTool(context.Background(), "echo_tool")
 
 	// The child LLM will first call echo_tool, then return a final response.
 	adapter := &askAdapter{t: t, response: "The subagent completed."}
@@ -306,32 +302,33 @@ func TestSubagentRun_ForkStripsUnresolvedToolCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A completed tool round — resolved tool_calls + matching tool result.
-	parent.Append(agent.Message{ID: "pm1", Role: agent.RoleUser, Content: "What is the weather in Paris?"})
-	parent.Append(agent.Message{
+	if err := parent.AddMessages(context.Background(), []agent.Message{agent.Message{ID: "pm1", Role: agent.RoleUser, Content: "What is the weather in Paris?"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	parent.AddMessages(context.Background(), []agent.Message{agent.Message{
 		ID:   "pm2",
 		Role: agent.RoleAssistant,
 		ToolCalls: []agent.ToolCall{
 			{ID: "call_weather_1", Name: "shell", Arguments: `{"cmd":"curl wttr.in/Paris"}`},
 		},
-	})
-	parent.Append(agent.Message{ID: "pm3", Role: agent.RoleTool, Content: "Paris: 20°C, Sunny", ToolCallID: "call_weather_1", Name: "shell"})
-	parent.Append(agent.Message{ID: "pm4", Role: agent.RoleAssistant, Content: "The weather in Paris is 20°C and sunny."})
+	}}, 0, 0)
+	parent.AddMessages(context.Background(), []agent.Message{agent.Message{ID: "pm3", Role: agent.RoleTool, Content: "Paris: 20°C, Sunny", ToolCallID: "call_weather_1", Name: "shell"}, agent.Message{ID: "pm4", Role: agent.RoleAssistant, Content: "The weather in Paris is 20°C and sunny."}}, 0, 0)
 	// An unresolved tool round — this is the in-flight message that called
 	// subagent_run (and possibly other tools). Its results haven't been
 	// appended yet.
-	parent.Append(agent.Message{
+	parent.AddMessages(context.Background(), []agent.Message{agent.Message{
 		ID:   "pm5",
 		Role: agent.RoleAssistant,
 		ToolCalls: []agent.ToolCall{
 			{ID: "call_sub_1", Name: "subagent_run", Arguments: `{"task":"do Tokyo"}`},
 			{ID: "call_other_1", Name: "read_file", Arguments: `{"path":"notes.txt"}`},
 		},
-	})
+	}}, 0, 0)
 	if err := sm.Save(context.Background(), ns, parent); err != nil {
 		t.Fatal(err)
 	}
-	parent.EnableTool("subagent_run")
-	parent.EnableTool("echo_tool")
+	parent.EnableTool(context.Background(), "subagent_run")
+	parent.EnableTool(context.Background(), "echo_tool")
 
 	adapter := &askAdapter{t: t, response: "Done."}
 	reg := agent.NewRegistry()
@@ -368,12 +365,11 @@ func TestSubagentRun_CreatesPersistentChildSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parent.Append(agent.Message{ID: "pm1", Role: agent.RoleUser, Content: "First message"})
-	parent.Append(agent.Message{ID: "pm2", Role: agent.RoleAssistant, Content: "First reply"})
+	parent.AddMessages(context.Background(), []agent.Message{agent.Message{ID: "pm1", Role: agent.RoleUser, Content: "First message"}, agent.Message{ID: "pm2", Role: agent.RoleAssistant, Content: "First reply"}}, 0, 0)
 	if err := sm.Save(context.Background(), ns, parent); err != nil {
 		t.Fatal(err)
 	}
-	parent.EnableTool("subagent_run")
+	parent.EnableTool(context.Background(), "subagent_run")
 
 	adapter := &askAdapter{t: t, response: "The subagent processed your task. Result: 42."}
 	reg := agent.NewRegistry()
@@ -474,12 +470,11 @@ func TestSubagentRun_ForkWithoutMessageIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parent.Append(agent.Message{Role: agent.RoleUser, Content: "legacy message"})
-	parent.Append(agent.Message{Role: agent.RoleAssistant, Content: "legacy reply"})
+	parent.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "legacy message"}, agent.Message{Role: agent.RoleAssistant, Content: "legacy reply"}}, 0, 0)
 	if err := sm.Save(context.Background(), ns, parent); err != nil {
 		t.Fatal(err)
 	}
-	parent.EnableTool("subagent_run")
+	parent.EnableTool(context.Background(), "subagent_run")
 
 	adapter := &askAdapter{t: t, response: "done"}
 	reg := agent.NewRegistry()
@@ -549,12 +544,11 @@ func TestSubagentRun_ChildSessionGetsSubagentNotice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parent.Append(agent.Message{ID: "pm1", Role: agent.RoleUser, Content: "Run subagents for me"})
-	parent.Append(agent.Message{ID: "pm2", Role: agent.RoleAssistant, Content: "OK, spawning subagents."})
+	parent.AddMessages(context.Background(), []agent.Message{agent.Message{ID: "pm1", Role: agent.RoleUser, Content: "Run subagents for me"}, agent.Message{ID: "pm2", Role: agent.RoleAssistant, Content: "OK, spawning subagents."}}, 0, 0)
 	if err := sm.Save(context.Background(), ns, parent); err != nil {
 		t.Fatal(err)
 	}
-	parent.EnableTool("subagent_run")
+	parent.EnableTool(context.Background(), "subagent_run")
 
 	adapter := &askAdapter{t: t, response: "Task done."}
 	reg := agent.NewRegistry()
@@ -638,12 +632,11 @@ func TestSubagentRun_EmitsSessionCreatedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parent.Append(agent.Message{ID: "pm1", Role: agent.RoleUser, Content: "run"})
-	parent.Append(agent.Message{ID: "pm2", Role: agent.RoleAssistant, Content: "ok"})
+	parent.AddMessages(context.Background(), []agent.Message{agent.Message{ID: "pm1", Role: agent.RoleUser, Content: "run"}, agent.Message{ID: "pm2", Role: agent.RoleAssistant, Content: "ok"}}, 0, 0)
 	if err := sm.Save(context.Background(), ns, parent); err != nil {
 		t.Fatal(err)
 	}
-	parent.EnableTool("subagent_run")
+	parent.EnableTool(context.Background(), "subagent_run")
 
 	adapter := &askAdapter{t: t, response: "done"}
 	reg := agent.NewRegistry()
@@ -712,4 +705,3 @@ func (s *spyAdapter) Complete(_ context.Context, msgs []agent.Message, _ []agent
 		Usage:        &agent.Usage{PromptTokens: len(msgs), CompletionTokens: len(reply), TotalTokens: len(msgs) + len(reply)},
 	}, nil
 }
-

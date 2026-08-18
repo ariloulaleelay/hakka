@@ -84,7 +84,7 @@ func createAndEnableSession(t *testing.T, conv *agent.Conversation, ns string, s
 	}
 	// Enable all mock tools.
 	for _, name := range []string{"echo_tool", "fail_tool", "slow_tool"} {
-		session.EnableTool(name)
+		session.EnableTool(context.Background(), name)
 	}
 	if err := sm.Save(context.Background(), ns, session); err != nil {
 		t.Fatalf("Save: %v", err)

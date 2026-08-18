@@ -153,8 +153,8 @@ type ClientWriter interface {
 // Frame is a generic outbound envelope for tool→client communication.
 type Frame struct {
 	SessionID string         `json:"session_id,omitempty"`
-	Event     string         `json:"event,omitempty"`       // e.g. "client_request"
-	Data      map[string]any `json:"data,omitempty"`        // for simple payloads
+	Event     string         `json:"event,omitempty"`          // e.g. "client_request"
+	Data      map[string]any `json:"data,omitempty"`           // for simple payloads
 	ClientReq *ClientRequest `json:"client_request,omitempty"` // for client requests
 }
 

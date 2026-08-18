@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -29,7 +30,7 @@ func TestUpdatedAt_OnlyChangesOnMutation(t *testing.T) {
 
 	// Calling SetClientCWD SHOULD update updated_at.
 	time.Sleep(time.Millisecond)
-	session.SetClientCWD("/new/path")
+	session.SetClientCWD(context.Background(), "/new/path")
 	if session.Read().UpdatedAt.Equal(initialUpdatedAt) {
 		t.Fatal("SetClientCWD should update updated_at")
 	}
@@ -37,7 +38,7 @@ func TestUpdatedAt_OnlyChangesOnMutation(t *testing.T) {
 
 	// Calling SetSessionName SHOULD update updated_at.
 	time.Sleep(time.Millisecond)
-	session.SetSessionName("new-name")
+	session.SetSessionName(context.Background(), "new-name")
 	if session.Read().UpdatedAt.Equal(afterCWD) {
 		t.Fatal("SetSessionName should update updated_at")
 	}
@@ -45,7 +46,9 @@ func TestUpdatedAt_OnlyChangesOnMutation(t *testing.T) {
 
 	// Appending a message SHOULD update updated_at.
 	time.Sleep(time.Millisecond)
-	session.Append(Message{Role: RoleUser, Content: "hello"})
+	if err := session.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "hello"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	if session.Read().UpdatedAt.Equal(afterName) {
 		t.Fatal("Append should update updated_at")
 	}
@@ -53,7 +56,7 @@ func TestUpdatedAt_OnlyChangesOnMutation(t *testing.T) {
 
 	// SetModel SHOULD update updated_at.
 	time.Sleep(time.Millisecond)
-	session.SetModel("gpt-4")
+	session.SetModel(context.Background(), "gpt-4")
 	if session.Read().UpdatedAt.Equal(afterAppend) {
 		t.Fatal("SetModel should update updated_at")
 	}

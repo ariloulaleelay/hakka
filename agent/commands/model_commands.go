@@ -114,10 +114,7 @@ func (mc *ModelCommands) bindModel(ctx context.Context, sessionID, name string) 
 	if err != nil {
 		return nil, err
 	}
-	session.SetModel(name)
-	if err := mc.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
-		Model: &name,
-	}); err != nil {
+	if err := session.SetModel(ctx, name); err != nil {
 		return session, err
 	}
 	return session, nil

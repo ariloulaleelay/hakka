@@ -113,6 +113,54 @@ func TestDeepSeekCompleteReasoningContent(t *testing.T) {
 	}
 }
 
+// TestDeepSeekEmptyToolResultKeepsContentField verifies that a tool message
+// with empty content (e.g. search found no matches) still carries the
+// "content" field on the wire — DeepSeek 400s with "missing field content"
+// when the field is omitted entirely.
+func TestDeepSeekEmptyToolResultKeepsContentField(t *testing.T) {
+	var captured map[string]any
+	adapter := newDeepSeekTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &captured)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+			"usage":{}
+		}`))
+	})
+	_, err := adapter.Complete(context.Background(),
+		[]agent.Message{
+			{Role: agent.RoleUser, Content: "search for missing"},
+			{
+				Role:      agent.RoleAssistant,
+				ToolCalls: []agent.ToolCall{{ID: "call_s", Name: "search", Arguments: `{"pattern":"missing"}`}},
+			},
+			{Role: agent.RoleTool, ToolCallID: "call_s", Name: "search", Content: ""},
+		}, []agent.ToolSchema{{Name: "search"}}, agent.CompleteOptions{}, nil)
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	msgs, _ := captured["messages"].([]any)
+	found := false
+	for _, m := range msgs {
+		mm := m.(map[string]any)
+		if mm["role"] != "tool" {
+			continue
+		}
+		found = true
+		content, ok := mm["content"]
+		if !ok {
+			t.Fatalf("tool message missing content field: %+v", mm)
+		}
+		if content != "" {
+			t.Fatalf("expected empty content, got %q", content)
+		}
+	}
+	if !found {
+		t.Fatalf("no tool message in outbound: %+v", msgs)
+	}
+}
+
 // TestDeepSeekSyntheticReasoningForProviderSwitch verifies that an assistant
 // message with tool calls but NO ProviderMetadata (e.g. it was produced by
 // another provider like Claude) still gets a reasoning_content field — an

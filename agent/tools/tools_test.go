@@ -268,15 +268,18 @@ func TestSearchPlaintext(t *testing.T) {
 	}
 }
 
-func TestSearchNoMatchIsEmpty(t *testing.T) {
+func TestSearchNoMatchMessage(t *testing.T) {
 	if _, err := exec.LookPath("rg"); err != nil {
 		t.Skip("rg not installed")
 	}
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("alpha\n"), 0o644)
 	res := runPlain(t, Search().Handler, map[string]any{"pattern": "missing", "path": dir})
-	if res != "" {
-		t.Fatalf("expected empty result, got %q", res)
+	if res == "" {
+		t.Fatalf("expected explanatory no-match message, got empty result")
+	}
+	if !strings.Contains(res, "No matches found") || !strings.Contains(res, "missing") {
+		t.Fatalf("expected no-match message mentioning the pattern, got %q", res)
 	}
 }
 
@@ -596,13 +599,14 @@ func TestRegisterAllDoesNotIncludeMetaTools(t *testing.T) {
 // context_compactify messages never leak into the session_ask_question LLM call.
 func TestBuildAskQuestionMessages_ExcludesCompactifyMessages(t *testing.T) {
 	session := agent.NewSession("testns", "You are helpful.")
-	session.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
+	if err := session.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "hello"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	// Add a compactify call/result pair — must be stripped.
-	session.Append(agent.Message{Role: agent.RoleAssistant, ToolCalls: []agent.ToolCall{
+	session.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleAssistant, ToolCalls: []agent.ToolCall{
 		{ID: "cc", Name: "context_compactify", Arguments: `{"range_start":0,"range_end":0}`},
-	}})
-	session.Append(agent.Message{Role: agent.RoleTool, Content: "Noted.", ToolCallID: "cc", Name: "context_compactify"})
-	session.Append(agent.Message{Role: agent.RoleAssistant, Content: "hi there"})
+	}}}, 0, 0)
+	session.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleTool, Content: "Noted.", ToolCallID: "cc", Name: "context_compactify"}, agent.Message{Role: agent.RoleAssistant, Content: "hi there"}}, 0, 0)
 
 	msgs := buildAskQuestionMessages(session, "what was said?")
 

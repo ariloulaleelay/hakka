@@ -28,15 +28,15 @@ type RetryConfigRaw struct {
 
 // ModelConfig describes a single named LLM endpoint.
 type ModelConfig struct {
-	Dialect          string            `json:"dialect"`                      // openai | anthropic | gemini | deepseek | openai-responses
-	BaseURL          string            `json:"base_url"`                     // provider base URL
-	Model            string            `json:"model"`                        // provider model id
-	Headers          map[string]string `json:"headers,omitempty"`            // extra HTTP headers
-	Extra            map[string]any    `json:"extra,omitempty"`              // provider-specific knobs (anthropic_version, max_tokens, ...)
-	Pricing          *agent.Pricing    `json:"pricing,omitempty"`            // per-token pricing for cost calculation when provider doesn't return cost
-	CompactSoftLimit int               `json:"compact_soft_limit,omitempty"` // per-provider compact soft limit (0 = use engine default)
-	Hacks            agent.Hacks       `json:"hacks,omitempty"`              // per-provider workarounds
-	RetryConfig      *RetryConfigRaw   `json:"retry_config,omitempty"`       // per-provider retry policy
+	Dialect          string             `json:"dialect"`                      // openai | anthropic | gemini | deepseek | openai-responses
+	BaseURL          string             `json:"base_url"`                     // provider base URL
+	Model            string             `json:"model"`                        // provider model id
+	Headers          map[string]string  `json:"headers,omitempty"`            // extra HTTP headers
+	Extra            map[string]any     `json:"extra,omitempty"`              // provider-specific knobs (anthropic_version, max_tokens, ...)
+	Pricing          *agent.Pricing     `json:"pricing,omitempty"`            // per-token pricing for cost calculation when provider doesn't return cost
+	CompactSoftLimit int                `json:"compact_soft_limit,omitempty"` // per-provider compact soft limit (0 = use engine default)
+	Hacks            agent.Hacks        `json:"hacks,omitempty"`              // per-provider workarounds
+	RetryConfig      *RetryConfigRaw    `json:"retry_config,omitempty"`       // per-provider retry policy
 	Quota            *agent.QuotaConfig `json:"quota,omitempty"`              // per-provider quota/balance API
 }
 

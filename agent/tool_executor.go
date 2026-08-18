@@ -94,7 +94,6 @@ func (ex *toolExecutor) runToolsConcurrently(ctx context.Context, session Sessio
 	return results
 }
 
-
 // invokes the handler, fires the OnToolResult hook, emits events, and
 // returns the result string.
 //
@@ -119,7 +118,9 @@ func (ex *toolExecutor) runSingleTool(ctx context.Context, session SessionView, 
 	// if the LLM manages to call a tool (even a disabled one), we honour it
 	// and make it available going forward.
 	if session != nil {
-		session.EnableTool(call.Name)
+		if err := session.EnableTool(ctx, call.Name); err != nil {
+			return event.ErrorResult(err).ForLLM()
+		}
 	}
 
 	call.ExecSnippet = ex.tools.ExecSnippet(call.Name, call.Arguments)

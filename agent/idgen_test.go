@@ -138,7 +138,7 @@ func TestBase62SortOrder(t *testing.T) {
 		digits int // expected number of base62 digits
 	}{
 		{0, 61, 1},
-		{62, 3843, 2},  // 62 → "10", 3843 → "zz"
+		{62, 3843, 2},     // 62 → "10", 3843 → "zz"
 		{3844, 238327, 3}, // 3844 → "100", 238327 → "zzz"
 	}
 	for _, tt := range tests {

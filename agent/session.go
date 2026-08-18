@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sync"
@@ -51,24 +52,24 @@ type Message struct {
 // See AGENT.md §"Core Components | Session" for the full v2 model.
 
 type SessionData struct {
-	Namespace        string
-	ID               string
-	ParentID         string // parent session ID (empty = root)
-	ForkPoint        string // message ID in parent: last message shared with child (inclusive; empty = no fork)
-	SystemPrompt     string
-	Messages         []Message
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	ClientCWD        string
-	Name             string
-	Model            string
-	TotalTokens      int
-	TotalCost        float64
+	Namespace              string
+	ID                     string
+	ParentID               string // parent session ID (empty = root)
+	ForkPoint              string // message ID in parent: last message shared with child (inclusive; empty = no fork)
+	SystemPrompt           string
+	Messages               []Message
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	ClientCWD              string
+	Name                   string
+	Model                  string
+	TotalTokens            int
+	TotalCost              float64
 	EstimatedContextTokens int
-	EnabledTools     map[string]bool
-	BlockedTools     map[string]bool
-	CompactSoftLimit int
-	ActiveSkills     []string // names of loaded skills
+	EnabledTools           map[string]bool
+	BlockedTools           map[string]bool
+	CompactSoftLimit       int
+	ActiveSkills           []string // names of loaded skills
 }
 
 // NewSessionData creates a SessionData with sensible defaults.
@@ -263,9 +264,26 @@ func stripUnresolvedToolCalls(data *SessionData) {
 type Session struct {
 	mu   sync.RWMutex
 	data *SessionData
+
+	// persistMessages is installed by SessionManager for sessions loaded from
+	// a repository. Mutating message operations persist first and update the
+	// in-memory snapshot only after the repository confirms the commit.
+	persistMessages func(context.Context, []Message, int, float64) error
+	persistMeta     func(context.Context, SessionMetaPatch) error
 }
 
-// NewSession creates a new Session with default data.
+func (sess *Session) bindMetaPersistence(fn func(context.Context, SessionMetaPatch) error) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.persistMeta = fn
+}
+
+func (sess *Session) bindMessagePersistence(fn func(context.Context, []Message, int, float64) error) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.persistMessages = fn
+}
+
 func NewSession(namespace, systemPrompt string) *Session {
 	data := NewSessionData(namespace, systemPrompt)
 	return &Session{data: &data}
@@ -310,11 +328,73 @@ func (sess *Session) SystemPrompt() string {
 	return sess.data.SystemPrompt
 }
 
-func (sess *Session) SetSessionName(name string) {
+func (sess *Session) updateMeta(ctx context.Context, patch SessionMetaPatch, apply func(*SessionData, time.Time)) error {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	sess.data.Name = name
-	sess.data.UpdatedAt = time.Now()
+	now := time.Now()
+	candidate := sess.data.DeepCopy()
+	apply(&candidate, now)
+	candidate.UpdatedAt = now
+	patch.UpdatedAt = &now
+	patch.Name = optionalChangedString(sess.data.Name, candidate.Name, patch.Name)
+	patch.Model = optionalChangedString(sess.data.Model, candidate.Model, patch.Model)
+	patch.ClientCWD = optionalChangedString(sess.data.ClientCWD, candidate.ClientCWD, patch.ClientCWD)
+	patch.CompactSoftLimit = optionalChangedInt(sess.data.CompactSoftLimit, candidate.CompactSoftLimit, patch.CompactSoftLimit)
+	patch.EstimatedContextTokens = optionalChangedInt(sess.data.EstimatedContextTokens, candidate.EstimatedContextTokens, patch.EstimatedContextTokens)
+	if !mapsEqual(sess.data.EnabledTools, candidate.EnabledTools) {
+		patch.EnabledTools = candidate.EnabledTools
+	}
+	if !mapsEqual(sess.data.BlockedTools, candidate.BlockedTools) {
+		patch.BlockedTools = candidate.BlockedTools
+	}
+	if !slicesEqual(sess.data.ActiveSkills, candidate.ActiveSkills) {
+		patch.ActiveSkills = candidate.ActiveSkills
+	}
+	if sess.persistMeta != nil {
+		if err := sess.persistMeta(ctx, patch); err != nil {
+			return err
+		}
+	}
+	*sess.data = candidate
+	return nil
+}
+func optionalChangedString(old, next string, current *string) *string {
+	if current != nil || old != next {
+		return &next
+	}
+	return nil
+}
+func optionalChangedInt(old, next int, current *int) *int {
+	if current != nil || old != next {
+		return &next
+	}
+	return nil
+}
+func mapsEqual(a, b map[string]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (sess *Session) SetSessionName(ctx context.Context, name string) error {
+	return sess.updateMeta(ctx, SessionMetaPatch{Name: &name}, func(d *SessionData, _ time.Time) { d.Name = name })
 }
 
 func (sess *Session) DisplayName() string {
@@ -328,11 +408,65 @@ func (sess *Session) DisplayName() string {
 
 // --- SessionHistory ---
 
-func (sess *Session) Append(msg Message) {
+// AddMessages atomically adds a valid group of conversation messages.
+func (sess *Session) AddMessages(ctx context.Context, msgs []Message, deltaTokens int, deltaCost float64) error {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	sess.data.Messages = append(sess.data.Messages, msg)
+	if err := validateMessageAddition(sess.data.Messages, msgs); err != nil {
+		return err
+	}
+	if sess.persistMessages != nil {
+		if err := sess.persistMessages(ctx, msgs, deltaTokens, deltaCost); err != nil {
+			return err
+		}
+	}
+	sess.data.Messages = append(sess.data.Messages, msgs...)
+	sess.data.TotalTokens += deltaTokens
+	sess.data.TotalCost += deltaCost
 	sess.data.UpdatedAt = time.Now()
+	return nil
+}
+
+func validateMessageAddition(existing, added []Message) error {
+	seen := make(map[string]bool)
+	calls := make(map[string]bool)
+	for _, msg := range existing {
+		if msg.ID != "" {
+			seen[msg.ID] = true
+		}
+		if msg.Role == RoleAssistant {
+			for _, call := range msg.ToolCalls {
+				calls[call.ID] = true
+			}
+		}
+	}
+	newCalls := make(map[string]bool)
+	for _, msg := range added {
+		if msg.ID != "" && seen[msg.ID] {
+			return fmt.Errorf("duplicate message ID %q", msg.ID)
+		}
+		if msg.ID != "" {
+			seen[msg.ID] = true
+		}
+		if msg.Role == RoleAssistant {
+			for _, call := range msg.ToolCalls {
+				if call.ID == "" {
+					return fmt.Errorf("invalid empty tool call ID")
+				}
+				if newCalls[call.ID] {
+					return fmt.Errorf("duplicate tool call ID %q", call.ID)
+				}
+				newCalls[call.ID] = true
+				calls[call.ID] = true
+			}
+		}
+		if msg.Role == RoleTool {
+			if msg.ToolCallID == "" || !calls[msg.ToolCallID] {
+				return fmt.Errorf("tool result %q has no matching tool call", msg.ToolCallID)
+			}
+		}
+	}
+	return nil
 }
 
 func (sess *Session) Messages() []Message {
@@ -430,61 +564,80 @@ func (sess *Session) IsToolLocked(name string) bool {
 	return false
 }
 
-func (sess *Session) EnableTool(name string) {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	if sess.data.EnabledTools == nil {
-		sess.data.EnabledTools = make(map[string]bool)
-	}
-	sess.data.EnabledTools[name] = true
+func (sess *Session) EnableTool(ctx context.Context, name string) error {
+	return sess.updateMeta(ctx, SessionMetaPatch{}, func(d *SessionData, _ time.Time) {
+		if d.EnabledTools == nil {
+			d.EnabledTools = make(map[string]bool)
+		}
+		d.EnabledTools[name] = true
+	})
 }
 
-func (sess *Session) DisableTool(name string) error {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	// Check if tool is locked (used in history)
+func (sess *Session) DisableTool(ctx context.Context, name string) error {
+	sess.mu.RLock()
+	locked := sess.isToolLockedLocked(name)
+	sess.mu.RUnlock()
+	if locked {
+		return fmt.Errorf("tool %q is locked because it was already used in this session", name)
+	}
+	return sess.updateMeta(ctx, SessionMetaPatch{}, func(d *SessionData, _ time.Time) {
+		if d.EnabledTools == nil {
+			d.EnabledTools = make(map[string]bool)
+		}
+		d.EnabledTools[name] = false
+	})
+}
+
+func (sess *Session) AllowTool(ctx context.Context, name string) error {
+	return sess.updateMeta(ctx, SessionMetaPatch{}, func(d *SessionData, _ time.Time) {
+		if d.BlockedTools != nil {
+			delete(d.BlockedTools, name)
+			if len(d.BlockedTools) == 0 {
+				d.BlockedTools = nil
+			}
+		}
+	})
+}
+
+func (sess *Session) DenyTool(ctx context.Context, name string) error {
+	sess.mu.RLock()
+	locked := sess.isToolLockedLocked(name)
+	sess.mu.RUnlock()
+	if locked {
+		return fmt.Errorf("tool %q is locked because it was already used in this session", name)
+	}
+	return sess.updateMeta(ctx, SessionMetaPatch{}, func(d *SessionData, _ time.Time) {
+		if d.BlockedTools == nil {
+			d.BlockedTools = make(map[string]bool)
+		}
+		d.BlockedTools[name] = true
+	})
+}
+
+func (sess *Session) AllowAndEnableTool(ctx context.Context, name string) error {
+	return sess.updateMeta(ctx, SessionMetaPatch{}, func(d *SessionData, _ time.Time) {
+		if d.BlockedTools != nil {
+			delete(d.BlockedTools, name)
+			if len(d.BlockedTools) == 0 {
+				d.BlockedTools = nil
+			}
+		}
+		if d.EnabledTools == nil {
+			d.EnabledTools = make(map[string]bool)
+		}
+		d.EnabledTools[name] = true
+	})
+}
+
+func (sess *Session) isToolLockedLocked(name string) bool {
 	for _, msg := range sess.data.Messages {
 		for _, tc := range msg.ToolCalls {
 			if tc.Name == name {
-				return fmt.Errorf("tool %q is locked because it was already used in this session", name)
+				return true
 			}
 		}
 	}
-	if sess.data.EnabledTools == nil {
-		sess.data.EnabledTools = make(map[string]bool)
-	}
-	sess.data.EnabledTools[name] = false
-	return nil
-}
-
-func (sess *Session) AllowTool(name string) {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	if sess.data.BlockedTools == nil {
-		return // already allowed
-	}
-	delete(sess.data.BlockedTools, name)
-	if len(sess.data.BlockedTools) == 0 {
-		sess.data.BlockedTools = nil
-	}
-}
-
-func (sess *Session) DenyTool(name string) error {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	// Check if tool is locked (used in history)
-	for _, msg := range sess.data.Messages {
-		for _, tc := range msg.ToolCalls {
-			if tc.Name == name {
-				return fmt.Errorf("tool %q is locked because it was already used in this session", name)
-			}
-		}
-	}
-	if sess.data.BlockedTools == nil {
-		sess.data.BlockedTools = make(map[string]bool)
-	}
-	sess.data.BlockedTools[name] = true
-	return nil
+	return false
 }
 
 // --- SessionModelBinding ---
@@ -494,12 +647,8 @@ func (sess *Session) GetModel() string {
 	defer sess.mu.RUnlock()
 	return sess.data.Model
 }
-
-func (sess *Session) SetModel(name string) {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	sess.data.Model = name
-	sess.data.UpdatedAt = time.Now()
+func (sess *Session) SetModel(ctx context.Context, name string) error {
+	return sess.updateMeta(ctx, SessionMetaPatch{Model: &name}, func(d *SessionData, _ time.Time) { d.Model = name })
 }
 
 // --- SessionTokenTracking ---
@@ -534,10 +683,8 @@ func (sess *Session) GetEstimatedContextTokens() int {
 	return sess.data.EstimatedContextTokens
 }
 
-func (sess *Session) SetEstimatedContextTokens(tokens int) {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	sess.data.EstimatedContextTokens = tokens
+func (sess *Session) SetEstimatedContextTokens(ctx context.Context, tokens int) error {
+	return sess.updateMeta(ctx, SessionMetaPatch{EstimatedContextTokens: &tokens}, func(d *SessionData, _ time.Time) { d.EstimatedContextTokens = tokens })
 }
 
 // --- SessionCompactLimits ---
@@ -548,10 +695,8 @@ func (sess *Session) GetCompactSoftLimit() int {
 	return sess.data.CompactSoftLimit
 }
 
-func (sess *Session) SetCompactSoftLimit(n int) {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	sess.data.CompactSoftLimit = n
+func (sess *Session) SetCompactSoftLimit(ctx context.Context, n int) error {
+	return sess.updateMeta(ctx, SessionMetaPatch{CompactSoftLimit: &n}, func(d *SessionData, _ time.Time) { d.CompactSoftLimit = n })
 }
 
 // Metadata is the single point of truth for session metadata format.
@@ -563,20 +708,20 @@ func (sess *Session) Metadata() map[string]any {
 	defer sess.mu.RUnlock()
 	d := sess.data
 	return map[string]any{
-		"id":                      d.ID,
-		"parent_id":               d.ParentID,
-		"fork_point":              d.ForkPoint,
-		"name":                    d.Name,
-		"short_id":                shortID(d.ID),
-		"model":                   d.Model,
-		"message_count":           len(d.Messages),
-		"total_tokens":            d.TotalTokens,
-		"total_cost":              d.TotalCost,
+		"id":                       d.ID,
+		"parent_id":                d.ParentID,
+		"fork_point":               d.ForkPoint,
+		"name":                     d.Name,
+		"short_id":                 shortID(d.ID),
+		"model":                    d.Model,
+		"message_count":            len(d.Messages),
+		"total_tokens":             d.TotalTokens,
+		"total_cost":               d.TotalCost,
 		"estimated_context_tokens": d.EstimatedContextTokens,
-		"client_cwd":              d.ClientCWD,
-		"compact_soft_limit":      d.CompactSoftLimit,
-		"created_at":              d.CreatedAt.Format(time.RFC3339),
-		"updated_at":              formatTime(d.UpdatedAt, d.CreatedAt),
+		"client_cwd":               d.ClientCWD,
+		"compact_soft_limit":       d.CompactSoftLimit,
+		"created_at":               d.CreatedAt.Format(time.RFC3339),
+		"updated_at":               formatTime(d.UpdatedAt, d.CreatedAt),
 	}
 }
 
@@ -599,11 +744,8 @@ func formatTime(t, fallback time.Time) string {
 }
 
 // --- ActiveSkills management ---
-func (sess *Session) SetClientCWD(cwd string) {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	sess.data.ClientCWD = cwd
-	sess.data.UpdatedAt = time.Now()
+func (sess *Session) SetClientCWD(ctx context.Context, cwd string) error {
+	return sess.updateMeta(ctx, SessionMetaPatch{ClientCWD: &cwd}, func(d *SessionData, _ time.Time) { d.ClientCWD = cwd })
 }
 
 func (sess *Session) ActiveSkills() []string {
@@ -617,21 +759,24 @@ func (sess *Session) ActiveSkills() []string {
 	return out
 }
 
-func (sess *Session) AddActiveSkill(name string) {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	sess.data.ActiveSkills = append(sess.data.ActiveSkills, name)
-	sess.data.UpdatedAt = time.Now()
+func (sess *Session) AddActiveSkill(ctx context.Context, name string) error {
+	return sess.updateMeta(ctx, SessionMetaPatch{}, func(d *SessionData, _ time.Time) {
+		for _, skill := range d.ActiveSkills {
+			if skill == name {
+				return
+			}
+		}
+		d.ActiveSkills = append(d.ActiveSkills, name)
+	})
 }
 
-func (sess *Session) RemoveActiveSkill(name string) {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	for i, s := range sess.data.ActiveSkills {
-		if s == name {
-			sess.data.ActiveSkills = append(sess.data.ActiveSkills[:i], sess.data.ActiveSkills[i+1:]...)
-			break
+func (sess *Session) RemoveActiveSkill(ctx context.Context, name string) error {
+	return sess.updateMeta(ctx, SessionMetaPatch{}, func(d *SessionData, _ time.Time) {
+		for i, skill := range d.ActiveSkills {
+			if skill == name {
+				d.ActiveSkills = append(d.ActiveSkills[:i], d.ActiveSkills[i+1:]...)
+				break
+			}
 		}
-	}
-	sess.data.UpdatedAt = time.Now()
+	})
 }

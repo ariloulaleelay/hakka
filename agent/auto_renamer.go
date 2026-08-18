@@ -142,4 +142,3 @@ func logCompactifySkipped(logger *slog.Logger, sessionID string, iteration int, 
 		"calledTools", names,
 	)
 }
-

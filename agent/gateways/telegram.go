@@ -492,8 +492,9 @@ func (gw *TelegramGateway) appendUnmentioned(
 ) {
 	slog.Debug("telegram: appending unmentioned message to history",
 		"chat_id", chatID, "session_id", session.SessionID())
-	session.Append(agent.Message{Role: agent.RoleUser, Content: inputText})
-	_ = gw.Conv.Sessions().Save(ctx, namespace, session)
+	if err := session.AddMessages(ctx, []agent.Message{{Role: agent.RoleUser, Content: inputText}}, 0, 0); err != nil {
+		slog.Error("telegram: failed to append unmentioned message", "chat_id", chatID, "error", err)
+	}
 }
 
 // resetSession clears the active session for a chat (used by /start).
@@ -810,12 +811,14 @@ func (gw *TelegramGateway) initTelegramSession(ctx context.Context, namespace st
 		"session_summarize", "session_ask_question",
 	}
 	for _, name := range telegramTools {
-		session.AllowTool(name)
-		session.EnableTool(name)
+		if err := session.AllowAndEnableTool(ctx, name); err != nil {
+			slog.Warn("telegram: failed to enable tool", "tool", name, "error", err)
+			return
+		}
 	}
 
 	// Deny subagent_run — it's not safe for external Telegram users.
-	session.DenyTool("subagent_run")
+	session.DenyTool(ctx, "subagent_run")
 
 	if err := gw.Conv.Sessions().Save(ctx, namespace, session); err != nil {
 		slog.Warn("telegram: failed to save initialized session",

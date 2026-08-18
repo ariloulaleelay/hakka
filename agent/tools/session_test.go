@@ -135,8 +135,7 @@ func newTestSessions(t *testing.T, ns string, count int) *agent.SessionManager {
 		if err != nil {
 			t.Fatalf("create session %d: %v", i, err)
 		}
-		s.Append(agent.Message{Role: agent.RoleUser, Content: fmt.Sprintf("user message %d", i)})
-		s.Append(agent.Message{Role: agent.RoleAssistant, Content: fmt.Sprintf("assistant reply %d", i)})
+		s.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: fmt.Sprintf("user message %d", i)}, agent.Message{Role: agent.RoleAssistant, Content: fmt.Sprintf("assistant reply %d", i)}}, 0, 0)
 		_ = sm.Save(context.Background(), ns, s)
 	}
 	return sm
@@ -172,11 +171,15 @@ func TestSessionList_RespectsNamespace(t *testing.T) {
 	sm := agent.NewSessionManager(newTestStore(), "test")
 
 	s1, _ := sm.CreateWithID(context.Background(), "alfa", "")
-	s1.Append(agent.Message{Role: agent.RoleUser, Content: "alfa msg"})
+	if err := s1.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "alfa msg"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	_ = sm.Save(context.Background(), "alfa", s1)
 
 	s2, _ := sm.CreateWithID(context.Background(), "beta", "")
-	s2.Append(agent.Message{Role: agent.RoleUser, Content: "beta msg"})
+	if err := s2.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "beta msg"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	_ = sm.Save(context.Background(), "beta", s2)
 
 	// List from "alfa" context.
@@ -301,7 +304,9 @@ func TestSessionRead_LimitMessages(t *testing.T) {
 
 	s, _ := sm.CreateWithID(ctx, ns, "")
 	for i := 0; i < 10; i++ {
-		s.Append(agent.Message{Role: agent.RoleUser, Content: fmt.Sprintf("msg %d", i)})
+		if err := s.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: fmt.Sprintf("msg %d", i)}}, 0, 0); err != nil {
+			t.Fatal(err)
+		}
 	}
 	_ = sm.Save(ctx, ns, s)
 
@@ -326,15 +331,21 @@ func TestSessionSearch(t *testing.T) {
 	ctx := context.Background()
 
 	s1, _ := sm.CreateWithID(ctx, ns, "")
-	s1.Append(agent.Message{Role: agent.RoleUser, Content: "the quick brown fox"})
+	if err := s1.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "the quick brown fox"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	_ = sm.Save(ctx, ns, s1)
 
 	s2, _ := sm.CreateWithID(ctx, ns, "")
-	s2.Append(agent.Message{Role: agent.RoleUser, Content: "jumps over the lazy dog"})
+	if err := s2.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "jumps over the lazy dog"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	_ = sm.Save(ctx, ns, s2)
 
 	s3, _ := sm.CreateWithID(ctx, ns, "")
-	s3.Append(agent.Message{Role: agent.RoleUser, Content: "the fox is quick"})
+	if err := s3.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "the fox is quick"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	_ = sm.Save(ctx, ns, s3)
 
 	tool := SessionSearch(sm)
@@ -369,11 +380,15 @@ func TestSessionSearch_RespectsNamespace(t *testing.T) {
 	sm := agent.NewSessionManager(newTestStore(), "test")
 
 	s1, _ := sm.CreateWithID(context.Background(), "alfa", "")
-	s1.Append(agent.Message{Role: agent.RoleUser, Content: "secret-alfa-data"})
+	if err := s1.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "secret-alfa-data"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	_ = sm.Save(context.Background(), "alfa", s1)
 
 	s2, _ := sm.CreateWithID(context.Background(), "beta", "")
-	s2.Append(agent.Message{Role: agent.RoleUser, Content: "secret-beta-data"})
+	if err := s2.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "secret-beta-data"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	_ = sm.Save(context.Background(), "beta", s2)
 
 	tool := SessionSearch(sm)
@@ -496,7 +511,9 @@ func TestSessionList_NoNamespaceInContext(t *testing.T) {
 	sm := agent.NewSessionManager(newTestStore(), "test")
 	// Create a session directly (no context namespace)
 	s, _ := sm.CreateWithID(context.Background(), "some-ns", "")
-	s.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
+	if err := s.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "hello"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	_ = sm.Save(context.Background(), "some-ns", s)
 
 	tool := SessionList(sm)
@@ -512,7 +529,9 @@ func TestSessionRead_RespectsNamespace(t *testing.T) {
 	sm := agent.NewSessionManager(newTestStore(), "test")
 
 	s1, _ := sm.CreateWithID(context.Background(), "alfa", "")
-	s1.Append(agent.Message{Role: agent.RoleUser, Content: "alfa-secret"})
+	if err := s1.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "alfa-secret"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	_ = sm.Save(context.Background(), "alfa", s1)
 
 	// Try reading from "beta" context — should fail because session doesn't
@@ -546,7 +565,9 @@ func TestSessionTools_TimeoutSafety(t *testing.T) {
 	ctx := context.Background()
 
 	s, _ := sm.CreateWithID(ctx, "ns", "")
-	s.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
+	if err := s.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "hello"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	_ = sm.Save(ctx, "ns", s)
 
 	timeoutCtx, cancel := context.WithTimeout(ctxWithNS("ns"), 2*time.Second)
@@ -603,10 +624,8 @@ func TestSessionAskQuestion_Basic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Append(agent.Message{Role: agent.RoleUser, Content: "Hello, what is the capital of France?"})
-	s.Append(agent.Message{Role: agent.RoleAssistant, Content: "The capital of France is Paris."})
-	s.Append(agent.Message{Role: agent.RoleUser, Content: "What about Germany?"})
-	s.Append(agent.Message{Role: agent.RoleAssistant, Content: "The capital of Germany is Berlin."})
+	s.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "Hello, what is the capital of France?"}, agent.Message{Role: agent.RoleAssistant, Content: "The capital of France is Paris."}}, 0, 0)
+	s.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "What about Germany?"}, agent.Message{Role: agent.RoleAssistant, Content: "The capital of Germany is Berlin."}}, 0, 0)
 	_ = sm.Save(ctx, ns, s)
 
 	// Set up router with mock adapter
@@ -638,18 +657,24 @@ func TestSessionAskQuestion_StripsToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Append(agent.Message{Role: agent.RoleUser, Content: "Read the file foo.txt"})
+	if err := s.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "Read the file foo.txt"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	// Assistant with tool calls
-	s.Append(agent.Message{
+	s.AddMessages(context.Background(), []agent.Message{agent.Message{
 		Role: agent.RoleAssistant,
 		ToolCalls: []agent.ToolCall{
 			{ID: "call1", Name: "read_file", Arguments: `{"path":"foo.txt"}`},
 		},
-	})
+	}}, 0, 0)
 	// Tool result
-	s.Append(agent.Message{Role: agent.RoleTool, Content: "file contents", ToolCallID: "call1", Name: "read_file"})
+	if err := s.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleTool, Content: "file contents", ToolCallID: "call1", Name: "read_file"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	// Assistant text response
-	s.Append(agent.Message{Role: agent.RoleAssistant, Content: "The file foo.txt contains: file contents"})
+	if err := s.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleAssistant, Content: "The file foo.txt contains: file contents"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	_ = sm.Save(ctx, ns, s)
 
 	adapter := &askAdapter{t: t, wantToolCalls: true, response: "The user asked about file contents."}
@@ -777,11 +802,15 @@ func TestSessionAskQuestion_WithPrefix(t *testing.T) {
 
 	// Create two sessions with different IDs
 	s1, _ := sm.CreateWithID(ctx, ns, "")
-	s1.Append(agent.Message{Role: agent.RoleUser, Content: "session one content"})
+	if err := s1.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "session one content"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	_ = sm.Save(ctx, ns, s1)
 
 	s2, _ := sm.CreateWithID(ctx, ns, "")
-	s2.Append(agent.Message{Role: agent.RoleUser, Content: "session two content"})
+	if err := s2.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "session two content"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	_ = sm.Save(ctx, ns, s2)
 
 	adapter := &askAdapter{t: t, wantToolCalls: false, response: "about session two"}

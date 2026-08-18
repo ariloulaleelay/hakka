@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/ariloulaleelay/hakka/agent"
-		"github.com/ariloulaleelay/hakka/agent/event"
+	"github.com/ariloulaleelay/hakka/agent/event"
 	"github.com/ariloulaleelay/hakka/agent/gateways"
 )
 

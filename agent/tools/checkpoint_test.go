@@ -177,8 +177,8 @@ func TestCheckpointNonExistentFile(t *testing.T) {
 func TestCheckpointTotalLimitEviction(t *testing.T) {
 	dir := t.TempDir()
 	cs, err := NewCheckpointStore(filepath.Join(dir, "ck"),
-		WithMaxFileSize(1<<20),  // 1 MB per file
-		WithTotalLimit(2<<20),   // 2 MB total — third file triggers eviction
+		WithMaxFileSize(1<<20), // 1 MB per file
+		WithTotalLimit(2<<20),  // 2 MB total — third file triggers eviction
 	)
 	if err != nil {
 		t.Fatal(err)

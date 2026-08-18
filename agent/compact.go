@@ -15,7 +15,6 @@ import (
 // soft token limit is exceeded (see augmentSchemasWithCompactify).
 const ContextCompactifyToolName = "context_compactify"
 
-
 // compactRange describes an inclusive range of message indices to compact,
 // along with an optional summary provided by the LLM.
 type compactRange struct {
@@ -206,7 +205,7 @@ func buildSummaryLookup(numMsgs int, ranges []compactRange) []string {
 	summaryAt := make([]string, numMsgs)
 	for _, r := range ranges {
 		for i := r.from; i <= r.to && i < numMsgs; i++ {
-			if (summaryAt[i] == "") {
+			if summaryAt[i] == "" {
 				summaryAt[i] = r.summary
 			}
 		}
@@ -324,6 +323,7 @@ func passThroughMessage(m Message) Message {
 	}
 	return m
 }
+
 // BuildCompactContext builds the compacted message list sent to the LLM.
 //
 // It scans ALL past context_compactify tool calls in the raw session,

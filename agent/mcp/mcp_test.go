@@ -192,8 +192,8 @@ func TestSanitizeSchema_FixesEmptyType(t *testing.T) {
 		m := map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"name": map[string]any{"type": "string"},
-				"date": map[string]any{"type": ""},
+				"name":  map[string]any{"type": "string"},
+				"date":  map[string]any{"type": ""},
 				"count": map[string]any{"type": "integer"},
 			},
 		}

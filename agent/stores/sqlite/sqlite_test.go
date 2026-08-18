@@ -31,9 +31,8 @@ func TestRoundTrip(t *testing.T) {
 	ns := "testns"
 
 	sess := agent.NewSession(ns, "you are tested")
-	sess.Append(agent.Message{Role: agent.RoleUser, Content: "hi"})
-	sess.Append(agent.Message{Role: agent.RoleAssistant, Content: "hello"})
-	sess.SetModel("gpt4")
+	sess.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "hi"}, agent.Message{Role: agent.RoleAssistant, Content: "hello"}}, 0, 0)
+	sess.SetModel(context.Background(), "gpt4")
 
 	if err := s.Put(ctx, ns, sess); err != nil {
 		t.Fatalf("put: %v", err)
@@ -65,7 +64,9 @@ func TestUpsert(t *testing.T) {
 	if err := s.Put(ctx, ns, sess); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	sess.Append(agent.Message{Role: agent.RoleUser, Content: "ping"})
+	if err := sess.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "ping"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Put(ctx, ns, sess); err != nil {
 		t.Fatalf("put2: %v", err)
 	}
@@ -180,7 +181,9 @@ func TestList_returns_sessions_in_update_order(t *testing.T) {
 	}
 
 	// Update t1 (re-put) — it should now be first.
-	t1.Append(agent.Message{Role: agent.RoleUser, Content: "new"})
+	if err := t1.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "new"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Put(ctx, ns, t1); err != nil {
 		t.Fatalf("Put first updated: %v", err)
 	}
@@ -230,8 +233,8 @@ func TestEnabledTools_are_preserved_across_Put_and_Get(t *testing.T) {
 	ns := "tools-ns"
 
 	sess := agent.NewSession(ns, "you are a tool user")
-	sess.EnableTool("read_file")
-	sess.EnableTool("search")
+	sess.EnableTool(context.Background(), "read_file")
+	sess.EnableTool(context.Background(), "search")
 
 	if err := s.Put(ctx, ns, sess); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -339,8 +342,7 @@ func TestMessages_are_stored_in_dedicated_table(t *testing.T) {
 	ns := "msg-ns"
 
 	sess := agent.NewSession(ns, "test prompt")
-	sess.Append(agent.Message{Role: agent.RoleUser, Content: "hello"})
-	sess.Append(agent.Message{Role: agent.RoleAssistant, Content: "world", FinishReason: "stop"})
+	sess.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "hello"}, agent.Message{Role: agent.RoleAssistant, Content: "world", FinishReason: "stop"}}, 0, 0)
 
 	if err := s.Put(ctx, ns, sess); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -357,15 +359,15 @@ func TestMessages_are_stored_in_dedicated_table(t *testing.T) {
 	defer rows.Close()
 
 	var msgs []struct {
-		idx          int
+		idx           int
 		role, content string
-		finishReason sql.NullString
+		finishReason  sql.NullString
 	}
 	for rows.Next() {
 		var m struct {
-			idx          int
+			idx           int
 			role, content string
-			finishReason sql.NullString
+			finishReason  sql.NullString
 		}
 		if err := rows.Scan(&m.idx, &m.role, &m.content, &m.finishReason); err != nil {
 			t.Fatalf("scan: %v", err)
@@ -390,18 +392,18 @@ func TestMessages_with_tool_calls_round_trip(t *testing.T) {
 	ns := "tc-ns"
 
 	sess := agent.NewSession(ns, "prompt")
-	sess.Append(agent.Message{
+	sess.AddMessages(context.Background(), []agent.Message{agent.Message{
 		Role:    agent.RoleAssistant,
 		Content: "let me check",
 		ToolCalls: []agent.ToolCall{
 			{ID: "call_1", Name: "read_file", Arguments: `{"path":"/tmp/x"}`},
 		},
-	})
-	sess.Append(agent.Message{
+	}}, 0, 0)
+	sess.AddMessages(context.Background(), []agent.Message{agent.Message{
 		Role:       agent.RoleTool,
 		Content:    "file contents here",
 		ToolCallID: "call_1",
-	})
+	}}, 0, 0)
 
 	if err := s.Put(ctx, ns, sess); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -433,7 +435,9 @@ func TestUpsert_replaces_messages(t *testing.T) {
 	ns := "upsert-msgs"
 
 	sess := agent.NewSession(ns, "p")
-	sess.Append(agent.Message{Role: agent.RoleUser, Content: "v1"})
+	if err := sess.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "v1"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Put(ctx, ns, sess); err != nil {
 		t.Fatalf("Put v1: %v", err)
 	}
@@ -767,8 +771,7 @@ func TestDelete_cascades_to_messages(t *testing.T) {
 	ns := "cascade-ns"
 
 	sess := agent.NewSession(ns, "test")
-	sess.Append(agent.Message{Role: agent.RoleUser, Content: "msg1"})
-	sess.Append(agent.Message{Role: agent.RoleAssistant, Content: "msg2"})
+	sess.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "msg1"}, agent.Message{Role: agent.RoleAssistant, Content: "msg2"}}, 0, 0)
 	if err := s.Put(ctx, ns, sess); err != nil {
 		t.Fatalf("Put: %v", err)
 	}

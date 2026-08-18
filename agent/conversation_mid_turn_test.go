@@ -47,7 +47,9 @@ func TestConversationMidTurnEnableTool_EndToEnd(t *testing.T) {
 		Schema: ToolSchema{Name: "enable_tool", Description: "Enable a tool"},
 		Tags:   []string{"tool"},
 		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
-			var args struct{ Name string `json:"name"` }
+			var args struct {
+				Name string `json:"name"`
+			}
 			if err := json.Unmarshal(raw, &args); err != nil {
 				return "", err
 			}
@@ -57,7 +59,7 @@ func TestConversationMidTurnEnableTool_EndToEnd(t *testing.T) {
 			if !ok || sess == nil {
 				return "", fmt.Errorf("enable_tool: no session in context")
 			}
-			sess.EnableTool(args.Name)
+			sess.EnableTool(context.Background(), args.Name)
 			return "enabled " + args.Name, nil
 		},
 	})
@@ -159,7 +161,9 @@ func TestConversationMidTurnEnableTool_ContextInjection_Run(t *testing.T) {
 		Schema: ToolSchema{Name: "enable_tool", Description: "Enable a tool"},
 		Tags:   []string{"tool"},
 		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
-			var args struct{ Name string `json:"name"` }
+			var args struct {
+				Name string `json:"name"`
+			}
 			if err := json.Unmarshal(raw, &args); err != nil {
 				return "", err
 			}
@@ -167,7 +171,7 @@ func TestConversationMidTurnEnableTool_ContextInjection_Run(t *testing.T) {
 			if !ok || sess == nil {
 				return "", fmt.Errorf("enable_tool: no session in context")
 			}
-			sess.EnableTool(args.Name)
+			sess.EnableTool(context.Background(), args.Name)
 			return "enabled " + args.Name, nil
 		},
 	})

@@ -30,8 +30,8 @@ type PlatformConfig struct {
 	Store         SessionStore
 	Registry      *Registry
 	SystemPrompt  string
-	EngineCfg     EngineConfig     // optional; zero-value fields inherit from DefaultEngineConfig()
-	SkillRegistry *SkillRegistry   // optional
+	EngineCfg     EngineConfig   // optional; zero-value fields inherit from DefaultEngineConfig()
+	SkillRegistry *SkillRegistry // optional
 }
 
 // NamespaceComponents is a bundle of engine components scoped to a

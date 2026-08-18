@@ -1,5 +1,7 @@
 package agent
 
+import "context"
+
 // ---------------------------------------------------------------------------
 // Role-specific session interfaces (Interface Segregation Principle).
 //
@@ -16,16 +18,16 @@ package agent
 type SessionIdentity interface {
 	SessionID() string
 	SessionName() string
-	SetSessionName(name string)
+	SetSessionName(ctx context.Context, name string) error
 	DisplayName() string
 }
 
 type SessionHistory interface {
-	Append(msg Message)
-	SystemPrompt() string  // system prompt text (empty if none)
-	Messages() []Message   // conversation messages only (no system prompt)
+	AddMessages(ctx context.Context, messages []Message, deltaTokens int, deltaCost float64) error
+	SystemPrompt() string // system prompt text (empty if none)
+	Messages() []Message  // conversation messages only (no system prompt)
 	CWDMessage() *Message
-	GetCWD() string        // raw working directory (empty if not set)
+	GetCWD() string // raw working directory (empty if not set)
 }
 
 // SessionToolAuth authorises tool usage for this session.
@@ -46,15 +48,16 @@ type SessionToolAuth interface {
 // Tool handlers that need to modify tool access (e.g. allow_tool, deny_tool)
 // should depend on this narrow interface instead of the full SessionView.
 type SessionToolEditor interface {
-	EnableTool(name string)
-	DisableTool(name string) error
-	AllowTool(name string)
-	DenyTool(name string) error
+	EnableTool(ctx context.Context, name string) error
+	DisableTool(ctx context.Context, name string) error
+	AllowTool(ctx context.Context, name string) error
+	DenyTool(ctx context.Context, name string) error
+	AllowAndEnableTool(ctx context.Context, name string) error
 }
 
 type SessionModelBinding interface {
 	GetModel() string
-	SetModel(name string)
+	SetModel(ctx context.Context, name string) error
 }
 
 // SessionTokenTracking tracks accumulated token usage and estimated
@@ -66,18 +69,18 @@ type SessionTokenTracking interface {
 	TotalCost() float64
 	AddCost(cost float64)
 	GetEstimatedContextTokens() int
-	SetEstimatedContextTokens(tokens int)
+	SetEstimatedContextTokens(ctx context.Context, tokens int) error
 }
 
 type SessionCompactLimits interface {
 	GetCompactSoftLimit() int
-	SetCompactSoftLimit(n int)
+	SetCompactSoftLimit(ctx context.Context, n int) error
 }
 
 type SessionSkills interface {
 	ActiveSkills() []string
-	AddActiveSkill(name string)
-	RemoveActiveSkill(name string)
+	AddActiveSkill(ctx context.Context, name string) error
+	RemoveActiveSkill(ctx context.Context, name string) error
 }
 
 // SessionView is the full composite interface that the orchestration

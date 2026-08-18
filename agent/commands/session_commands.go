@@ -154,18 +154,7 @@ func (sc *SessionCommands) jsonSessionCreate(ctx context.Context, prevSessionID 
 	if sc.Conv != nil {
 		sc.Conv.EnsureDefaultModel(ctx, session)
 	}
-	inheritCWD(ctx, sc.Sessions, ns, prevSessionID, session)
-
-	// Persist the inherited CWD and model defaults set by EnsureDefaultModel.
-	// Create saved the session before these were applied, so we patch.
-	cwd := session.Read().ClientCWD
-	model := session.GetModel()
-	limit := session.GetCompactSoftLimit()
-	if err := sc.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
-		ClientCWD:        &cwd,
-		Model:            &model,
-		CompactSoftLimit: &limit,
-	}); err != nil {
+	if err := inheritCWD(ctx, sc.Sessions, ns, prevSessionID, session); err != nil {
 		return CommandResult{Handled: true, Cmd: "session_create", Error: err}
 	}
 
@@ -317,10 +306,7 @@ func (sc *SessionCommands) jsonSessionRename(ctx context.Context, sessionID stri
 		return CommandResult{Handled: true, Cmd: "session_rename", Error: err}
 	}
 	oldName := session.SessionName()
-	session.SetSessionName(p.Name)
-	if err := sc.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
-		Name: &p.Name,
-	}); err != nil {
+	if err := session.SetSessionName(ctx, p.Name); err != nil {
 		return CommandResult{Handled: true, Cmd: "session_rename", Error: err}
 	}
 

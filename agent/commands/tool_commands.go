@@ -97,14 +97,7 @@ func (tc *ToolCommands) jsonToolAllow(ctx context.Context, sessionID string, par
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "tool_allow", Error: err}
 	}
-	session.AllowTool(p.Name)
-	session.EnableTool(p.Name)
-	enabled := session.Read().EnabledTools
-	blocked := session.Read().BlockedTools
-	if err := tc.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
-		EnabledTools: enabled,
-		BlockedTools: blocked,
-	}); err != nil {
+	if err := session.AllowAndEnableTool(ctx, p.Name); err != nil {
 		return CommandResult{Handled: true, Cmd: "tool_allow", Error: err}
 	}
 
@@ -133,16 +126,8 @@ func (tc *ToolCommands) jsonToolDeny(ctx context.Context, sessionID string, para
 	if err != nil {
 		return CommandResult{Handled: true, Cmd: "tool_deny", Error: err}
 	}
-	if err := session.DenyTool(p.Name); err != nil {
+	if err := session.DenyTool(ctx, p.Name); err != nil {
 		return CommandResult{Handled: true, Cmd: "tool_deny", Reply: fmt.Sprintf("error: %v", err)}
-	}
-	enabled := session.Read().EnabledTools
-	blocked := session.Read().BlockedTools
-	if err := tc.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
-		EnabledTools: enabled,
-		BlockedTools: blocked,
-	}); err != nil {
-		return CommandResult{Handled: true, Cmd: "tool_deny", Error: err}
 	}
 
 	data, _ := json.Marshal(map[string]any{"denied": []string{p.Name}})
@@ -167,17 +152,10 @@ func (tc *ToolCommands) jsonAllowByTag(ctx context.Context, sessionID, tag strin
 
 	names := make([]string, 0, len(tagged))
 	for _, ts := range tagged {
-		session.AllowTool(ts.Name)
-		session.EnableTool(ts.Name)
+		if err := session.AllowAndEnableTool(ctx, ts.Name); err != nil {
+			return CommandResult{Handled: true, Cmd: "tool_allow", Error: err}
+		}
 		names = append(names, ts.Name)
-	}
-	enabled := session.Read().EnabledTools
-	blocked := session.Read().BlockedTools
-	if err := tc.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
-		EnabledTools: enabled,
-		BlockedTools: blocked,
-	}); err != nil {
-		return CommandResult{Handled: true, Cmd: "tool_allow", Error: err}
 	}
 
 	data, _ := json.Marshal(map[string]any{"allowed": names, "tag": tag})
@@ -202,18 +180,10 @@ func (tc *ToolCommands) jsonDenyByTag(ctx context.Context, sessionID, tag string
 
 	names := make([]string, 0, len(tagged))
 	for _, ts := range tagged {
-		if err := session.DenyTool(ts.Name); err != nil {
+		if err := session.DenyTool(ctx, ts.Name); err != nil {
 			return CommandResult{Handled: true, Cmd: "tool_deny", Reply: fmt.Sprintf("error denying tool %s: %v", ts.Name, err)}
 		}
 		names = append(names, ts.Name)
-	}
-	enabled := session.Read().EnabledTools
-	blocked := session.Read().BlockedTools
-	if err := tc.Sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &agent.SessionMetaPatch{
-		EnabledTools: enabled,
-		BlockedTools: blocked,
-	}); err != nil {
-		return CommandResult{Handled: true, Cmd: "tool_deny", Error: err}
 	}
 
 	data, _ := json.Marshal(map[string]any{"denied": names, "tag": tag})

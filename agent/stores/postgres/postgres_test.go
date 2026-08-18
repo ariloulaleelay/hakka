@@ -45,9 +45,8 @@ func TestRoundTrip(t *testing.T) {
 	ns := "testns"
 
 	sess := agent.NewSession(ns, "you are tested")
-	sess.Append(agent.Message{Role: agent.RoleUser, Content: "hi"})
-	sess.Append(agent.Message{Role: agent.RoleAssistant, Content: "hello"})
-	sess.SetModel("gpt4")
+	sess.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "hi"}, agent.Message{Role: agent.RoleAssistant, Content: "hello"}}, 0, 0)
+	sess.SetModel(context.Background(), "gpt4")
 
 	if err := s.Put(ctx, ns, sess); err != nil {
 		t.Fatalf("put: %v", err)
@@ -79,7 +78,9 @@ func TestUpsert(t *testing.T) {
 	if err := s.Put(ctx, ns, sess); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	sess.Append(agent.Message{Role: agent.RoleUser, Content: "ping"})
+	if err := sess.AddMessages(context.Background(), []agent.Message{agent.Message{Role: agent.RoleUser, Content: "ping"}}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Put(ctx, ns, sess); err != nil {
 		t.Fatalf("put2: %v", err)
 	}
@@ -195,18 +196,18 @@ func TestMessages_with_tool_calls_round_trip(t *testing.T) {
 	ns := "tc-ns"
 
 	sess := agent.NewSession(ns, "prompt")
-	sess.Append(agent.Message{
+	sess.AddMessages(context.Background(), []agent.Message{agent.Message{
 		Role:    agent.RoleAssistant,
 		Content: "let me check",
 		ToolCalls: []agent.ToolCall{
 			{ID: "call_1", Name: "read_file", Arguments: `{"path":"/tmp/x"}`},
 		},
-	})
-	sess.Append(agent.Message{
+	}}, 0, 0)
+	sess.AddMessages(context.Background(), []agent.Message{agent.Message{
 		Role:       agent.RoleTool,
 		Content:    "file contents here",
 		ToolCallID: "call_1",
-	})
+	}}, 0, 0)
 
 	if err := s.Put(ctx, ns, sess); err != nil {
 		t.Fatalf("Put: %v", err)

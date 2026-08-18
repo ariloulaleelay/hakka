@@ -171,7 +171,6 @@ func (a *recordingAdapter) Complete(_ context.Context, msgs []Message, tools []T
 	return &LLMResponse{Message: Message{Role: RoleAssistant, Content: "I have tools."}, FinishReason: "stop"}, nil
 }
 
-
 func toolNames(schemas []ToolSchema) []string {
 	names := make([]string, len(schemas))
 	for i, s := range schemas {

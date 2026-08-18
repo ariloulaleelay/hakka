@@ -106,15 +106,21 @@ func (conv *Conversation) EnsureDefaultModel(ctx context.Context, session Sessio
 		if defaultModel == "" {
 			return
 		}
-		session.SetModel(defaultModel)
+		if err := session.SetModel(ctx, defaultModel); err != nil {
+			return
+		}
 	}
 
 	// Ensure compact soft limit is populated if not already set.
 	if conv.router != nil && session.GetCompactSoftLimit() <= 0 {
 		if profile, ok := conv.router.GetProfile(session); ok && profile.CompactSoftLimit > 0 {
-			session.SetCompactSoftLimit(profile.CompactSoftLimit)
+			if err := session.SetCompactSoftLimit(ctx, profile.CompactSoftLimit); err != nil {
+				return
+			}
 		} else {
-			session.SetCompactSoftLimit(conv.config.CompactSoftLimit)
+			if err := session.SetCompactSoftLimit(ctx, conv.config.CompactSoftLimit); err != nil {
+				return
+			}
 		}
 	}
 }
@@ -123,14 +129,18 @@ func (conv *Conversation) EnsureDefaultModel(ctx context.Context, session Sessio
 // current model. Used when the model binding changes (e.g. BindSessionModel).
 // It always overrides the current value, unlike EnsureDefaultModel which
 // only sets it when <= 0.
-func (conv *Conversation) ensureCompactSoftLimit(session SessionView) {
+func (conv *Conversation) ensureCompactSoftLimit(ctx context.Context, session SessionView) {
 	if conv.router == nil {
 		return
 	}
 	if profile, ok := conv.router.GetProfile(session); ok && profile.CompactSoftLimit > 0 {
-		session.SetCompactSoftLimit(profile.CompactSoftLimit)
+		if err := session.SetCompactSoftLimit(ctx, profile.CompactSoftLimit); err != nil {
+			return
+		}
 	} else {
-		session.SetCompactSoftLimit(conv.config.CompactSoftLimit)
+		if err := session.SetCompactSoftLimit(ctx, conv.config.CompactSoftLimit); err != nil {
+			return
+		}
 	}
 }
 
@@ -230,24 +240,9 @@ func (conv *Conversation) prepareWithInput(ctx context.Context, sessionID, userI
 	}
 	conv.EnsureDefaultModel(ctx, session)
 
-	// Persist model + compact soft limit from EnsureDefaultModel.
-	model := session.GetModel()
-	limit := session.GetCompactSoftLimit()
-	if model != "" || limit > 0 {
-		patch := &SessionMetaPatch{}
-		if model != "" {
-			patch.Model = &model
-		}
-		if limit > 0 {
-			patch.CompactSoftLimit = &limit
-		}
-		conv.sessions.Store.PatchMeta(ctx, ns, session.SessionID(), patch)
-	}
-
 	if userInput != "" {
 		msg := Message{ID: MakeUniqueID(), Role: RoleUser, Content: userInput, Timestamp: nowMillis()}
-		session.Append(msg)
-		if err := conv.sessions.Store.AppendMessages(ctx, ns, session.SessionID(), []Message{msg}, 0, 0); err != nil {
+		if err := session.AddMessages(ctx, []Message{msg}, 0, 0); err != nil {
 			return nil, err
 		}
 	}
@@ -278,21 +273,12 @@ func (conv *Conversation) BindSessionModel(ctx context.Context, sessionID, name 
 	if err != nil {
 		return nil, err
 	}
-	if err := conv.router.Bind(sess, name); err != nil {
+	if err := conv.router.Bind(ctx, sess, name); err != nil {
 		return sess, err
 	}
 	// Update compact soft limit from the new model's profile
-	conv.ensureCompactSoftLimit(sess)
+	conv.ensureCompactSoftLimit(ctx, sess)
 
-	// Persist model + compact_soft_limit via targeted patch.
-	newModel := sess.GetModel()
-	newLimit := sess.GetCompactSoftLimit()
-	if err := conv.sessions.Store.PatchMeta(ctx, ns, sess.SessionID(), &SessionMetaPatch{
-		Model:            &newModel,
-		CompactSoftLimit: &newLimit,
-	}); err != nil {
-		return sess, err
-	}
 	return sess, nil
 }
 
@@ -336,14 +322,8 @@ func (conv *Conversation) AutoRename(ctx context.Context, session SessionView) (
 		return "", fmt.Errorf("LLM returned an empty name")
 	}
 
-	session.SetSessionName(name)
-	ns := conv.resolveNamespace(ctx)
-	if saveErr := conv.sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &SessionMetaPatch{
-		Name: &name,
-	}); saveErr != nil {
-		conv.config.Logger.Warn("session auto-rename save failed",
-			"session", session.SessionID(), "error", saveErr)
-		return "", fmt.Errorf("save failed: %w", saveErr)
+	if err := session.SetSessionName(ctx, name); err != nil {
+		return "", fmt.Errorf("save failed: %w", err)
 	}
 	conv.config.Logger.Info("session auto-renamed",
 		"session", session.SessionID(), "name", name)
@@ -384,13 +364,8 @@ func (conv *Conversation) autoRenameIfNeeded(ctx context.Context, session Sessio
 		return
 	}
 
-	session.SetSessionName(name)
-	ns := conv.resolveNamespace(ctx)
-	if saveErr := conv.sessions.Store.PatchMeta(ctx, ns, session.SessionID(), &SessionMetaPatch{
-		Name: &name,
-	}); saveErr != nil {
-		conv.config.Logger.Warn("session auto-rename save failed",
-			"session", session.SessionID(), "error", saveErr)
+	if err := session.SetSessionName(ctx, name); err != nil {
+		return
 	}
 	conv.config.Logger.Info("session auto-renamed",
 		"session", session.SessionID(), "name", name)

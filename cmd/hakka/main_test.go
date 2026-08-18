@@ -33,7 +33,6 @@ func (a *scriptedAdapter) Complete(_ context.Context, msgs []agent.Message, tool
 	return &r, nil
 }
 
-
 // ---------------------------------------------------------------------------
 // A tool that echoes its arguments back.
 // ---------------------------------------------------------------------------
@@ -53,7 +52,9 @@ func echoTool() agent.Tool {
 		},
 		Tags: []string{"utility", "all"},
 		Handler: func(_ context.Context, raw json.RawMessage) (string, error) {
-			var args struct{ Text string `json:"text"` }
+			var args struct {
+				Text string `json:"text"`
+			}
 			if err := json.Unmarshal(raw, &args); err != nil {
 				return "", err
 			}
@@ -331,7 +332,7 @@ func TestBatchTaskGivenTagCollidesWithToolNameWhenPrefixedRefThenTagExpanded(t *
 func TestBatchTaskGivenMixedTagsAndNamesWhenResolvingThenCombinesBoth(t *testing.T) {
 	// Given a tool registry
 	tools := agent.NewToolRegistry()
-	tools.Register(echoTool())                                         // "utility", "all"
+	tools.Register(echoTool()) // "utility", "all"
 	tools.Register(agent.Tool{Schema: agent.ToolSchema{Name: "random", Description: "random"}, Tags: []string{"utility", "all"},
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) { return "4", nil },
 	})

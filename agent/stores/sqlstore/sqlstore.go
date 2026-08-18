@@ -683,16 +683,16 @@ func (s *Store) loadMessages(ctx context.Context, ns, id string) ([]agent.Messag
 	var msgs []agent.Message
 	for rows.Next() {
 		var (
-			msgID               sql.NullString
-			roleStr             string
-			content             string
-			toolCallsJSON       sql.NullString
-			toolCallID          sql.NullString
-			nameStr             sql.NullString
-			usageJSON           sql.NullString
-			finishReason        sql.NullString
+			msgID                sql.NullString
+			roleStr              string
+			content              string
+			toolCallsJSON        sql.NullString
+			toolCallID           sql.NullString
+			nameStr              sql.NullString
+			usageJSON            sql.NullString
+			finishReason         sql.NullString
 			providerMetadataJSON sql.NullString
-			ts                  sql.NullInt64
+			ts                   sql.NullInt64
 		)
 		if err := rows.Scan(&msgID, &roleStr, &content, &toolCallsJSON, &toolCallID,
 			&nameStr, &usageJSON, &finishReason, &providerMetadataJSON, &ts); err != nil {
@@ -895,14 +895,16 @@ func (s *Store) PatchMeta(ctx context.Context, namespace, id string, patch *agen
 		return nil
 	}
 
-	// Always bump updated_at.
-	setClauses = append(setClauses, "updated_at = ?")
-	now := time.Now()
-	nowText, err := now.MarshalText()
-	if err != nil {
-		return err
+	// Session mutations provide the exact UpdatedAt value in the patch.
+	// Store-level callers that omit it receive a store-generated timestamp.
+	if patch.UpdatedAt == nil {
+		setClauses = append(setClauses, "updated_at = ?")
+		nowText, err := time.Now().MarshalText()
+		if err != nil {
+			return err
+		}
+		args = append(args, string(nowText))
 	}
-	args = append(args, string(nowText))
 
 	// Add WHERE args.
 	args = append(args, namespace, id)
@@ -1002,6 +1004,13 @@ func (s *Store) buildMetaPatch(patch *agent.SessionMetaPatch) ([]string, []any) 
 		if err == nil {
 			add("active_skills", json)
 		}
+	}
+	if patch.UpdatedAt != nil {
+		text, err := patch.UpdatedAt.MarshalText()
+		if err != nil {
+			return clauses, args
+		}
+		add("updated_at", string(text))
 	}
 
 	return clauses, args

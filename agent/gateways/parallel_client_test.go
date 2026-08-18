@@ -48,8 +48,8 @@ func parallelSetup(t *testing.T, ns string) (*agent.Conversation, *commands.Comm
 
 func enableToolsDirect(session *agent.Session, names ...string) {
 	for _, n := range names {
-		session.AllowTool(n)
-		session.EnableTool(n)
+		session.AllowTool(context.Background(), n)
+		session.EnableTool(context.Background(), n)
 	}
 }
 

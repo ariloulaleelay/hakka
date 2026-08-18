@@ -232,10 +232,10 @@ func (h *TurnHandler) fetchAndBroadcastQuota(ctx context.Context, session *agent
 	slog.Debug("quota: broadcasting", "model", session.GetModel(),
 		"balance", info.Balance, "currency", info.Currency)
 	fr := FrameResponse{
-		Type:      "quota",
-		Provider:  session.GetModel(),
-		Balance:   info.Balance,
-		Currency:  info.Currency,
+		Type:     "quota",
+		Provider: session.GetModel(),
+		Balance:  info.Balance,
+		Currency: info.Currency,
 	}
 	h.hub.Broadcast(fr)
 }
