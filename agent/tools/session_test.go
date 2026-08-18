@@ -113,6 +113,9 @@ func (ts *testSessionStore) PatchMeta(_ context.Context, namespace, id string, p
 	if patch.ActiveSkills != nil {
 		d.ActiveSkills = patch.ActiveSkills
 	}
+	if patch.SkillPaths != nil {
+		d.SkillPaths = patch.SkillPaths
+	}
 	d.UpdatedAt = time.Now()
 	ts.sessions[namespace+":"+id] = d
 	return nil

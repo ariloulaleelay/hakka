@@ -18,8 +18,8 @@ import (
 //   - All messages from the parent (full conversation history)
 //   - All enabled tools (except subagent_run, which is blocked to prevent
 //     recursion)
-//   - The parent's system prompt, CWD, model, compact soft limit, and
-//     active skills
+//   - The parent's system prompt, CWD, model, compact soft limit, active
+//     skills, and imported skill paths (its own session-bound skill registry)
 //
 // The child is a REAL session persisted in the parent's store and
 // namespace, linked to the parent via ParentID/ForkPoint. It is visible
@@ -27,7 +27,7 @@ import (
 // restarts, so it can be inspected, continued, or deleted like any other
 // session. The parent gets back the final reply, token/cost stats, and a
 // short child session ID for reference.
-func SubagentRun(sessions *agent.SessionManager, router *agent.Router, tools *agent.ToolRegistry, cfg agent.EngineConfig, skills *agent.SkillRegistry) agent.Tool {
+func SubagentRun(sessions *agent.SessionManager, router *agent.Router, tools *agent.ToolRegistry, cfg agent.EngineConfig) agent.Tool {
 	return NewTool("subagent_run",
 		"Run a subagent — fork the current session with a specific task. "+
 			"The subagent inherits the full conversation history and all enabled tools "+
@@ -179,13 +179,11 @@ func SubagentRun(sessions *agent.SessionManager, router *agent.Router, tools *ag
 
 			// ---------------------------------------------------------------
 			// Set up the child conversation on the SAME store/namespace, so
-			// the turn's saves land on the persisted child session.
+			// the turn's saves land on the persisted child session. The child
+			// inherits the parent's skill registry state via ForkData.
 			// ---------------------------------------------------------------
 
 			childConv := agent.NewConversation(sessions, router, tools, ns, cfg)
-			if skills != nil {
-				childConv.SetSkills(skills)
-			}
 
 			runCtx, cancel := context.WithTimeout(ctx, time.Duration(args.TimeoutSeconds)*time.Second)
 			defer cancel()

@@ -17,9 +17,11 @@ import (
 // helpers
 // ---------------------------------------------------------------------------
 
-func newTestSkillRegistry(t *testing.T) *agent.SkillRegistry {
+// newTestSkillSession creates a session whose ${cwd}/skills contains
+// go-testing and deploy-app, so the session registry auto-imports them.
+func newTestSkillSession(t *testing.T) *agent.Session {
 	t.Helper()
-	regDir := t.TempDir()
+	cwd := t.TempDir()
 
 	skills := map[string]string{
 		"go-testing": `---
@@ -39,23 +41,34 @@ Steps to deploy the application.`,
 	}
 
 	for name, content := range skills {
-		dir := filepath.Join(regDir, name)
-		os.MkdirAll(dir, 0o755)
+		dir := filepath.Join(cwd, "skills", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	reg := agent.NewSkillRegistry()
-	if _, err := reg.AddDir(regDir); err != nil {
-		t.Fatalf("AddDir: %v", err)
+	session := agent.NewSession("test", "test-prompt")
+	if err := session.SetClientCWD(context.Background(), cwd); err != nil {
+		t.Fatal(err)
 	}
-	return reg
+	return session
 }
 
-func runSkillTool(t *testing.T, tool agent.Tool, args any) string {
+// newEmptySkillSession creates a session with an empty cwd (no skills).
+func newEmptySkillSession(t *testing.T) *agent.Session {
 	t.Helper()
 	session := agent.NewSession("test", "test-prompt")
+	if err := session.SetClientCWD(context.Background(), t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	return session
+}
+
+func runSkillToolOn(t *testing.T, session *agent.Session, tool agent.Tool, args any) string {
+	t.Helper()
 	raw, _ := json.Marshal(args)
 	ctx := event.ContextWithSessionView(context.Background(), session)
 	res, err := tool.Handler(ctx, raw)
@@ -70,10 +83,8 @@ func runSkillTool(t *testing.T, tool agent.Tool, args any) string {
 // ---------------------------------------------------------------------------
 
 func TestSearchSkills_Found(t *testing.T) {
-	reg := newTestSkillRegistry(t)
-	tool := SearchSkills(reg)
-
-	res := runSkillTool(t, tool, map[string]any{"query": "testing"})
+	tool := SearchSkills()
+	res := runSkillToolOn(t, newTestSkillSession(t), tool, map[string]any{"query": "testing"})
 
 	if !strings.Contains(res, "go-testing") {
 		t.Fatalf("expected 'go-testing', got: %s", res)
@@ -84,10 +95,8 @@ func TestSearchSkills_Found(t *testing.T) {
 }
 
 func TestSearchSkills_NotFound(t *testing.T) {
-	reg := newTestSkillRegistry(t)
-	tool := SearchSkills(reg)
-
-	res := runSkillTool(t, tool, map[string]any{"query": "nonexistent"})
+	tool := SearchSkills()
+	res := runSkillToolOn(t, newTestSkillSession(t), tool, map[string]any{"query": "nonexistent"})
 
 	if !strings.Contains(res, "No skills found") {
 		t.Fatalf("expected 'No skills found', got: %s", res)
@@ -95,13 +104,19 @@ func TestSearchSkills_NotFound(t *testing.T) {
 }
 
 func TestSearchSkills_EmptyReturnsAll(t *testing.T) {
-	reg := newTestSkillRegistry(t)
-	tool := SearchSkills(reg)
-
-	res := runSkillTool(t, tool, map[string]any{"query": ""})
+	tool := SearchSkills()
+	res := runSkillToolOn(t, newTestSkillSession(t), tool, map[string]any{"query": ""})
 
 	if !strings.Contains(res, "go-testing") || !strings.Contains(res, "deploy-app") {
 		t.Fatalf("expected both skills, got: %s", res)
+	}
+}
+
+func TestSearchSkills_NoSessionInContext(t *testing.T) {
+	tool := SearchSkills()
+	raw, _ := json.Marshal(map[string]any{"query": ""})
+	if _, err := tool.Handler(context.Background(), raw); err == nil {
+		t.Fatal("expected error when no session is available in context")
 	}
 }
 
@@ -110,16 +125,10 @@ func TestSearchSkills_EmptyReturnsAll(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLoadSkill_LoadsAndTracks(t *testing.T) {
-	reg := newTestSkillRegistry(t)
-	tool := LoadSkill(reg)
+	tool := LoadSkill()
 
-	session := agent.NewSession("test", "test-prompt")
-	raw, _ := json.Marshal(map[string]any{"name": "go-testing"})
-	ctx := event.ContextWithSessionView(context.Background(), session)
-	res, err := tool.Handler(ctx, raw)
-	if err != nil {
-		t.Fatalf("load_skill: %v", err)
-	}
+	session := newTestSkillSession(t)
+	res := runSkillToolOn(t, session, tool, map[string]any{"name": "go-testing"})
 
 	if !strings.Contains(res, "Loaded skill") {
 		t.Fatalf("expected 'Loaded skill', got: %s", res)
@@ -132,36 +141,21 @@ func TestLoadSkill_LoadsAndTracks(t *testing.T) {
 }
 
 func TestLoadSkill_AlreadyLoaded(t *testing.T) {
-	reg := newTestSkillRegistry(t)
-	tool := LoadSkill(reg)
+	tool := LoadSkill()
 
-	session := agent.NewSession("test", "test-prompt")
+	session := newTestSkillSession(t)
 	session.AddActiveSkill(context.Background(), "go-testing")
 
-	raw, _ := json.Marshal(map[string]any{"name": "go-testing"})
-	ctx := event.ContextWithSessionView(context.Background(), session)
-	res, err := tool.Handler(ctx, raw)
-	if err != nil {
-		t.Fatalf("load_skill: %v", err)
-	}
-
+	res := runSkillToolOn(t, session, tool, map[string]any{"name": "go-testing"})
 	if !strings.Contains(res, "already loaded") {
 		t.Fatalf("expected 'already loaded', got: %s", res)
 	}
 }
 
 func TestLoadSkill_NotFound(t *testing.T) {
-	reg := newTestSkillRegistry(t)
-	tool := LoadSkill(reg)
+	tool := LoadSkill()
 
-	session := agent.NewSession("test", "test-prompt")
-	raw, _ := json.Marshal(map[string]any{"name": "nonexistent"})
-	ctx := event.ContextWithSessionView(context.Background(), session)
-	res, err := tool.Handler(ctx, raw)
-	if err != nil {
-		t.Fatalf("load_skill: %v", err)
-	}
-
+	res := runSkillToolOn(t, newTestSkillSession(t), tool, map[string]any{"name": "nonexistent"})
 	if !strings.Contains(res, "not found") {
 		t.Fatalf("expected 'not found', got: %s", res)
 	}
@@ -172,19 +166,12 @@ func TestLoadSkill_NotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUnloadSkill_RemovesTracking(t *testing.T) {
-	reg := newTestSkillRegistry(t)
-	tool := UnloadSkill(reg)
+	tool := UnloadSkill()
 
-	session := agent.NewSession("test", "test-prompt")
+	session := newTestSkillSession(t)
 	session.AddActiveSkill(context.Background(), "go-testing")
 
-	raw, _ := json.Marshal(map[string]any{"name": "go-testing"})
-	ctx := event.ContextWithSessionView(context.Background(), session)
-	res, err := tool.Handler(ctx, raw)
-	if err != nil {
-		t.Fatalf("unload_skill: %v", err)
-	}
-
+	res := runSkillToolOn(t, session, tool, map[string]any{"name": "go-testing"})
 	if !strings.Contains(res, "Unloaded skill") {
 		t.Fatalf("expected 'Unloaded skill', got: %s", res)
 	}
@@ -196,50 +183,43 @@ func TestUnloadSkill_RemovesTracking(t *testing.T) {
 }
 
 func TestUnloadSkill_NotLoaded(t *testing.T) {
-	reg := newTestSkillRegistry(t)
-	tool := UnloadSkill(reg)
+	tool := UnloadSkill()
 
-	session := agent.NewSession("test", "test-prompt")
-	raw, _ := json.Marshal(map[string]any{"name": "go-testing"})
-	ctx := event.ContextWithSessionView(context.Background(), session)
-	res, err := tool.Handler(ctx, raw)
-	if err != nil {
-		t.Fatalf("unload_skill: %v", err)
-	}
-
+	res := runSkillToolOn(t, newTestSkillSession(t), tool, map[string]any{"name": "go-testing"})
 	if !strings.Contains(res, "not currently loaded") {
 		t.Fatalf("expected 'not currently loaded', got: %s", res)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// import_skill — registers only, never loads
+// import_skill — registers into the CURRENT session only, persists paths
 // ---------------------------------------------------------------------------
 
-func TestImportSkill_FromFile(t *testing.T) {
-	reg := agent.NewSkillRegistry()
-	tool := ImportSkill(reg)
-
-	tmpDir := t.TempDir()
-	skillDir := filepath.Join(tmpDir, "custom-skill")
-	os.MkdirAll(skillDir, 0o755)
-	skillPath := filepath.Join(skillDir, "SKILL.md")
-	content := `---
-name: custom-skill
-description: A custom skill
----
-Custom instructions go here.`
-	if err := os.WriteFile(skillPath, []byte(content), 0o644); err != nil {
+func makeImportSkillDir(t *testing.T, parent, name string) string {
+	t.Helper()
+	dir := filepath.Join(parent, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-
-	session := agent.NewSession("test", "test-prompt")
-	raw, _ := json.Marshal(map[string]any{"path": skillPath})
-	ctx := event.ContextWithSessionView(context.Background(), session)
-	res, err := tool.Handler(ctx, raw)
-	if err != nil {
-		t.Fatalf("import_skill: %v", err)
+	content := fmt.Sprintf(`---
+name: %s
+description: A custom skill
+---
+Custom instructions for %s.`, name, name)
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	return dir
+}
+
+func TestImportSkill_FromFile(t *testing.T) {
+	tool := ImportSkill()
+
+	skillDir := makeImportSkillDir(t, t.TempDir(), "custom-skill")
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+
+	session := newEmptySkillSession(t)
+	res := runSkillToolOn(t, session, tool, map[string]any{"path": skillPath})
 
 	if !strings.Contains(res, "Registered") {
 		t.Fatalf("expected 'Registered', got: %s", res)
@@ -251,95 +231,53 @@ Custom instructions go here.`
 	if len(session.ActiveSkills()) != 0 {
 		t.Fatalf("expected 0 active skills, got %v", session.ActiveSkills())
 	}
-	if reg.Get("custom-skill") == nil {
-		t.Fatal("expected custom-skill in registry")
+	if session.SkillRegistry().Get("custom-skill") == nil {
+		t.Fatal("expected custom-skill in the session registry")
+	}
+	if len(session.Read().SkillPaths) != 1 {
+		t.Fatalf("expected 1 persisted skill path, got %v", session.Read().SkillPaths)
 	}
 }
 
 func TestImportSkill_FileNotFound(t *testing.T) {
-	reg := agent.NewSkillRegistry()
-	tool := ImportSkill(reg)
+	tool := ImportSkill()
 
-	session := agent.NewSession("test", "test-prompt")
-	raw, _ := json.Marshal(map[string]any{"path": "/nonexistent/SKILL.md"})
-	ctx := event.ContextWithSessionView(context.Background(), session)
-	res, err := tool.Handler(ctx, raw)
-	if err != nil {
-		t.Fatalf("import_skill: %v", err)
-	}
-
+	res := runSkillToolOn(t, newEmptySkillSession(t), tool, map[string]any{"path": "/nonexistent/SKILL.md"})
 	if !strings.Contains(res, "does not exist") {
 		t.Fatalf("expected 'does not exist', got: %s", res)
 	}
 }
 
 func TestImportSkill_FromSkillDirectory(t *testing.T) {
-	reg := agent.NewSkillRegistry()
-	tool := ImportSkill(reg)
+	tool := ImportSkill()
 
-	tmpDir := t.TempDir()
-	skillDir := filepath.Join(tmpDir, "my-skill")
-	os.MkdirAll(skillDir, 0o755)
-	content := `---
-name: my-skill
-description: A skill from a directory
----
-Skill instructions.`
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	skillDir := makeImportSkillDir(t, t.TempDir(), "my-skill")
 
-	session := agent.NewSession("test", "test-prompt")
-	raw, _ := json.Marshal(map[string]any{"path": skillDir})
-	ctx := event.ContextWithSessionView(context.Background(), session)
-	res, err := tool.Handler(ctx, raw)
-	if err != nil {
-		t.Fatalf("import_skill: %v", err)
-	}
+	session := newEmptySkillSession(t)
+	res := runSkillToolOn(t, session, tool, map[string]any{"path": skillDir})
 
 	if !strings.Contains(res, "Registered") {
 		t.Fatalf("expected 'Registered', got: %s", res)
 	}
-	if !strings.Contains(res, "Use load_skill") {
-		t.Fatalf("expected 'Use load_skill', got: %s", res)
-	}
-
 	if len(session.ActiveSkills()) != 0 {
 		t.Fatalf("expected 0 active skills, got %v", session.ActiveSkills())
 	}
-	if reg.Get("my-skill") == nil {
-		t.Fatal("expected my-skill in registry")
+	if session.SkillRegistry().Get("my-skill") == nil {
+		t.Fatal("expected my-skill in the session registry")
 	}
 }
 
 func TestImportSkill_FromRegistryDir(t *testing.T) {
-	reg := agent.NewSkillRegistry()
-	tool := ImportSkill(reg)
+	tool := ImportSkill()
 
-	tmpDir := t.TempDir()
+	regDir := t.TempDir()
+	makeImportSkillDir(t, regDir, "skill-a")
+	makeImportSkillDir(t, regDir, "skill-b")
+	os.MkdirAll(filepath.Join(regDir, "not-a-skill"), 0o755)
+	os.WriteFile(filepath.Join(regDir, "notes.txt"), []byte("not a skill"), 0o644)
 
-	for _, name := range []string{"skill-a", "skill-b"} {
-		dir := filepath.Join(tmpDir, name)
-		os.MkdirAll(dir, 0o755)
-		content := fmt.Sprintf(`---
-name: %s
-description: Skill %s
----
-Content for %s.`, name, name, name)
-		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	os.MkdirAll(filepath.Join(tmpDir, "not-a-skill"), 0o755)
-	os.WriteFile(filepath.Join(tmpDir, "notes.txt"), []byte("not a skill"), 0o644)
-
-	session := agent.NewSession("test", "test-prompt")
-	raw, _ := json.Marshal(map[string]any{"path": tmpDir})
-	ctx := event.ContextWithSessionView(context.Background(), session)
-	res, err := tool.Handler(ctx, raw)
-	if err != nil {
-		t.Fatalf("import_skill: %v", err)
-	}
+	session := newEmptySkillSession(t)
+	res := runSkillToolOn(t, session, tool, map[string]any{"path": regDir})
 
 	if !strings.Contains(res, "Registered 2 skill") {
 		t.Fatalf("expected 'Registered 2 skill', got: %s", res)
@@ -347,14 +285,44 @@ Content for %s.`, name, name, name)
 	if !strings.Contains(res, "skill-a") || !strings.Contains(res, "skill-b") {
 		t.Fatalf("expected skill-a and skill-b, got: %s", res)
 	}
-	if !strings.Contains(res, "Use load_skill") {
-		t.Fatalf("expected 'Use load_skill', got: %s", res)
-	}
-
 	if len(session.ActiveSkills()) != 0 {
 		t.Fatalf("expected 0 active skills, got %v", session.ActiveSkills())
 	}
-	if reg.Get("skill-a") == nil || reg.Get("skill-b") == nil {
-		t.Fatal("expected both skills in registry")
+	if session.SkillRegistry().Get("skill-a") == nil || session.SkillRegistry().Get("skill-b") == nil {
+		t.Fatal("expected both skills in the session registry")
+	}
+	if len(session.Read().SkillPaths) != 2 {
+		t.Fatalf("expected 2 persisted skill paths, got %v", session.Read().SkillPaths)
+	}
+}
+
+func TestImportSkill_SessionScoped(t *testing.T) {
+	tool := ImportSkill()
+
+	skillDir := makeImportSkillDir(t, t.TempDir(), "secret-skill")
+	sessionA := newEmptySkillSession(t)
+	sessionB := newEmptySkillSession(t)
+
+	res := runSkillToolOn(t, sessionA, tool, map[string]any{"path": filepath.Join(skillDir, "SKILL.md")})
+	if !strings.Contains(res, "Registered") {
+		t.Fatalf("expected 'Registered', got: %s", res)
+	}
+
+	if sessionA.SkillRegistry().Get("secret-skill") == nil {
+		t.Fatal("session A must see the imported skill")
+	}
+	if sessionB.SkillRegistry().Get("secret-skill") != nil {
+		t.Fatal("session B must NOT see skills imported into session A")
+	}
+	if len(sessionB.Read().SkillPaths) != 0 {
+		t.Fatalf("session B must have empty SkillPaths, got %v", sessionB.Read().SkillPaths)
+	}
+}
+
+func TestImportSkill_NoSessionInContext(t *testing.T) {
+	tool := ImportSkill()
+	raw, _ := json.Marshal(map[string]any{"path": "/tmp"})
+	if _, err := tool.Handler(context.Background(), raw); err == nil {
+		t.Fatal("expected error when no session is available in context")
 	}
 }

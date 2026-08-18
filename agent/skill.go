@@ -1,13 +1,13 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Skill represents a reusable skill/knowledge that can be loaded into a
@@ -42,15 +42,14 @@ type SkillFrontmatter struct {
 	AllowedTools  string
 }
 
-// SkillIndex holds the sorted list of all skill names currently loaded
-// into a session. It is stored in SessionData as ActiveSkills.
-type SkillIndex []string
-
-// SkillRegistry is a read-only registry of all available skills. Skills
-// are indexed at startup by scanning configured directories.
+// SkillRegistry holds the skills available to a single session. Each
+// session owns its own registry — skills are never shared across sessions.
+//
+// The registry is goroutine-safe: tool handlers run concurrently within a
+// turn, so all methods synchronise on an internal RWMutex.
 type SkillRegistry struct {
+	mu     sync.RWMutex
 	skills map[string]*Skill // name → Skill
-	dirs   []string          // directories scanned for skills
 }
 
 func NewSkillRegistry() *SkillRegistry {
@@ -88,6 +87,13 @@ func ValidateSkillName(name string) error {
 // The parent directory becomes the skill root. The skill name from
 // the frontmatter must match the parent directory name (per spec).
 func (sr *SkillRegistry) Add(path string) error {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	return sr.addLocked(path)
+}
+
+// addLocked registers a single skill; the caller must hold sr.mu.
+func (sr *SkillRegistry) addLocked(path string) error {
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("skill: resolve path %q: %w", path, err)
@@ -155,6 +161,14 @@ func (sr *SkillRegistry) Add(path string) error {
 // Returns the count of skills registered and the first error encountered
 // (non-fatal errors like a single malformed skill are skipped).
 func (sr *SkillRegistry) AddDir(dir string) (int, error) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	return sr.addDirLocked(dir)
+}
+
+// addDirLocked scans a directory for skill subdirectories and registers
+// them; the caller must hold sr.mu.
+func (sr *SkillRegistry) addDirLocked(dir string) (int, error) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return 0, fmt.Errorf("skill: resolve dir %q: %w", dir, err)
@@ -169,7 +183,6 @@ func (sr *SkillRegistry) AddDir(dir string) (int, error) {
 		return 0, fmt.Errorf("skill: read dir %q: %w", dir, err)
 	}
 
-	sr.dirs = append(sr.dirs, dir)
 	count := 0
 
 	for _, entry := range entries {
@@ -182,7 +195,7 @@ func (sr *SkillRegistry) AddDir(dir string) (int, error) {
 			continue // no SKILL.md, skip
 		}
 
-		if err := sr.Add(skillPath); err != nil {
+		if err := sr.addLocked(skillPath); err != nil {
 			continue // skip malformed skills
 		}
 		count++
@@ -193,14 +206,18 @@ func (sr *SkillRegistry) AddDir(dir string) (int, error) {
 
 // Get returns the skill metadata by name, or nil if not found.
 func (sr *SkillRegistry) Get(name string) *Skill {
+	sr.mu.RLock()
+	defer sr.mu.RUnlock()
 	return sr.skills[name]
 }
 
 // Search returns skills whose name, description, or tags match the query
 // (case-insensitive substring match).
 func (sr *SkillRegistry) Search(query string) []*Skill {
+	sr.mu.RLock()
+	defer sr.mu.RUnlock()
 	if query == "" {
-		return sr.List()
+		return sr.listLocked()
 	}
 
 	q := strings.ToLower(query)
@@ -227,6 +244,13 @@ func (sr *SkillRegistry) Search(query string) []*Skill {
 
 // List returns all skills in the registry, sorted by name.
 func (sr *SkillRegistry) List() []*Skill {
+	sr.mu.RLock()
+	defer sr.mu.RUnlock()
+	return sr.listLocked()
+}
+
+// listLocked returns all skills sorted by name; the caller must hold sr.mu.
+func (sr *SkillRegistry) listLocked() []*Skill {
 	out := make([]*Skill, 0, len(sr.skills))
 	for _, s := range sr.skills {
 		out = append(out, s)
@@ -240,7 +264,9 @@ func (sr *SkillRegistry) List() []*Skill {
 // ReadContent reads and returns the body content of a skill's SKILL.md
 // (without YAML frontmatter).
 func (sr *SkillRegistry) ReadContent(name string) (string, error) {
+	sr.mu.RLock()
 	s := sr.skills[name]
+	sr.mu.RUnlock()
 	if s == nil {
 		return "", fmt.Errorf("skill %q not found in registry", name)
 	}
@@ -256,7 +282,9 @@ func (sr *SkillRegistry) ReadContent(name string) (string, error) {
 // ReadSkillFile reads a file relative to the skill's root directory.
 // The relPath must be a relative path (e.g. "references/REFERENCE.md").
 func (sr *SkillRegistry) ReadSkillFile(name, relPath string) (string, error) {
+	sr.mu.RLock()
 	s := sr.skills[name]
+	sr.mu.RUnlock()
 	if s == nil {
 		return "", fmt.Errorf("skill %q not found in registry", name)
 	}
@@ -407,23 +435,4 @@ func parseSkillBody(content string) string {
 		}
 	}
 	return content
-}
-
-// MarshalJSON implements json.Marshaler for SkillIndex.
-func (si SkillIndex) MarshalJSON() ([]byte, error) {
-	if si == nil {
-		return []byte("[]"), nil
-	}
-	return json.Marshal([]string(si))
-}
-
-// UnmarshalJSON implements json.Unmarshaler for SkillIndex.
-func (si *SkillIndex) UnmarshalJSON(data []byte) error {
-	var s []string
-	if err := json.Unmarshal(data, &s); err != nil {
-		*si = nil
-		return nil
-	}
-	*si = SkillIndex(s)
-	return nil
 }

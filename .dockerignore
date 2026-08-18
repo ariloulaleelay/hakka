@@ -1,0 +1,24 @@
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Local build artifacts & binaries
+hakka
+hakka-amd64
+
+# Local state that must never be baked into the image
+hakka.db
+hakka.db-shm
+hakka.db-wal
+logs/
+data/
+hakka.json
+
+# Secrets
+.env
+
+# Docs & meta files (not needed for the build)
+*.md
+Dockerfile
+docker-compose.yml

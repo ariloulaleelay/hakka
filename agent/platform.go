@@ -19,7 +19,6 @@ type Platform struct {
 	sessions     *SessionManager
 	router       *Router
 	engineCfg    EngineConfig
-	skills       *SkillRegistry
 	systemPrompt string
 }
 
@@ -27,11 +26,10 @@ type Platform struct {
 // Store, Registry, and SystemPrompt are required. All other fields
 // are optional and default to sensible zero values.
 type PlatformConfig struct {
-	Store         SessionStore
-	Registry      *Registry
-	SystemPrompt  string
-	EngineCfg     EngineConfig   // optional; zero-value fields inherit from DefaultEngineConfig()
-	SkillRegistry *SkillRegistry // optional
+	Store        SessionStore
+	Registry     *Registry
+	SystemPrompt string
+	EngineCfg    EngineConfig // optional; zero-value fields inherit from DefaultEngineConfig()
 }
 
 // NamespaceComponents is a bundle of engine components scoped to a
@@ -58,7 +56,6 @@ func NewPlatform(cfg PlatformConfig) *Platform {
 		sessions:     NewSessionManager(cfg.Store, cfg.SystemPrompt),
 		router:       NewRouter(cfg.Registry),
 		engineCfg:    engineCfg,
-		skills:       cfg.SkillRegistry,
 		systemPrompt: cfg.SystemPrompt,
 	}
 }
@@ -70,10 +67,6 @@ func (p *Platform) Sessions() *SessionManager { return p.sessions }
 // Router returns the shared model Router, which resolves which LLM
 // adapter to use for a given session.
 func (p *Platform) Router() *Router { return p.router }
-
-// Skills returns the shared SkillRegistry, or nil if none was
-// configured.
-func (p *Platform) Skills() *SkillRegistry { return p.skills }
 
 // SystemPrompt returns the configured system prompt.
 func (p *Platform) SystemPrompt() string { return p.systemPrompt }
@@ -97,10 +90,6 @@ func (p *Platform) ForNamespace(ns string, tools *ToolRegistry, decorator ToolCo
 
 	if decorator != nil {
 		conv.SetToolContext(decorator)
-	}
-
-	if p.skills != nil {
-		conv.SetSkills(p.skills)
 	}
 
 	return NamespaceComponents{

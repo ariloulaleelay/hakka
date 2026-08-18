@@ -342,7 +342,7 @@ func passThroughMessage(m Message) Message {
 //
 // Returns the context messages and a bool indicating whether
 // context_compactify should be added to tool schemas for this turn.
-func BuildCompactContext(session SessionHistory, softLimit int, skills *SkillRegistry) ([]Message, bool, int) {
+func BuildCompactContext(session SessionHistory, softLimit int) ([]Message, bool, int) {
 	rawMsgs := session.Messages()
 	ranges := extractCompactifyRanges(rawMsgs)
 	inRange := computeEffectiveInRange(rawMsgs, ranges)
@@ -357,19 +357,21 @@ func BuildCompactContext(session SessionHistory, softLimit int, skills *SkillReg
 		view = append(view, buildCompactionWarning(estimatedTokens, softLimit))
 	}
 
-	result := buildContextPrefix(session, needCompactify, skills, session.GetCWD())
+	result := buildContextPrefix(session, needCompactify, session.GetCWD())
 	result = append(result, view...)
 	return result, needCompactify, estimatedTokens
 }
 
 // buildSkillMessages assembles system messages for loaded skills.
-func buildSkillMessages(session SessionHistory, skills *SkillRegistry) []Message {
-	if skills == nil {
-		return nil
-	}
-	// Try to get active skills — SessionSkills interface
+// Skills are resolved against the session's own registry.
+func buildSkillMessages(session SessionHistory) []Message {
+	// Try to get the session's skill registry — SessionSkills interface
 	skillSession, ok := session.(SessionSkills)
 	if !ok {
+		return nil
+	}
+	reg := skillSession.SkillRegistry()
+	if reg == nil {
 		return nil
 	}
 	names := skillSession.ActiveSkills()
@@ -378,11 +380,11 @@ func buildSkillMessages(session SessionHistory, skills *SkillRegistry) []Message
 	}
 	var msgs []Message
 	for _, name := range names {
-		skill := skills.Get(name)
+		skill := reg.Get(name)
 		if skill == nil {
 			continue
 		}
-		content, err := skills.ReadContent(name)
+		content, err := reg.ReadContent(name)
 		if err != nil {
 			continue
 		}
@@ -420,7 +422,7 @@ func buildCompactionWarning(estimatedTokens, softLimit int) Message {
 // system prompt (if present), AGENTS.md from CWD (if found),
 // optional compactify usage notice, loaded skills, and
 // the working-directory message (if set).
-func buildContextPrefix(session SessionHistory, needCompactify bool, skills *SkillRegistry, cwd string) []Message {
+func buildContextPrefix(session SessionHistory, needCompactify bool, cwd string) []Message {
 	result := make([]Message, 0, 8)
 
 	if sp := session.SystemPrompt(); sp != "" {
@@ -436,7 +438,7 @@ func buildContextPrefix(session SessionHistory, needCompactify bool, skills *Ski
 		})
 	}
 	// Inject loaded skills as system messages
-	if skillMsgs := buildSkillMessages(session, skills); len(skillMsgs) > 0 {
+	if skillMsgs := buildSkillMessages(session); len(skillMsgs) > 0 {
 		result = append(result, skillMsgs...)
 	}
 	if cwdMsg := session.CWDMessage(); cwdMsg != nil {

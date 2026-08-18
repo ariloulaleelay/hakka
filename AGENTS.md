@@ -135,12 +135,19 @@ incremental message operations.
 
 | Tool | Description |
 |---|---|
-| `search_skills` | Search the skill registry by name, description, or tags. Includes full metadata (license, compatibility, allowed tools) — no inspect step needed |
-| `import_skill` | Register skill(s) from a path into the registry — SKILL.md file, single skill dir, or registry dir. Never loads into session |
+| `search_skills` | Search this session's skill registry by name, description, or tags. Includes full metadata (license, compatibility, allowed tools) — no inspect step needed |
+| `import_skill` | Register skill(s) from a path into THIS session's registry — SKILL.md file, single skill dir, or registry dir. Never loads into session; never visible to other sessions |
 | `load_skill` | Load a registered skill into the session — its content becomes part of the system prompt on every turn |
 | `unload_skill` | Remove a loaded skill from the session to free context |
 
-Skills are reusable instructions/knowledge that teach the agent HOW to do something. They follow the [Agent Skills specification](https://agentskills.io): a skill is a directory containing a `SKILL.md` file with YAML frontmatter (`name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools`) and optional `scripts/`, `references/`, `assets/` subdirectories. Skills are stored in a `SkillRegistry` and loaded into sessions on demand. When loaded, skill content is injected as additional `RoleSystem` messages after the base system prompt.
+Skills are reusable instructions/knowledge that teach the agent HOW to do something. They follow the [Agent Skills specification](https://agentskills.io): a skill is a directory containing a `SKILL.md` file with YAML frontmatter (`name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools`) and optional `scripts/`, `references/`, `assets/` subdirectories.
+
+**Skills are session-bound** — there is no server-global skill registry:
+
+- Each session owns its own `SkillRegistry`, built lazily from its persisted imports plus the `${cwd}/skills` directory (auto-imported when it exists).
+- `import_skill` registers skills into the current session only and persists the SKILL.md paths with the session, so imports survive restarts and follow forks.
+- `load_skill`/`unload_skill` maintain the session's `ActiveSkills` list (persisted with the session). When loaded, skill content is injected as additional `RoleSystem` messages after the base system prompt.
+- Forked/subagent sessions inherit the parent's skill state (imported paths and active skills).
 
 A skill **registry** is a directory containing multiple skill subdirectories:
 
@@ -156,7 +163,7 @@ skills/
     └── SKILL.md
 ```
 
-Use `--skill-dir /path/to/skills` to load a registry at startup. There is no backward compatibility with flat `.md` files — only the spec format is supported.
+A `${cwd}/skills` directory in the session's working directory is picked up automatically. There is no backward compatibility with flat `.md` files — only the spec format is supported.
 
 The `context_compactify` warning also suggests using `unload_skill` to free context when the soft limit is exceeded.
 
@@ -242,7 +249,7 @@ See `protocol.md` for the complete frame reference.
 | New LLM provider | `agent.LLMAdapter` |
 | Persistent session store | `agent.SessionStore` |
 | New tool | `agent.Tool` + `ToolRegistry.Register` |
-| New skill | `agent.Skill` + `agent.SkillRegistry.Add` / `AddDir` |
+| New skill | `agent.Skill` + per-session `SkillRegistry` (see Skill Tools — skills are session-bound) |
 | New transport | Implement a Gateway |
 | Middleware/guardrails | Engine `Hooks` in `EngineConfig` |
 

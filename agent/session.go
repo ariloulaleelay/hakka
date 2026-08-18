@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -70,6 +71,7 @@ type SessionData struct {
 	BlockedTools           map[string]bool
 	CompactSoftLimit       int
 	ActiveSkills           []string // names of loaded skills
+	SkillPaths             []string // SKILL.md paths imported into this session's registry
 }
 
 // NewSessionData creates a SessionData with sensible defaults.
@@ -114,6 +116,10 @@ func (sd *SessionData) DeepCopy() SessionData {
 		cp.ActiveSkills = make([]string, len(sd.ActiveSkills))
 		copy(cp.ActiveSkills, sd.ActiveSkills)
 	}
+	if sd.SkillPaths != nil {
+		cp.SkillPaths = make([]string, len(sd.SkillPaths))
+		copy(cp.SkillPaths, sd.SkillPaths)
+	}
 	return cp
 }
 
@@ -146,6 +152,10 @@ func (sd *SessionData) ForkData(forkPoint string) (SessionData, error) {
 	if len(sd.ActiveSkills) > 0 {
 		child.ActiveSkills = make([]string, len(sd.ActiveSkills))
 		copy(child.ActiveSkills, sd.ActiveSkills)
+	}
+	if len(sd.SkillPaths) > 0 {
+		child.SkillPaths = make([]string, len(sd.SkillPaths))
+		copy(child.SkillPaths, sd.SkillPaths)
 	}
 
 	child.ParentID = sd.ID
@@ -265,6 +275,10 @@ type Session struct {
 	mu   sync.RWMutex
 	data *SessionData
 
+	// skills is the session's own skill registry, built lazily from
+	// data.SkillPaths and the ${cwd}/skills directory on first access.
+	skills *SkillRegistry
+
 	// persistMessages is installed by SessionManager for sessions loaded from
 	// a repository. Mutating message operations persist first and update the
 	// in-memory snapshot only after the repository confirms the commit.
@@ -349,6 +363,9 @@ func (sess *Session) updateMeta(ctx context.Context, patch SessionMetaPatch, app
 	}
 	if !slicesEqual(sess.data.ActiveSkills, candidate.ActiveSkills) {
 		patch.ActiveSkills = candidate.ActiveSkills
+	}
+	if !slicesEqual(sess.data.SkillPaths, candidate.SkillPaths) {
+		patch.SkillPaths = candidate.SkillPaths
 	}
 	if sess.persistMeta != nil {
 		if err := sess.persistMeta(ctx, patch); err != nil {
@@ -779,4 +796,104 @@ func (sess *Session) RemoveActiveSkill(ctx context.Context, name string) error {
 			}
 		}
 	})
+}
+
+// --- Session skill registry ---
+
+// SkillRegistry returns the session's own skill registry. It is built
+// lazily on first access from the persisted SkillPaths plus the
+// ${cwd}/skills directory (if it exists). Skills are never shared across
+// sessions.
+func (sess *Session) SkillRegistry() *SkillRegistry {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.ensureSkillsLocked()
+}
+
+// ensureSkillsLocked builds (if needed) and returns the session's skill
+// registry. The caller must hold sess.mu.
+func (sess *Session) ensureSkillsLocked() *SkillRegistry {
+	if sess.skills != nil {
+		return sess.skills
+	}
+
+	reg := NewSkillRegistry()
+	d := sess.data
+
+	// Re-register persisted imports. Missing or malformed files are
+	// skipped — the skill dir may have been moved or deleted.
+	for _, p := range d.SkillPaths {
+		_ = reg.Add(p)
+	}
+
+	// Auto-import ${cwd}/skills when it exists (session default).
+	if d.ClientCWD != "" {
+		skillsDir := filepath.Join(d.ClientCWD, "skills")
+		if info, err := os.Stat(skillsDir); err == nil && info.IsDir() {
+			_, _ = reg.AddDir(skillsDir)
+		}
+	}
+
+	sess.skills = reg
+	return reg
+}
+
+// ImportSkills registers skill files (paths to SKILL.md) into the
+// session's own registry and persists their paths so they survive
+// restarts and follow forks. Returns the number of newly imported skills
+// and the list of per-path problems (soft failures — malformed or
+// duplicate skills). A non-nil error means the session state could not
+// be persisted.
+func (sess *Session) ImportSkills(ctx context.Context, paths []string) (int, []error, error) {
+	// Register into the live registry under the lock; collecting which
+	// paths actually registered also validates them.
+	sess.mu.Lock()
+	reg := sess.ensureSkillsLocked()
+	var problems []error
+	var valid []string
+	for _, p := range paths {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", p, err))
+			continue
+		}
+		if slicesContains(sess.data.SkillPaths, abs) {
+			continue // already imported earlier — noop
+		}
+		if err := reg.Add(abs); err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", abs, err))
+			continue
+		}
+		valid = append(valid, abs)
+	}
+	sess.mu.Unlock()
+
+	if len(valid) == 0 {
+		return 0, problems, nil
+	}
+
+	// Persist the new paths — the registry is rebuilt from SkillPaths on
+	// session load, so persistence must come first.
+	err := sess.updateMeta(ctx, SessionMetaPatch{}, func(d *SessionData, _ time.Time) {
+		for _, p := range valid {
+			if !slicesContains(d.SkillPaths, p) {
+				d.SkillPaths = append(d.SkillPaths, p)
+			}
+		}
+	})
+	if err != nil {
+		return 0, problems, fmt.Errorf("persist skill paths: %w", err)
+	}
+
+	return len(valid), problems, nil
+}
+
+// slicesContains reports whether s contains v.
+func slicesContains(s []string, v string) bool {
+	for _, e := range s {
+		if e == v {
+			return true
+		}
+	}
+	return false
 }

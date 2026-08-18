@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -284,6 +285,96 @@ func TestEnabledTools_backward_compat_with_broken_json_yields_nil(t *testing.T) 
 	if got.Read().EnabledTools != nil {
 		t.Errorf("expected nil EnabledTools for broken JSON, got %v", got.Read().EnabledTools)
 	}
+}
+
+func TestSkillPaths_are_preserved_across_Put_and_Get(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	ns := "skill-ns"
+
+	// A real skill dir so ImportSkills validation passes.
+	skillPath := makeSkillFile(t, "go-testing")
+
+	sess := agent.NewSession(ns, "you are a skill user")
+	sess.AddActiveSkill(context.Background(), "go-testing")
+	added, problems, err := sess.ImportSkills(ctx, []string{skillPath})
+	if err != nil {
+		t.Fatalf("ImportSkills: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Fatalf("unexpected problems: %v", problems)
+	}
+	if added != 1 {
+		t.Fatalf("expected 1 imported skill, got %d", added)
+	}
+
+	if err := s.Put(ctx, ns, sess); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	got, ok, err := s.Get(ctx, ns, sess.SessionID())
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !ok {
+		t.Fatal("session not found")
+	}
+	paths := got.Read().SkillPaths
+	if len(paths) != 1 || paths[0] != skillPath {
+		t.Fatalf("expected skill paths to round-trip, got %v", paths)
+	}
+	active := got.ActiveSkills()
+	if len(active) != 1 || active[0] != "go-testing" {
+		t.Fatalf("expected active skills to round-trip, got %v", active)
+	}
+}
+
+func TestSkillPaths_round_trip_via_PatchMeta(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	ns := "skill-patch-ns"
+
+	skillPath := makeSkillFile(t, "foo")
+
+	// Use a SessionManager so the session is bound to the store —
+	// ImportSkills persists via PatchMeta on bound sessions.
+	sm := agent.NewSessionManager(s, "p")
+	sess, err := sm.CreateWithID(ctx, ns, "")
+	if err != nil {
+		t.Fatalf("CreateWithID: %v", err)
+	}
+
+	if _, _, err := sess.ImportSkills(ctx, []string{skillPath}); err != nil {
+		t.Fatalf("ImportSkills: %v", err)
+	}
+
+	got, ok, err := s.Get(ctx, ns, sess.SessionID())
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !ok {
+		t.Fatal("session not found")
+	}
+	paths := got.Read().SkillPaths
+	if len(paths) != 1 || paths[0] != skillPath {
+		t.Fatalf("expected skill paths after PatchMeta, got %v", paths)
+	}
+}
+
+// makeSkillFile creates a valid skill directory and returns the path to
+// its SKILL.md file.
+func makeSkillFile(t *testing.T, name string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: " + name + "\ndescription: Test skill " + name + "\n---\n# " + name + "\n\nBody.\n"
+	path := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // ---------------------------------------------------------------------------

@@ -77,10 +77,16 @@ type SessionCompactLimits interface {
 	SetCompactSoftLimit(ctx context.Context, n int) error
 }
 
+// SessionSkills exposes the session-bound skill state: the active
+// (loaded) skill names and the session's own skill registry. Skills are
+// never shared across sessions — each session builds its registry from
+// its persisted imports and its ${cwd}/skills directory.
 type SessionSkills interface {
 	ActiveSkills() []string
 	AddActiveSkill(ctx context.Context, name string) error
 	RemoveActiveSkill(ctx context.Context, name string) error
+	SkillRegistry() *SkillRegistry
+	ImportSkills(ctx context.Context, paths []string) (int, []error, error)
 }
 
 // SessionView is the full composite interface that the orchestration

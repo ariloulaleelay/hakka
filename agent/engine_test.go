@@ -285,6 +285,9 @@ func (c *copyBackStore) PatchMeta(_ context.Context, namespace, id string, patch
 	if patch.ActiveSkills != nil {
 		d.ActiveSkills = patch.ActiveSkills
 	}
+	if patch.SkillPaths != nil {
+		d.SkillPaths = patch.SkillPaths
+	}
 	d.UpdatedAt = time.Now()
 	c.data[c.key(namespace, id)] = d
 	return nil

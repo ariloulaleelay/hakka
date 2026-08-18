@@ -43,6 +43,24 @@ func TestREADMESectionExists(t *testing.T) {
 	}
 }
 
+func TestREADMEDockerSectionExists(t *testing.T) {
+	data, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatalf("cannot read README.md: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "## Docker") {
+		t.Errorf("README.md missing section '## Docker'")
+	}
+	if !strings.Contains(content, "/data") {
+		t.Errorf("README.md Docker section should document the /data volume for config + database")
+	}
+	if !strings.Contains(content, "8080") {
+		t.Errorf("README.md Docker section should document the exposed 8080 port")
+	}
+}
+
 func TestREADMENoInternalReferences(t *testing.T) {
 	data, err := os.ReadFile("README.md")
 	if err != nil {

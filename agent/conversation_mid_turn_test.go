@@ -216,7 +216,7 @@ func TestConversationMidTurnEnableTool_ContextInjection_Run(t *testing.T) {
 
 	engineCfg := EngineConfig{MaxToolIterations: 5, Logger: testLogger(t)}
 	toolExec := newToolExecutor(tools, nil, engineCfg.Hooks)
-	rr := newTurnRunner(tools, toolExec, engineCfg, router, testLogger(t), nil, sm.Store)
+	rr := newTurnRunner(tools, toolExec, engineCfg, router, testLogger(t), sm.Store)
 
 	session, err := sm.CreateWithID(context.Background(), "testns", sessionID)
 	if err != nil {

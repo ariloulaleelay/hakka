@@ -76,22 +76,23 @@ func RegisterToolManagementTools(r *agent.ToolRegistry) {
 // The subagent tool lets the LLM fork its current session and run an autonomous
 // subtask in a persistent child session. It needs access to the session manager
 // (the child is persisted in the same store/namespace as the parent), the
-// router, tool registry, engine config, and skill registry to set up the child
-// conversation.
+// router, tool registry, and engine config to set up the child conversation.
 //
 // The subagent_run tool is automatically blocked on child sessions to prevent
 // infinite recursion.
-func RegisterSubagentTools(r *agent.ToolRegistry, sessions *agent.SessionManager, router *agent.Router, tools *agent.ToolRegistry, cfg agent.EngineConfig, skills *agent.SkillRegistry) {
-	r.Register(SubagentRun(sessions, router, tools, cfg, skills))
+func RegisterSubagentTools(r *agent.ToolRegistry, sessions *agent.SessionManager, router *agent.Router, tools *agent.ToolRegistry, cfg agent.EngineConfig) {
+	r.Register(SubagentRun(sessions, router, tools, cfg))
 }
 
 // RegisterSkillTools registers skill-management tools on the given registry.
 // These tools let the LLM discover, inspect, load, unload, and import skills.
 //
-// The sr parameter is the SkillRegistry that holds the available skills.
-func RegisterSkillTools(r *agent.ToolRegistry, sr *agent.SkillRegistry) {
-	r.Register(SearchSkills(sr))
-	r.Register(LoadSkill(sr))
-	r.Register(UnloadSkill(sr))
-	r.Register(ImportSkill(sr))
+// All skill tools are session-bound: they operate on the current session's
+// own skill registry (persisted with the session), never on a server-global
+// one.
+func RegisterSkillTools(r *agent.ToolRegistry) {
+	r.Register(SearchSkills())
+	r.Register(LoadSkill())
+	r.Register(UnloadSkill())
+	r.Register(ImportSkill())
 }

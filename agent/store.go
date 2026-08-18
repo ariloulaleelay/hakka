@@ -21,6 +21,7 @@ type SessionMetaPatch struct {
 	EnabledTools           map[string]bool
 	BlockedTools           map[string]bool
 	ActiveSkills           []string
+	SkillPaths             []string
 	UpdatedAt              *time.Time
 }
 
@@ -158,6 +159,9 @@ func (ms *MemoryStore) PatchMeta(_ context.Context, namespace, id string, patch 
 	}
 	if patch.ActiveSkills != nil {
 		d.ActiveSkills = patch.ActiveSkills
+	}
+	if patch.SkillPaths != nil {
+		d.SkillPaths = patch.SkillPaths
 	}
 	if patch.UpdatedAt != nil {
 		d.UpdatedAt = *patch.UpdatedAt

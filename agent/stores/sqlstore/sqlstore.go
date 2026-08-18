@@ -60,6 +60,10 @@ func (s *Store) InitSchema(ctx context.Context) error {
 	if err := s.addForkColumns(ctx); err != nil {
 		slog.Warn("sqlstore: failed to add fork columns", "error", err)
 	}
+	// Add skill_paths column for existing sessions tables.
+	if err := s.addSkillPathsColumn(ctx); err != nil {
+		slog.Warn("sqlstore: failed to add skill_paths column", "error", err)
+	}
 	if _, err := s.db.ExecContext(ctx, s.idSequencesDDL()); err != nil {
 		return fmt.Errorf("create id_sequences table: %w", err)
 	}
@@ -114,6 +118,23 @@ func (s *Store) addForkColumns(ctx context.Context) error {
 			}
 		}
 		return nil
+	}
+}
+
+// addSkillPathsColumn adds the skill_paths column to the sessions table
+// if it doesn't already exist. Sessions own their skill registries, so
+// imported SKILL.md paths are persisted per session.
+func (s *Store) addSkillPathsColumn(ctx context.Context) error {
+	switch s.dialect {
+	case Postgres:
+		_, err := s.db.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS skill_paths TEXT NOT NULL DEFAULT '[]'`)
+		return err
+	default:
+		_, err := s.db.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN skill_paths TEXT NOT NULL DEFAULT '[]'`)
+		if err != nil && strings.Contains(err.Error(), "duplicate column") {
+			return nil
+		}
+		return err
 	}
 }
 
@@ -301,6 +322,10 @@ func (s *Store) Put(ctx context.Context, namespace string, session *agent.Sessio
 	if err != nil {
 		return err
 	}
+	skillPathsJSON, err := marshalSlice(data.SkillPaths)
+	if err != nil {
+		return err
+	}
 	createdText, err := data.CreatedAt.MarshalText()
 	if err != nil {
 		return err
@@ -318,7 +343,7 @@ func (s *Store) Put(ctx context.Context, namespace string, session *agent.Sessio
 		namespace, data.ID, data.ParentID, data.ForkPoint, data.SystemPrompt, string(createdText), string(updatedText),
 		data.ClientCWD, data.Model, data.TotalTokens,
 		data.Name, enabledJSON, blockedJSON, data.CompactSoftLimit,
-		data.EstimatedContextTokens, data.TotalCost, activeSkillsJSON,
+		data.EstimatedContextTokens, data.TotalCost, activeSkillsJSON, skillPathsJSON,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert session: %w", err)
@@ -393,6 +418,7 @@ func (s *Store) sessionsDDL() string {
 	estimated_context_tokens INTEGER NOT NULL DEFAULT 0,
 	total_cost     DOUBLE PRECISION NOT NULL DEFAULT 0,
 	active_skills  TEXT NOT NULL DEFAULT '[]',
+	skill_paths    TEXT NOT NULL DEFAULT '[]',
 	PRIMARY KEY (namespace, id)
 )`
 	default:
@@ -414,6 +440,7 @@ func (s *Store) sessionsDDL() string {
 	estimated_context_tokens INTEGER NOT NULL DEFAULT 0,
 	total_cost     REAL NOT NULL DEFAULT 0,
 	active_skills  TEXT NOT NULL DEFAULT '[]',
+	skill_paths    TEXT NOT NULL DEFAULT '[]',
 	PRIMARY KEY (namespace, id)
 )`
 	}
@@ -502,13 +529,13 @@ func (s *Store) selectSession() string {
 		return `SELECT namespace, id, parent_id, fork_point, system_prompt, created_at, updated_at, client_cwd,
 			model, total_tokens, name, enabled_tools, blocked_tools,
 			compact_soft_limit, estimated_context_tokens, total_cost,
-			active_skills
+			active_skills, skill_paths
 		FROM sessions WHERE namespace = $1 AND id = $2`
 	default:
 		return `SELECT namespace, id, parent_id, fork_point, system_prompt, created_at, updated_at, client_cwd,
 			model, total_tokens, name, enabled_tools, blocked_tools,
 			compact_soft_limit, estimated_context_tokens, total_cost,
-			active_skills
+			active_skills, skill_paths
 		FROM sessions WHERE namespace = ? AND id = ?`
 	}
 }
@@ -519,13 +546,13 @@ func (s *Store) selectSessionsByNamespace() string {
 		return `SELECT namespace, id, parent_id, fork_point, system_prompt, created_at, updated_at, client_cwd,
 			model, total_tokens, name, enabled_tools, blocked_tools,
 			compact_soft_limit, estimated_context_tokens, total_cost,
-			active_skills
+			active_skills, skill_paths
 		FROM sessions WHERE namespace = $1 ORDER BY updated_at DESC`
 	default:
 		return `SELECT namespace, id, parent_id, fork_point, system_prompt, created_at, updated_at, client_cwd,
 			model, total_tokens, name, enabled_tools, blocked_tools,
 			compact_soft_limit, estimated_context_tokens, total_cost,
-			active_skills
+			active_skills, skill_paths
 		FROM sessions WHERE namespace = ? ORDER BY updated_at DESC`
 	}
 }
@@ -533,8 +560,8 @@ func (s *Store) selectSessionsByNamespace() string {
 func (s *Store) upsertSession() string {
 	switch s.dialect {
 	case Postgres:
-		return `INSERT INTO sessions (namespace, id, parent_id, fork_point, system_prompt, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+		return `INSERT INTO sessions (namespace, id, parent_id, fork_point, system_prompt, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills, skill_paths)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		ON CONFLICT(namespace, id) DO UPDATE SET
 			parent_id     = EXCLUDED.parent_id,
 			fork_point    = EXCLUDED.fork_point,
@@ -549,10 +576,11 @@ func (s *Store) upsertSession() string {
 			compact_soft_limit = EXCLUDED.compact_soft_limit,
 			estimated_context_tokens = EXCLUDED.estimated_context_tokens,
 			total_cost    = EXCLUDED.total_cost,
-			active_skills = EXCLUDED.active_skills`
+			active_skills = EXCLUDED.active_skills,
+			skill_paths   = EXCLUDED.skill_paths`
 	default:
-		return `INSERT INTO sessions (namespace, id, parent_id, fork_point, system_prompt, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		return `INSERT INTO sessions (namespace, id, parent_id, fork_point, system_prompt, created_at, updated_at, client_cwd, model, total_tokens, name, enabled_tools, blocked_tools, compact_soft_limit, estimated_context_tokens, total_cost, active_skills, skill_paths)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(namespace, id) DO UPDATE SET
 			parent_id     = excluded.parent_id,
 			fork_point    = excluded.fork_point,
@@ -567,7 +595,8 @@ func (s *Store) upsertSession() string {
 			compact_soft_limit = excluded.compact_soft_limit,
 			estimated_context_tokens = excluded.estimated_context_tokens,
 			total_cost    = excluded.total_cost,
-			active_skills = excluded.active_skills`
+			active_skills = excluded.active_skills,
+			skill_paths   = excluded.skill_paths`
 	}
 }
 
@@ -630,13 +659,14 @@ func (s *Store) scanSession(scanner interface{ Scan(dest ...any) error }) (*agen
 		compactSoftLim         int
 		estimatedContextTokens int
 		activeSkillsStr        string
+		skillPathsStr          string
 	)
 	err := scanner.Scan(
 		&data.Namespace, &data.ID, &data.ParentID, &data.ForkPoint, &data.SystemPrompt,
 		&createdText, &updatedText,
 		&data.ClientCWD, &modelStr, &totalTokens,
 		&data.Name, &enabledStr, &blockedStr, &compactSoftLim,
-		&estimatedContextTokens, &totalCost, &activeSkillsStr,
+		&estimatedContextTokens, &totalCost, &activeSkillsStr, &skillPathsStr,
 	)
 	if err != nil {
 		return nil, err
@@ -660,6 +690,11 @@ func (s *Store) scanSession(scanner interface{ Scan(dest ...any) error }) (*agen
 	if activeSkillsStr != "" && activeSkillsStr != "[]" {
 		if err := json.Unmarshal([]byte(activeSkillsStr), &data.ActiveSkills); err != nil {
 			data.ActiveSkills = nil
+		}
+	}
+	if skillPathsStr != "" && skillPathsStr != "[]" {
+		if err := json.Unmarshal([]byte(skillPathsStr), &data.SkillPaths); err != nil {
+			data.SkillPaths = nil
 		}
 	}
 	if err := data.CreatedAt.UnmarshalText([]byte(createdText)); err != nil {
@@ -1003,6 +1038,12 @@ func (s *Store) buildMetaPatch(patch *agent.SessionMetaPatch) ([]string, []any) 
 		json, err := marshalSlice(patch.ActiveSkills)
 		if err == nil {
 			add("active_skills", json)
+		}
+	}
+	if patch.SkillPaths != nil {
+		json, err := marshalSlice(patch.SkillPaths)
+		if err == nil {
+			add("skill_paths", json)
 		}
 	}
 	if patch.UpdatedAt != nil {

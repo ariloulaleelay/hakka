@@ -317,6 +317,80 @@ MCP tools are automatically discovered on startup and registered in the tool reg
 
 ---
 
+## Docker
+
+Hakka ships with a multi-stage `Dockerfile` (static Go binary on a minimal
+Alpine image) and a `docker-compose.yml` for self-hosted deployments.
+
+Layout:
+
+- **Inside the image**: the binary, built-in tools, and the embedded web UI.
+- **External volume `/data`**: `hakka.json` (model config) and `hakka.db`
+  (SQLite sessions) — the only state that survives image upgrades.
+- **Non-root**: the container runs as the `hakka` user (uid 10001) with
+  `/home/hakka` as its writable default working directory (new sessions
+  inherit it as their default cwd).
+- **Port 8080**: web UI + WebSocket, exposed to the host.
+
+### Build
+
+```sh
+make docker-build          # = docker build -t hakka .
+```
+
+### Run with docker compose
+
+```sh
+mkdir -p data
+cp hakka.example.json data/hakka.json
+# edit data/hakka.json as needed; API keys are read from environment
+export DEEPSEEK_API_KEY=sk-...
+docker compose up -d
+```
+
+The web UI is then available at http://localhost:8080.
+
+> **Note**: config loading expands every `${env: VAR}` placeholder in the
+> file, so either remove models you don't use from `hakka.json` or export
+> all referenced keys (startup fails with a clear error otherwise).
+
+### Manual run
+
+```sh
+mkdir -p data
+cp hakka.example.json data/hakka.json
+docker run -d --name hakka \
+  -p 8080:8080 \
+  -v "$(pwd)/data:/data" \
+  -e DEEPSEEK_API_KEY=sk-... \
+  hakka
+```
+
+### Volumes & permissions
+
+`/data` holds `hakka.json` and `hakka.db`. On Linux, a bind-mounted host
+directory must be writable by uid 10001:
+
+```sh
+sudo chown -R 10001:10001 ./data
+```
+
+Named volumes (e.g. switching compose to `data:/data`) inherit the image's
+ownership and need no extra setup.
+
+### One-off commands
+
+```sh
+# Batch task (no servers started)
+docker run --rm -v "$(pwd)/data:/data" -e DEEPSEEK_API_KEY=sk-... hakka \
+  --config /data/hakka.json --run "List files"
+
+# Shell inside the container
+docker run --rm -it --entrypoint sh -v "$(pwd)/data:/data" hakka
+```
+
+---
+
 ## Wire Protocol (v2)
 
 **Request** (WebSocket frame):

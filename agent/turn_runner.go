@@ -20,12 +20,11 @@ type turnRunner struct {
 	config   EngineConfig
 	router   *Router
 	logger   *slog.Logger
-	skills   *SkillRegistry
 	store    SessionStore
 }
 
 // newTurnRunner builds a turnRunner from the shared engine dependencies.
-func newTurnRunner(tools *ToolRegistry, toolExec *toolExecutor, config EngineConfig, router *Router, logger *slog.Logger, skills *SkillRegistry, store SessionStore) *turnRunner {
+func newTurnRunner(tools *ToolRegistry, toolExec *toolExecutor, config EngineConfig, router *Router, logger *slog.Logger, store SessionStore) *turnRunner {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -35,7 +34,6 @@ func newTurnRunner(tools *ToolRegistry, toolExec *toolExecutor, config EngineCon
 		config:   config,
 		router:   router,
 		logger:   logger,
-		skills:   skills,
 		store:    store,
 	}
 }
@@ -203,7 +201,7 @@ func (r *turnRunner) runLoop(
 // whether compaction is needed, and estimated token count.
 func (r *turnRunner) buildLLMContext(session SessionView) ([]Message, bool, int) {
 	softLimit := r.resolveSoftLimit(session)
-	msgs, needCompactify, estimatedTokens := BuildCompactContext(session, softLimit, r.skills)
+	msgs, needCompactify, estimatedTokens := BuildCompactContext(session, softLimit)
 	msgs = appendToolListMessage(msgs, r.tools, session)
 	return msgs, needCompactify, estimatedTokens
 }

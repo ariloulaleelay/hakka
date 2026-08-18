@@ -34,7 +34,6 @@ type RunBatchParams struct {
 	CompactSoftLimit int                         // 0 = use engine config default
 	Logger           *slog.Logger                // optional; defaults to slog.Default()
 	Store            agent.SessionStore          // optional; defaults to in-memory store
-	Skills           *agent.SkillRegistry        // optional; skill registry for skill tools and context injection
 	Checkpoints      *hakkatools.CheckpointStore // optional; defaults to temp-dir store
 }
 
@@ -132,20 +131,16 @@ func RunBatchWithOutput(ctx context.Context, p RunBatchParams, output io.Writer,
 		hakkatools.RegisterSessionTools(tools, sessions, nil)
 	}
 
-	// Set up skill registry
-	skills := p.Skills
-	if skills == nil {
-		skills = agent.NewSkillRegistry()
-	}
-	hakkatools.RegisterSkillTools(tools, skills)
+	// Register skill tools — they operate on the session's own registry
+	// (auto-imported from ${cwd}/skills plus per-session imports).
+	hakkatools.RegisterSkillTools(tools)
 
 	cfg := agent.DefaultEngineConfig()
 	cfg.Logger = logger
 
-	hakkatools.RegisterSubagentTools(tools, sessions, router, tools, cfg, skills)
+	hakkatools.RegisterSubagentTools(tools, sessions, router, tools, cfg)
 
 	conv := agent.NewConversation(sessions, router, tools, "batch", cfg)
-	conv.SetSkills(skills)
 
 	// Resolve tool names/tags and enable them on the session.
 	resolved := ResolveToolsByTagOrName(tools, p.EnableTools)

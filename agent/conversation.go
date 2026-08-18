@@ -53,10 +53,6 @@ type Conversation struct {
 	// tool calls. It is populated by NewConversation and rebuilt by
 	// SetToolContext.
 	toolExec *toolExecutor
-
-	// skills is the global skill registry used to resolve loaded skill
-	// names to content for context injection.
-	skills *SkillRegistry
 }
 
 func (conv *Conversation) Sessions() *SessionManager { return conv.sessions }
@@ -86,9 +82,8 @@ func NewConversation(sm *SessionManager, router *Router, tools *ToolRegistry, na
 		config:    cfg,
 		namespace: namespace,
 		toolExec:  newToolExecutor(tools, nil, cfg.Hooks),
-		skills:    nil,
 	}
-	conv.turnRunner = newTurnRunner(tools, conv.toolExec, cfg, router, cfg.Logger, nil, sm.Store)
+	conv.turnRunner = newTurnRunner(tools, conv.toolExec, cfg, router, cfg.Logger, sm.Store)
 	return conv
 }
 
@@ -162,17 +157,7 @@ func (conv *Conversation) SetToolContext(tc ToolContextDecorator) {
 	defer conv.mu.Unlock()
 	conv.toolContext = tc
 	conv.toolExec = newToolExecutor(conv.tools, tc, conv.config.Hooks)
-	conv.turnRunner = newTurnRunner(conv.tools, conv.toolExec, conv.config, conv.router, conv.config.Logger, conv.skills, conv.sessions.Store)
-}
-
-// SetSkills installs a skill registry that the conversation uses to
-// resolve loaded skill names to content for context injection. Must be
-// called before Execute, not safe for concurrent use with running turns.
-func (conv *Conversation) SetSkills(skills *SkillRegistry) {
-	conv.mu.Lock()
-	defer conv.mu.Unlock()
-	conv.skills = skills
-	conv.turnRunner = newTurnRunner(conv.tools, conv.toolExec, conv.config, conv.router, conv.config.Logger, skills, conv.sessions.Store)
+	conv.turnRunner = newTurnRunner(conv.tools, conv.toolExec, conv.config, conv.router, conv.config.Logger, conv.sessions.Store)
 }
 
 // resolveNamespace returns the namespace to use for store operations.

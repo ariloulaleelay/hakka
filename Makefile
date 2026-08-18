@@ -1,10 +1,13 @@
-.PHONY: build test cover run lint clean webfront
+.PHONY: build test cover run lint clean webfront docker-build
 
 BIN := hakka
 DB ?= hakka.db
 
 build:
 	go build -o $(BIN) ./cmd/hakka
+
+hakka-amd64:
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o hakka-amd64 ./cmd/hakka
 
 test:
 	go test ./...

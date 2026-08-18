@@ -153,8 +153,7 @@ func runBatch(logger *slog.Logger, configPath, task string, enableTools []string
 	defer mcpMgr.CloseAll()
 
 	// Run the task.
-	skillRegistry := agent.NewSkillRegistry()
-	hakkatools.RegisterSkillTools(tools, skillRegistry)
+	hakkatools.RegisterSkillTools(tools)
 
 	_, err = batch.RunBatch(context.Background(), batch.RunBatchParams{
 		Registry:         registry,
@@ -163,7 +162,6 @@ func runBatch(logger *slog.Logger, configPath, task string, enableTools []string
 		EnableTools:      enableTools,
 		CompactSoftLimit: compactSoftLimit,
 		Logger:           logger,
-		Skills:           skillRegistry,
 	})
 	return err
 }
@@ -214,14 +212,11 @@ func run(cfg appConfig, logger *slog.Logger) error {
 		},
 	}
 
-	skillRegistry := agent.NewSkillRegistry()
-
 	platform := agent.NewPlatform(agent.PlatformConfig{
-		Store:         store,
-		Registry:      registry,
-		SystemPrompt:  "You are Hakka, a helpful assistant.",
-		EngineCfg:     engineCfg,
-		SkillRegistry: skillRegistry,
+		Store:        store,
+		Registry:     registry,
+		SystemPrompt: "You are Hakka, a helpful assistant.",
+		EngineCfg:    engineCfg,
 	})
 
 	// ── Shared tool registry (WebSocket / webfront) ───────────────────
@@ -232,9 +227,9 @@ func run(cfg appConfig, logger *slog.Logger) error {
 	hakkatools.RegisterMeta(tools)
 	hakkatools.RegisterProcessTools(tools, pm)
 	hakkatools.RegisterToolManagementTools(tools)
-	hakkatools.RegisterSkillTools(tools, platform.Skills())
+	hakkatools.RegisterSkillTools(tools)
 	hakkatools.RegisterSessionTools(tools, platform.Sessions(), nil)
-	hakkatools.RegisterSubagentTools(tools, platform.Sessions(), platform.Router(), tools, engineCfg, platform.Skills())
+	hakkatools.RegisterSubagentTools(tools, platform.Sessions(), platform.Router(), tools, engineCfg)
 
 	// ── MCP servers ───────────────────────────────────────────────────
 	mcpMgr := mcp.NewManager()

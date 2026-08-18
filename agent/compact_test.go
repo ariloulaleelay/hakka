@@ -490,7 +490,7 @@ func TestBuildCompactContext_NoSummaryRepeatedOnSplitRange(t *testing.T) {
 		{from: 0, to: 7, summary: "Exploration and testing"},
 	})
 
-	result, _, _ := BuildCompactContext(s, 100000, nil)
+	result, _, _ := BuildCompactContext(s, 100000)
 
 	// Collect compaction markers
 	var markers []string
@@ -798,7 +798,7 @@ func TestBuildCompactContext_NoCompactionUnderLimit(t *testing.T) {
 	s := NewSession("testns", "You are helpful.")
 	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "hello"}, Message{Role: RoleAssistant, Content: "hi there"}}, 0, 0)
 
-	result, needCompactify, _ := BuildCompactContext(s, 100000, nil)
+	result, needCompactify, _ := BuildCompactContext(s, 100000)
 
 	if needCompactify {
 		t.Fatal("expected needCompactify=false")
@@ -822,7 +822,7 @@ func TestBuildCompactContext_SoftLimitTriggersWarning(t *testing.T) {
 	bigContent := strings.Repeat("x", 400)
 	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: bigContent}, Message{Role: RoleAssistant, Content: "ok"}}, 0, 0)
 
-	result, needCompactify, _ := BuildCompactContext(s, 10, nil)
+	result, needCompactify, _ := BuildCompactContext(s, 10)
 
 	if !needCompactify {
 		t.Fatal("expected needCompactify=true because content exceeds soft limit")
@@ -869,7 +869,7 @@ func TestBuildCompactContext_WarningFormat(t *testing.T) {
 	bigContent := strings.Repeat("x", 400)
 	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: bigContent}, Message{Role: RoleAssistant, Content: "ok"}}, 0, 0)
 
-	result, needCompactify, _ := BuildCompactContext(s, 10, nil)
+	result, needCompactify, _ := BuildCompactContext(s, 10)
 	if !needCompactify {
 		t.Fatal("expected needCompactify=true")
 	}
@@ -912,7 +912,7 @@ func TestBuildCompactContext_PastCompactifyCallApplied(t *testing.T) {
 	makeCompactifyCall(s, []compactRange{{from: 1, to: 2}})
 	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "now write"}, Message{Role: RoleAssistant, Content: "Writing..."}}, 0, 0)
 
-	result, needCompactify, _ := BuildCompactContext(s, 100000, nil)
+	result, needCompactify, _ := BuildCompactContext(s, 100000)
 
 	for _, m := range result {
 		if m.Role == RoleTool && m.Name == "context_compactify" {
@@ -965,7 +965,7 @@ func TestBuildCompactContext_LongUserMessagesNeverCompacted(t *testing.T) {
 
 	makeCompactifyCall(s, []compactRange{{from: 0, to: 7}})
 
-	result, _, _ := BuildCompactContext(s, 100000, nil)
+	result, _, _ := BuildCompactContext(s, 100000)
 
 	foundInitial := false
 	foundSecond := false
@@ -1005,7 +1005,7 @@ func TestBuildCompactContext_ShortUserMessagesCompressible(t *testing.T) {
 	// Compact the entire range — short user messages should be included
 	makeCompactifyCall(s, []compactRange{{from: 0, to: 7}})
 
-	result, _, _ := BuildCompactContext(s, 100000, nil)
+	result, _, _ := BuildCompactContext(s, 100000)
 
 	// Short user messages should now be replaced by compaction markers
 	for _, m := range result {
@@ -1040,7 +1040,7 @@ func TestBuildCompactContext_PartialRoundNotCompacted(t *testing.T) {
 	// Try to compact only index 2 (the tool result) — should fail atomic check
 	makeCompactifyCall(s, []compactRange{{from: 2, to: 2}})
 
-	result, _, _ := BuildCompactContext(s, 100000, nil)
+	result, _, _ := BuildCompactContext(s, 100000)
 
 	// The tool result must still be present
 	foundTool := false
@@ -1078,7 +1078,7 @@ func TestBuildCompactContext_NoSoftLimitWhenUnder(t *testing.T) {
 	s := NewSession("testns", "You are helpful.")
 	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "hi"}, Message{Role: RoleAssistant, Content: "hello"}}, 0, 0)
 
-	result, needCompactify, _ := BuildCompactContext(s, 150000, nil)
+	result, needCompactify, _ := BuildCompactContext(s, 150000)
 
 	if needCompactify {
 		t.Fatal("expected needCompactify=false")
@@ -1103,7 +1103,7 @@ func TestBuildCompactContext_NoSoftLimitWhenUnder(t *testing.T) {
 
 func TestBuildCompactContext_EmptySession(t *testing.T) {
 	s := NewSession("testns", "You are helpful.")
-	result, needCompactify, _ := BuildCompactContext(s, 100000, nil)
+	result, needCompactify, _ := BuildCompactContext(s, 100000)
 
 	if needCompactify {
 		t.Fatal("empty session should not trigger compactify")
@@ -1129,7 +1129,7 @@ func TestBuildCompactContext_CompactifyMessagesNeverInOutput(t *testing.T) {
 	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "more work"}, Message{Role: RoleAssistant, Content: "ok"}}, 0, 0)
 
 	// Test with high soft limit (needCompactify=false).
-	result, needCompactify, _ := BuildCompactContext(s, 100000, nil)
+	result, needCompactify, _ := BuildCompactContext(s, 100000)
 	if needCompactify {
 		t.Fatal("soft limit 100000 should not trigger compaction")
 	}
@@ -1159,7 +1159,7 @@ func TestBuildCompactContext_CompactifyMessagesNeverInOutput(t *testing.T) {
 	bigContent := strings.Repeat("x", 1000)
 	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: bigContent}, Message{Role: RoleAssistant, Content: "final"}}, 0, 0)
 
-	result2, needCompactify2, _ := BuildCompactContext(s, 10, nil)
+	result2, needCompactify2, _ := BuildCompactContext(s, 10)
 	if !needCompactify2 {
 		t.Fatal("soft limit 10 should trigger compaction")
 	}
@@ -1205,7 +1205,7 @@ func TestBuildCompactContext_TokenEstimateExcludesCompactifyMessages(t *testing.
 	// The compactify call adds ~10000 chars → ~2500 tokens if counted.
 	// With a soft limit of 500, we should see needCompactify=true
 	// because 1000 > 500 (compactify messages are excluded from estimate).
-	result, needCompactify, _ := BuildCompactContext(s, 500, nil)
+	result, needCompactify, _ := BuildCompactContext(s, 500)
 
 	if !needCompactify {
 		t.Fatal("expected needCompactify=true (real content ~1000 tokens > soft limit 500)")
@@ -1355,7 +1355,7 @@ func TestBuildCompactContext_InvalidRangeDoesNotCausePanic(t *testing.T) {
 	s.AddMessages(context.Background(), []Message{Message{Role: RoleUser, Content: "more work"}, Message{Role: RoleAssistant, Content: "ok"}}, 0, 0)
 
 	// Must not panic.
-	result, _, _ := BuildCompactContext(s, 100000, nil)
+	result, _, _ := BuildCompactContext(s, 100000)
 
 	// The invalid compactify call must be filtered, and normal messages
 	// must still appear.
@@ -1393,7 +1393,7 @@ func TestBuildCompactContext_NoDuplicateWarnings(t *testing.T) {
 	// Call BuildCompactContext multiple times — simulating multiple
 	// tool-loop iterations where the LLM has not yet called compactify.
 	for i := 0; i < 5; i++ {
-		result, needCompactify, _ := BuildCompactContext(s, 10, nil)
+		result, needCompactify, _ := BuildCompactContext(s, 10)
 		if !needCompactify {
 			t.Fatalf("iteration %d: expected needCompactify=true", i)
 		}
@@ -1465,7 +1465,7 @@ func TestBuildCompactContext_MixedCompactifyAndRegularTools(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, _, _ := BuildCompactContext(s, 100000, nil)
+	result, _, _ := BuildCompactContext(s, 100000)
 
 	// Verify: no context_compactify tool results in the view.
 	for _, m := range result {
@@ -1775,7 +1775,7 @@ func TestBuildCompactContext_MultipleSeparateCompactionsHaveDistinctSummaries(t 
 	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc2", Name: "context_compactify", Arguments: string(compactifyArgs2)}}}, Message{Role: RoleTool, Content: "Noted.", ToolCallID: "cc2", Name: "context_compactify"}}, 0, 0)
 
 	// Now build compact context
-	result, needCompactify, _ := BuildCompactContext(s, 100000, nil)
+	result, needCompactify, _ := BuildCompactContext(s, 100000)
 	if needCompactify {
 		t.Fatal("expected needCompactify=false")
 	}
@@ -1926,7 +1926,7 @@ func TestBuildCompactContext_TwoToolRoundsWithCompactifyBetween_NoUserMessage(t 
 	s.AddMessages(context.Background(), []Message{Message{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "cc2", Name: "context_compactify", Arguments: string(compactifyArgs2)}}}, Message{Role: RoleTool, Content: "Noted.", ToolCallID: "cc2", Name: "context_compactify"}}, 0, 0)
 
 	// Now build compact context
-	result, needCompactify, _ := BuildCompactContext(s, 100000, nil)
+	result, needCompactify, _ := BuildCompactContext(s, 100000)
 	if needCompactify {
 		t.Fatal("expected needCompactify=false")
 	}
@@ -2058,7 +2058,7 @@ func TestBuildAgentMarkdownMessage_InjectedIntoBuildCompactContext(t *testing.T)
 		t.Fatal(err)
 	}
 
-	result, _, _ := BuildCompactContext(s, 100000, nil)
+	result, _, _ := BuildCompactContext(s, 100000)
 
 	// Find the AGENTS.md message
 	found := false
@@ -2083,7 +2083,7 @@ func TestBuildAgentMarkdownMessage_NoFileWhenCWDEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, _, _ := BuildCompactContext(s, 100000, nil)
+	result, _, _ := BuildCompactContext(s, 100000)
 
 	for _, m := range result {
 		if strings.Contains(m.Content, "## Project instructions") {

@@ -44,7 +44,7 @@ func TestSubagentRun_Basic(t *testing.T) {
 	tools := agent.NewToolRegistry()
 	cfg := agent.EngineConfig{MaxToolIterations: 4}
 
-	tool := SubagentRun(sm, router, tools, cfg, nil)
+	tool := SubagentRun(sm, router, tools, cfg)
 
 	// Build a context that mimics what the engine injects before calling
 	// a tool handler.
@@ -121,7 +121,7 @@ func TestSubagentRun_InheritsHistory(t *testing.T) {
 	tools := agent.NewToolRegistry()
 	cfg := agent.EngineConfig{MaxToolIterations: 4}
 
-	tool := SubagentRun(sm, router, tools, cfg, nil)
+	tool := SubagentRun(sm, router, tools, cfg)
 
 	handlerCtx := event.ContextWithNamespace(context.Background(), ns)
 	handlerCtx = event.ContextWithSessionView(handlerCtx, parent)
@@ -163,7 +163,7 @@ func TestSubagentRun_MissingTask(t *testing.T) {
 	router := agent.NewRouter(reg)
 	tools := agent.NewToolRegistry()
 
-	tool := SubagentRun(sm, router, tools, agent.EngineConfig{}, nil)
+	tool := SubagentRun(sm, router, tools, agent.EngineConfig{})
 
 	errMsg := runErrCtx(t, ctxWithNS("ns"), tool.Handler, map[string]any{})
 	if !strings.Contains(errMsg, "task") && !strings.Contains(errMsg, "required") {
@@ -180,7 +180,7 @@ func TestSubagentRun_NoParentSession(t *testing.T) {
 	router := agent.NewRouter(reg)
 	tools := agent.NewToolRegistry()
 
-	tool := SubagentRun(sm, router, tools, agent.EngineConfig{}, nil)
+	tool := SubagentRun(sm, router, tools, agent.EngineConfig{})
 
 	// Context WITHOUT SessionView.
 	errMsg := runErrCtx(t, ctxWithNS("ns"), tool.Handler, map[string]any{
@@ -212,7 +212,7 @@ func TestSubagentRun_RecursionBlocked(t *testing.T) {
 	tools := agent.NewToolRegistry()
 	cfg := agent.EngineConfig{MaxToolIterations: 4}
 
-	tool := SubagentRun(sm, router, tools, cfg, nil)
+	tool := SubagentRun(sm, router, tools, cfg)
 
 	handlerCtx := event.ContextWithNamespace(context.Background(), ns)
 	handlerCtx = event.ContextWithSessionView(handlerCtx, parent)
@@ -270,7 +270,7 @@ func TestSubagentRun_WithTools(t *testing.T) {
 
 	cfg := agent.EngineConfig{MaxToolIterations: 4}
 
-	tool := SubagentRun(sm, router, tools, cfg, nil)
+	tool := SubagentRun(sm, router, tools, cfg)
 
 	handlerCtx := event.ContextWithNamespace(context.Background(), ns)
 	handlerCtx = event.ContextWithSessionView(handlerCtx, parent)
@@ -337,7 +337,7 @@ func TestSubagentRun_ForkStripsUnresolvedToolCalls(t *testing.T) {
 	tools := agent.NewToolRegistry()
 	cfg := agent.EngineConfig{MaxToolIterations: 4}
 
-	tool := SubagentRun(sm, router, tools, cfg, nil)
+	tool := SubagentRun(sm, router, tools, cfg)
 
 	handlerCtx := event.ContextWithNamespace(context.Background(), ns)
 	handlerCtx = event.ContextWithSessionView(handlerCtx, parent)
@@ -378,7 +378,7 @@ func TestSubagentRun_CreatesPersistentChildSession(t *testing.T) {
 	tools := agent.NewToolRegistry()
 	cfg := agent.EngineConfig{MaxToolIterations: 4}
 
-	tool := SubagentRun(sm, router, tools, cfg, nil)
+	tool := SubagentRun(sm, router, tools, cfg)
 
 	handlerCtx := event.ContextWithNamespace(context.Background(), ns)
 	handlerCtx = event.ContextWithSessionView(handlerCtx, parent)
@@ -483,7 +483,7 @@ func TestSubagentRun_ForkWithoutMessageIDs(t *testing.T) {
 	tools := agent.NewToolRegistry()
 	cfg := agent.EngineConfig{MaxToolIterations: 4}
 
-	tool := SubagentRun(sm, router, tools, cfg, nil)
+	tool := SubagentRun(sm, router, tools, cfg)
 
 	handlerCtx := event.ContextWithNamespace(context.Background(), ns)
 	handlerCtx = event.ContextWithSessionView(handlerCtx, parent)
@@ -557,7 +557,7 @@ func TestSubagentRun_ChildSessionGetsSubagentNotice(t *testing.T) {
 	tools := agent.NewToolRegistry()
 	cfg := agent.EngineConfig{MaxToolIterations: 4}
 
-	tool := SubagentRun(sm, router, tools, cfg, nil)
+	tool := SubagentRun(sm, router, tools, cfg)
 
 	handlerCtx := event.ContextWithNamespace(context.Background(), ns)
 	handlerCtx = event.ContextWithSessionView(handlerCtx, parent)
@@ -645,7 +645,7 @@ func TestSubagentRun_EmitsSessionCreatedEvent(t *testing.T) {
 	tools := agent.NewToolRegistry()
 	cfg := agent.EngineConfig{MaxToolIterations: 4}
 
-	tool := SubagentRun(sm, router, tools, cfg, nil)
+	tool := SubagentRun(sm, router, tools, cfg)
 
 	// A buffered channel to receive the emitted engine event.
 	eventCh := make(chan event.EngineEvent, 4)

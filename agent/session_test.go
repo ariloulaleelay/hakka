@@ -376,6 +376,7 @@ func TestForkData_InheritsSettings(t *testing.T) {
 	sd.EnabledTools = map[string]bool{"tool_a": true, "tool_b": false}
 	sd.BlockedTools = map[string]bool{"tool_c": true}
 	sd.ActiveSkills = []string{"skill1", "skill2"}
+	sd.SkillPaths = []string{"/skills/one/SKILL.md", "/skills/two/SKILL.md"}
 
 	child, err := sd.ForkData("")
 	if err != nil {
@@ -402,6 +403,9 @@ func TestForkData_InheritsSettings(t *testing.T) {
 	}
 	if child.ActiveSkills[0] != "skill1" || child.ActiveSkills[1] != "skill2" {
 		t.Fatalf("active skills not inherited correctly: %v", child.ActiveSkills)
+	}
+	if len(child.SkillPaths) != 2 || child.SkillPaths[0] != "/skills/one/SKILL.md" || child.SkillPaths[1] != "/skills/two/SKILL.md" {
+		t.Fatalf("skill paths not inherited correctly: %v", child.SkillPaths)
 	}
 }
 
