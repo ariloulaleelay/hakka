@@ -21,8 +21,9 @@
   - [ ] Response in group chats
     - [x] In a group chat form message with author info in heading (@login + Name)
     - [x] Silently listen group chat (respond only on mentions)
-- [ ] Web server
-  - [ ] Add handle to read files (we can show images in chat)
+- [x] Web server
+  - [x] Add handle to read files (we can show images in chat)
+  - [x] Per-session web file sharing — upload/download/delete endpoints (`/session/{id}/file/...`) confined to the session working directory, with agent system-prompt integration
 - [ ] Tool improvements
   - [x] Get access to mcp servers
   - [x] Add tool controls, disable tools by default

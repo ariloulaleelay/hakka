@@ -342,7 +342,10 @@ func passThroughMessage(m Message) Message {
 //
 // Returns the context messages and a bool indicating whether
 // context_compactify should be added to tool schemas for this turn.
-func BuildCompactContext(session SessionHistory, softLimit int) ([]Message, bool, int) {
+//
+// providers (optional) contribute extra system messages to the context
+// prefix; see SystemMessageProvider.
+func BuildCompactContext(session SessionHistory, softLimit int, providers ...SystemMessageProvider) ([]Message, bool, int) {
 	rawMsgs := session.Messages()
 	ranges := extractCompactifyRanges(rawMsgs)
 	inRange := computeEffectiveInRange(rawMsgs, ranges)
@@ -357,7 +360,7 @@ func BuildCompactContext(session SessionHistory, softLimit int) ([]Message, bool
 		view = append(view, buildCompactionWarning(estimatedTokens, softLimit))
 	}
 
-	result := buildContextPrefix(session, needCompactify, session.GetCWD())
+	result := buildContextPrefix(session, needCompactify, session.GetCWD(), providers)
 	result = append(result, view...)
 	return result, needCompactify, estimatedTokens
 }
@@ -420,9 +423,10 @@ func buildCompactionWarning(estimatedTokens, softLimit int) Message {
 
 // buildContextPrefix assembles the opening messages for every turn:
 // system prompt (if present), AGENTS.md from CWD (if found),
-// optional compactify usage notice, loaded skills, and
-// the working-directory message (if set).
-func buildContextPrefix(session SessionHistory, needCompactify bool, cwd string) []Message {
+// optional compactify usage notice, loaded skills,
+// the working-directory message (if set), and messages from any
+// configured SystemMessageProviders.
+func buildContextPrefix(session SessionHistory, needCompactify bool, cwd string, providers []SystemMessageProvider) []Message {
 	result := make([]Message, 0, 8)
 
 	if sp := session.SystemPrompt(); sp != "" {
@@ -443,6 +447,15 @@ func buildContextPrefix(session SessionHistory, needCompactify bool, cwd string)
 	}
 	if cwdMsg := session.CWDMessage(); cwdMsg != nil {
 		result = append(result, *cwdMsg)
+	}
+	// Environment/context-dependent system messages from providers.
+	if sv, ok := session.(SessionView); ok {
+		for _, p := range providers {
+			if p == nil {
+				continue
+			}
+			result = append(result, p.SystemMessages(sv)...)
+		}
 	}
 	return result
 }

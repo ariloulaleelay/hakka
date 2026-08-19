@@ -74,10 +74,14 @@ Hakka is a **minimal, modular, extensible LLM agent core framework** written in 
 | **AutoRenamer** | `agent/auto_renamer.go` | LLM-driven session naming logic |
 | **ProcessManager** | `agent/tools/process.go` | Goroutine-safe subprocess registry with ring-buffered stdout+stderr |
 | **Gateway** | `agent/gateways/` | Transport layer — WebSocket (`websocket.go`), Telegram (`telegram.go`). Wire framing in `frame.go`. |
+| **WebFront** | `agent/webfront/` | Embedded SPA + WebSocket on one HTTP port (`web.go`), plus per-session web file sharing (`files.go`): GET/POST/DELETE `/session/{session_id}/file/{path...}` resolved against the session's working directory. |
+| **FileStore** | `agent/webfront/files.go` | Per-session web file store — paths confined to the session CWD, session-existence validation, upload size cap, Range-supporting downloads. |
+| **WebFilesProvider** | `agent/webfront/files.go` | `SystemMessageProvider` announcing the web upload/link convention to the LLM. |
 | **ResponseReader** | `agent/gateways/response_reader.go` | Async response awaiting for client-initiated tool calls (e.g. Neovim `vim_run_command`) |
 | **TurnTracker** | `agent/gateways/turn_tracker.go` | Manages active turns per session — cancellation, in_flight status. All turn events are broadcast to every connected client via the `NamespaceHub`; no per-client subscription lists |
 | **NamespaceHub** | `agent/gateways/namespace_hub.go` | Per-namespace event broadcast hub. All connected clients (WS, webfront) register their writers here. All turn events and session lifecycle events are broadcast to every subscriber in the namespace. Owns the namespace's shared `turnTracker`. |
 | **Hooks** | `agent/engine.go` | Lifecycle callbacks: `OnToolCall`, `OnToolResult`, `OnLLMResponse`, `OnError` |
+| **SystemMessageProvider** | `agent/engine.go` | Injectable environment/context-dependent system messages appended to every turn's context prefix. Configured via `EngineConfig.SystemMessageProviders` / `Conversation.AddSystemMessageProvider`; receives the full session (ID, CWD, skills) so messages can be built per session. |
 | **EngineEvent types** | `agent/event/event.go` | Typed event structs (`ToolCallStarted`, `ToolCallFinished`, `UsageReported`, `TextDelta`, etc.) |
 | **EngineChannelWriter** | `agent/event/engine_writer.go` | Serialises tool-to-client requests through the engine event channel |
 | **Format** | `agent/format/md2tg.go` | Markdown-to-Telegram-HTML conversion for the Telegram gateway |
@@ -242,6 +246,22 @@ A typical client follows this sequence:
 - Set CWD before sending substantive input via `cwd_set` command.
 
 See `protocol.md` for the complete frame reference.
+
+### HTTP File API (webfront gateway)
+
+When the webfront HTTP server is enabled (`--web-addr`), it also serves
+per-session file endpoints, with paths resolved against the session's
+working directory:
+
+- `GET    /session/{session_id}/file/{path...}` — download (inline by default, `?download=1` = attachment, Range supported)
+- `POST   /session/{session_id}/file/{path...}` — upload raw body (64 MiB cap; replies `{"url","path","bytes"}`)
+- `DELETE /session/{session_id}/file/{path...}` — delete file
+
+`session_id` must be an existing session in the `ws` namespace (404 otherwise).
+The agent is informed via a `SystemMessageProvider`: user uploads land in the
+session's working directory; files handed to the user are referenced in
+replies as `/session/{session_id}/file/<name>` links. See `protocol.md` §HTTP File API.
+
 ## Extending
 
 | Need | Interface/Component |
@@ -252,6 +272,7 @@ See `protocol.md` for the complete frame reference.
 | New skill | `agent.Skill` + per-session `SkillRegistry` (see Skill Tools — skills are session-bound) |
 | New transport | Implement a Gateway |
 | Middleware/guardrails | Engine `Hooks` in `EngineConfig` |
+| Environment/context-dependent system messages | `agent.SystemMessageProvider` via `EngineConfig.SystemMessageProviders` / `Conversation.AddSystemMessageProvider` |
 
 ---
 

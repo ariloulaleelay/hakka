@@ -575,3 +575,63 @@ Tool failures result in a `type:"tool"` frame with `status:"err"`:
 11. **Reconnect** — a reconnecting client receives all current and future
     events immediately via the broadcast channel. No explicit get_session
     or turn subscription is needed for live events.
+
+---
+
+## HTTP File API (webfront gateway)
+
+When the webfront HTTP server is enabled (`--web-addr`), it also serves
+**per-session file endpoints**. Web file paths are **relative to the
+session's working directory** (the directory the agent's tools operate in;
+set it with `cwd_set`) — all reads and writes are confined to it.
+
+### Routes
+
+#### `GET /session/{session_id}/file/{path...}` — download
+
+Serves the file's bytes with a `Content-Type` sniffed from the extension.
+`Content-Disposition: inline` by default (images render in chat);
+`?download=1` forces `attachment`. `Range` requests are supported
+(video seeking, resumable downloads).
+
+| Result | Status |
+|--------|--------|
+| File served | `200` (or `206` for range) |
+| File/session not found, or path is a directory | `404` |
+| Invalid path (`..`, leading `/`, backslash, NUL) | `400` |
+
+#### `POST /session/{session_id}/file/{path...}` — upload
+
+Uploads the **raw request body** to the given path under the session's
+working directory. Parent directories are created automatically;
+overwriting an existing file is allowed. Uploads are size-capped
+(64 MiB by default).
+
+Response (`200`, JSON):
+
+```json
+{"url": "/session/<session_id>/file/<path>", "path": "<absolute path under CWD>", "bytes": 42}
+```
+
+- `url` — client-facing link (render it for the user).
+- `path` — absolute path the agent can `read_file`.
+- Oversized upload → `413` (partial file is removed).
+
+#### `DELETE /session/{session_id}/file/{path...}` — delete
+
+Removes the file. Directories are rejected.
+
+| Result | Status |
+|--------|--------|
+| Deleted | `200` (JSON with `url`/`path`) |
+| File/session not found | `404` |
+| Path is a directory | `400` |
+
+### Rules
+
+- `session_id` must be an **existing session** in the `ws` namespace;
+  unknown sessions get `404` and nothing is written for them.
+- Paths are strictly confined to the session's working directory.
+- The agent is informed through its system prompt: user uploads land in
+  the session's working directory, and files the agent hands to the user
+  are referenced as `/session/<session_id>/file/<name>` links in its replies.

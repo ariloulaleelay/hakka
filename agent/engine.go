@@ -58,6 +58,28 @@ type Hacks struct {
 	IgnoreStopIfNoContent *bool `json:"ignore_stop_if_no_content,omitempty"`
 }
 
+// SystemMessageProvider contributes environment/context-dependent system
+// messages to every turn's context prefix. Providers receive the full
+// session (ID, CWD, skills, model, ...), so messages can be built from
+// both server-side environment state and per-session state — e.g. the
+// webfront gateway announcing the session's sandboxed web files directory.
+//
+// Provider messages are appended after the built-in prefix (system prompt,
+// AGENTS.md, compactify notice, skills, CWD message) and before the
+// conversation history.
+type SystemMessageProvider interface {
+	SystemMessages(session SessionView) []Message
+}
+
+// SystemMessageProviderFunc adapts a plain function to the
+// SystemMessageProvider interface.
+type SystemMessageProviderFunc func(session SessionView) []Message
+
+// SystemMessages calls the underlying function.
+func (f SystemMessageProviderFunc) SystemMessages(session SessionView) []Message {
+	return f(session)
+}
+
 // EngineConfig tunes the orchestration loop.
 type EngineConfig struct {
 	MaxToolIterations int
@@ -65,6 +87,10 @@ type EngineConfig struct {
 	Options           CompleteOptions
 	Logger            *slog.Logger
 	Hooks             Hooks
+	// SystemMessageProviders inject extra system messages into every
+	// turn's context prefix. Set at startup (see
+	// Conversation.AddSystemMessageProvider).
+	SystemMessageProviders []SystemMessageProvider
 }
 
 func DefaultEngineConfig() EngineConfig {

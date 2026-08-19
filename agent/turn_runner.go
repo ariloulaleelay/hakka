@@ -201,7 +201,7 @@ func (r *turnRunner) runLoop(
 // whether compaction is needed, and estimated token count.
 func (r *turnRunner) buildLLMContext(session SessionView) ([]Message, bool, int) {
 	softLimit := r.resolveSoftLimit(session)
-	msgs, needCompactify, estimatedTokens := BuildCompactContext(session, softLimit)
+	msgs, needCompactify, estimatedTokens := BuildCompactContext(session, softLimit, r.config.SystemMessageProviders...)
 	msgs = appendToolListMessage(msgs, r.tools, session)
 	return msgs, needCompactify, estimatedTokens
 }

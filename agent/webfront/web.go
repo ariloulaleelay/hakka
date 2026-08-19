@@ -43,9 +43,10 @@ func (w webfrontFileSystem) Open(name string) (fs.File, error) {
 // Gateway serves the hakka-webfront SPA and a WebSocket endpoint on a
 // single HTTP port. It implements gateways.Gateway.
 type Gateway struct {
-	addr    string
-	handler *gateways.TurnHandler
-	server  *http.Server
+	addr      string
+	handler   *gateways.TurnHandler
+	server    *http.Server
+	fileStore *FileStore
 }
 
 // New creates a Gateway. If addr is empty, Start is a no-op (disabled).
@@ -70,12 +71,31 @@ func (gw *Gateway) SetHub(hub *gateways.NamespaceHub) {
 	gw.handler.SetHub(hub)
 }
 
-func (gw *Gateway) Start(ctx context.Context) error {
-	if gw.addr == "" {
-		return nil
+// SetFileStore enables the per-session web file endpoints
+// (GET/POST/DELETE /session/{session_id}/file/{path...}). Must be called
+// before Start. When Sessions/Namespace are zero, they default to the
+// gateway conversation's session manager and namespace.
+func (gw *Gateway) SetFileStore(cfg FileStoreConfig) {
+	if cfg.Sessions == nil && gw.handler != nil && gw.handler.Conv != nil {
+		cfg.Sessions = gw.handler.Conv.Sessions()
 	}
+	if cfg.Namespace == "" && gw.handler != nil {
+		cfg.Namespace = gw.handler.Namespace
+	}
+	gw.fileStore = NewFileStore(cfg)
+}
 
+// buildMux assembles the HTTP routes: file endpoints (when configured),
+// the WebSocket endpoint, and the static SPA catch-all.
+func (gw *Gateway) buildMux() *http.ServeMux {
 	mux := http.NewServeMux()
+
+	// Per-session sandboxed web file sharing (upload/download/delete).
+	if gw.fileStore != nil {
+		mux.HandleFunc("GET /session/{session_id}/file/{path...}", gw.fileStore.HandleDownload)
+		mux.HandleFunc("POST /session/{session_id}/file/{path...}", gw.fileStore.HandleUpload)
+		mux.HandleFunc("DELETE /session/{session_id}/file/{path...}", gw.fileStore.HandleDelete)
+	}
 
 	// WebSocket endpoint — reuse the same handler logic as the
 	// standalone WebSocketGateway.
@@ -89,6 +109,15 @@ func (gw *Gateway) Start(ctx context.Context) error {
 	fsys := webfrontFileSystem{inner: embeddedFiles}
 	fileServer := http.FileServer(http.FS(fsys))
 	mux.Handle("/", etagHandler(fsys, gzipHandler(fileServer)))
+	return mux
+}
+
+func (gw *Gateway) Start(ctx context.Context) error {
+	if gw.addr == "" {
+		return nil
+	}
+
+	mux := gw.buildMux()
 
 	gw.server = &http.Server{
 		Addr:              gw.addr,

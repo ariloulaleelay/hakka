@@ -114,6 +114,39 @@ websocat ws://127.0.0.1:8765/ws
 > {"input":"Add 2 and 3"}
 ```
 
+### Web file sharing (upload / download / delete)
+
+When `--web-addr` is enabled, the webfront HTTP server also exposes
+**per-session file endpoints**. Web file paths are **relative to the
+session's working directory** (the directory the agent's tools operate in;
+set it with `cwd_set`):
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `GET` | `/session/<session_id>/file/<path...>` | Download a file from the session CWD. Inline by default (images render in chat); add `?download=1` to force attachment. Supports `Range` requests. |
+| `POST` | `/session/<session_id>/file/<path...>` | Upload the raw request body to the given path under the session CWD. Parent directories are created automatically; overwrite allowed. Size-capped (64 MiB). Replies `{"url": "...", "path": "...", "bytes": N}`. |
+| `DELETE` | `/session/<session_id>/file/<path...>` | Delete a file from the session CWD. Directories are rejected. |
+
+Rules:
+
+- `session_id` must be an existing session (in the `ws` namespace) — unknown
+  sessions get 404, and nothing is ever written for them.
+- Paths are confined to the session's working directory: `..`, `.`, leading
+  `/`, backslashes and NUL bytes are rejected with 400 — the rest of the
+  filesystem is unreachable.
+- The agent is told about the feature through its system prompt: user
+  uploads land in the session's working directory, and files the agent
+  wants to hand to the user are referenced in its reply as
+  `/session/<session_id>/file/<name>` links.
+
+```sh
+# Upload a file for session abc123 (saved at <cwd>/photo.png)
+curl -X POST --data-binary @photo.png http://localhost:8080/session/abc123/file/photo.png
+
+# Download it back (served inline)
+curl http://localhost:8080/session/abc123/file/photo.png
+```
+
 ---
 
 ## Usage

@@ -160,6 +160,23 @@ func (conv *Conversation) SetToolContext(tc ToolContextDecorator) {
 	conv.turnRunner = newTurnRunner(conv.tools, conv.toolExec, conv.config, conv.router, conv.config.Logger, conv.sessions.Store)
 }
 
+// AddSystemMessageProvider registers a provider of environment/context-
+// dependent system messages. Its messages are appended to every turn's
+// context prefix (after the CWD message). Intended for startup-time
+// wiring — e.g. the webfront gateway announces the session's web files
+// directory. The turn runner is rebuilt so the provider takes effect
+// on subsequent turns; calling while a turn is running has the same
+// caveats as SetToolContext.
+func (conv *Conversation) AddSystemMessageProvider(p SystemMessageProvider) {
+	if p == nil {
+		return
+	}
+	conv.mu.Lock()
+	defer conv.mu.Unlock()
+	conv.config.SystemMessageProviders = append(conv.config.SystemMessageProviders, p)
+	conv.turnRunner = newTurnRunner(conv.tools, conv.toolExec, conv.config, conv.router, conv.config.Logger, conv.sessions.Store)
+}
+
 // resolveNamespace returns the namespace to use for store operations.
 // It reads from context only — the single point of truth. Callers that
 // do not find a namespace in the context have a programming error.

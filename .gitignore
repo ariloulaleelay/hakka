@@ -5,6 +5,7 @@ hakka.db-shm
 hakka.db-wal
 hakka.json
 data/
+web-files/
 .env
 
 /hakka

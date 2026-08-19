@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ariloulaleelay/hakka/agent"
+	"github.com/ariloulaleelay/hakka/agent/gateways"
 	"github.com/ariloulaleelay/hakka/batch"
 )
 
@@ -439,4 +441,32 @@ func TestNewLogger(t *testing.T) {
 			t.Errorf("expected logger to not be nil for level %s", tt.level)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Web frontend gateway — web files wiring
+// ---------------------------------------------------------------------------
+
+func TestBuildWebFrontGateway_WiresFileStore(t *testing.T) {
+	reg := testAdapterRegistry(t, &scriptedAdapter{})
+	platform := agent.NewPlatform(agent.PlatformConfig{
+		Store:        agent.NewMemoryStore(),
+		Registry:     reg,
+		SystemPrompt: "sys",
+	})
+	tools := agent.NewToolRegistry()
+	hub := gateways.NewNamespaceHub("ws")
+
+	gw := buildWebFrontGateway(platform, tools, ":0", hub)
+	if gw == nil {
+		t.Fatal("buildWebFrontGateway returned nil")
+	}
+	if err := gw.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if err := gw.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	cancel()
 }

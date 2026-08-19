@@ -306,6 +306,11 @@ func buildWebSocketGateway(platform *agent.Platform, tools *agent.ToolRegistry, 
 // SPA and a WebSocket endpoint on the same HTTP port. It shares the same
 // namespace ("ws") and hub as the standalone WebSocket gateway so sessions
 // and turn events are consistent across all transports.
+//
+// The gateway also serves the per-session web file endpoints
+// (GET/POST/DELETE /session/{id}/file/{path...}, resolved against the
+// session's working directory) and injects a system message into the
+// webfront conversation so the LLM knows how to use them.
 func buildWebFrontGateway(platform *agent.Platform, tools *agent.ToolRegistry, addr string, hub *gateways.NamespaceHub) *webfront.Gateway {
 	decorator := agent.EngineChannelClientDecorator()
 	ns := platform.ForNamespace("ws", tools, decorator)
@@ -313,6 +318,8 @@ func buildWebFrontGateway(platform *agent.Platform, tools *agent.ToolRegistry, a
 	cmd.SetTools(tools)
 	wfGw := webfront.New(addr, ns.Conversation, cmd)
 	wfGw.SetHub(hub)
+	wfGw.SetFileStore(webfront.FileStoreConfig{})
+	ns.Conversation.AddSystemMessageProvider(webfront.WebFilesProvider{})
 	return wfGw
 }
 
